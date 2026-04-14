@@ -1,0 +1,8 @@
+CompileFlags:
+    Add:
+        - -std=c++20
+        - -ID:/Tools/VulkanSDK/1.4.341.1/Include
+        - -ID:/Study/Git/render_demo/external/
+        - -ID:/Study/Git/render_demo/external/glm/include
+        - -ID:/Study/Git/render_demo/external/glfw/include
+    Compiler: clang++
