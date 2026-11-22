@@ -56,15 +56,20 @@ std::vector<Particle> makeParticles()
     std::vector<Particle> particles;
     particles.reserve(PARTICLE_COUNT);
     std::mt19937 rng(12345u);
-    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
-    // The seed state matches the respawn state in particle.comp: a narrow column
-    // near the top whose horizontal velocity grows with the spawn offset.  Using
-    // the full frustum here instead made the first second look like wallpaper and
-    // only converged to the fountain after one full fall cycle.
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);  // rx, rz in [-1,1]
+    std::uniform_real_distribution<float> unitDist(0.0f, 1.0f); // ry in [0,1]
+    // Seed state mirrors the respawn state in particle.comp exactly: a narrow
+    // column near the top (y = 1.0 + ry*0.25), with horizontal velocity derived
+    // from the same rx/ry so the very first frame is already a fountain cone.
+    // Using the full frustum, or an independent random vy, made the first second
+    // look like wallpaper and only converged after one full fall cycle.
     for (uint32_t i = 0; i < PARTICLE_COUNT; ++i) {
         Particle p{};
-        p.position = glm::vec4(dist(rng) * 0.25f, 0.2f + std::abs(dist(rng)) * 1.0f, dist(rng) * 0.4f, 1.0f);
-        p.velocity = glm::vec4(p.position.x * 2.0f, 0.6f + std::abs(dist(rng)) * 0.6f, 0.0f, 0.0f);
+        const float rx = dist(rng);
+        const float ry = unitDist(rng);
+        const float rz = dist(rng) * 0.4f;
+        p.position = glm::vec4(rx * 0.25f, 1.0f + ry * 0.25f, rz, 1.0f);
+        p.velocity = glm::vec4(rx * 0.5f, 0.6f + ry * 0.6f, 0.0f, 0.0f);
         p.color = glm::vec4(0.5f + 0.5f * dist(rng), 0.5f + 0.5f * dist(rng), 0.5f + 0.5f * dist(rng), 1.0f);
         particles.push_back(p);
     }

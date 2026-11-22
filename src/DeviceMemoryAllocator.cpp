@@ -14,11 +14,6 @@ void checkResult(vk::Result result, const char *what)
     }
 }
 
-// The allocator API has no per-request alignment parameter, so every carved
-// region is aligned to a conservative power-of-two multiple that satisfies
-// the usual buffer/image memory-requirement alignments.
-constexpr vk::DeviceSize kSubAllocationAlignment = 1024;
-
 constexpr vk::DeviceSize alignUp(vk::DeviceSize value, vk::DeviceSize alignment)
 {
     return (value + alignment - 1) / alignment * alignment;
@@ -68,12 +63,18 @@ uint32_t DeviceMemoryAllocator::findMemoryType(uint32_t typeFilter, vk::MemoryPr
 }
 
 DeviceMemorySlice DeviceMemoryAllocator::allocate(vk::DeviceSize size, uint32_t memoryTypeIndex,
-                                                  vk::MemoryPropertyFlags propertyFlags)
+                                                  vk::MemoryPropertyFlags propertyFlags, vk::DeviceSize alignment)
 {
     (void)propertyFlags; // the caller resolves the exact type via findMemoryType
     if (size == 0) {
         throw std::invalid_argument("cannot allocate a zero-sized memory slice");
     }
+
+    // Honour the resource's memoryRequirements.alignment.  The Vulkan spec
+    // requires bindBufferMemory/bindImageMemory offsets to be multiples of it
+    // (VUID-vkBindBufferMemory2-pBindInfos-02857 / ...Image2-02858); a fixed
+    // 1024 is only sufficient on drivers whose requirements happen to be <=1024.
+    const vk::DeviceSize effectiveAlignment = std::max(kSubAllocationAlignment, alignment);
 
     std::lock_guard<std::mutex> lock(m_mutex);
 
@@ -81,8 +82,8 @@ DeviceMemorySlice DeviceMemoryAllocator::allocate(vk::DeviceSize size, uint32_t 
         return allocateDedicated(size, memoryTypeIndex);
     }
 
-    const vk::DeviceSize alignedSize = alignUp(size, kSubAllocationAlignment);
-    int blockIndex = findSuitableBlock(alignedSize, memoryTypeIndex);
+    const vk::DeviceSize alignedSize = alignUp(size, effectiveAlignment);
+    int blockIndex = findSuitableBlock(alignedSize, memoryTypeIndex, effectiveAlignment);
     if (blockIndex < 0) {
         auto block = std::make_shared<Block>();
 
@@ -110,7 +111,7 @@ DeviceMemorySlice DeviceMemoryAllocator::allocate(vk::DeviceSize size, uint32_t 
 
     auto &block = *m_blocks[static_cast<size_t>(blockIndex)];
     for (auto it = block.freeRegions.begin(); it != block.freeRegions.end(); ++it) {
-        const vk::DeviceSize alignedOffset = alignUp(it->offset, kSubAllocationAlignment);
+        const vk::DeviceSize alignedOffset = alignUp(it->offset, effectiveAlignment);
         if (alignedOffset - it->offset + alignedSize > it->size) {
             continue;
         }
@@ -121,6 +122,7 @@ DeviceMemorySlice DeviceMemoryAllocator::allocate(vk::DeviceSize size, uint32_t 
         slice.memory = std::shared_ptr<vk::DeviceMemory>(block.slice.memory, block.slice.memory.get());
         slice.offset = alignedOffset;
         slice.size = size;
+        slice.alignment = effectiveAlignment;
 
         const Block::FreeRegion region = *it;
         block.freeRegions.erase(it); // vector::insert/erase invalidates iterators
@@ -159,7 +161,8 @@ void DeviceMemoryAllocator::free(const DeviceMemorySlice &slice)
     }
 
     const vk::DeviceSize begin = slice.offset;
-    const vk::DeviceSize end = slice.offset + alignUp(slice.size, kSubAllocationAlignment);
+    const vk::DeviceSize usedAlignment = slice.alignment > 0 ? slice.alignment : kSubAllocationAlignment;
+    const vk::DeviceSize end = slice.offset + alignUp(slice.size, usedAlignment);
     auto &regions = block->freeRegions;
     auto it = regions.begin();
     while (it != regions.end() && it->offset < begin) {
@@ -185,7 +188,8 @@ DeviceMemorySlice DeviceMemoryAllocator::allocateDedicated(vk::DeviceSize size, 
     return DeviceMemorySlice{memory, 0, size};
 }
 
-int DeviceMemoryAllocator::findSuitableBlock(vk::DeviceSize size, uint32_t memoryTypeIndex)
+int DeviceMemoryAllocator::findSuitableBlock(vk::DeviceSize size, uint32_t memoryTypeIndex,
+                                             vk::DeviceSize alignment)
 {
     for (size_t i = 0; i < m_blocks.size(); ++i) {
         const auto &block = *m_blocks[i];
@@ -193,7 +197,7 @@ int DeviceMemoryAllocator::findSuitableBlock(vk::DeviceSize size, uint32_t memor
             continue;
         }
         for (const auto &region : block.freeRegions) {
-            const vk::DeviceSize alignedOffset = alignUp(region.offset, kSubAllocationAlignment);
+            const vk::DeviceSize alignedOffset = alignUp(region.offset, alignment);
             if (alignedOffset - region.offset + size <= region.size) {
                 return static_cast<int>(i);
             }

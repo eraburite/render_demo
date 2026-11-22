@@ -353,7 +353,15 @@ std::shared_ptr<IRenderPass> RenderManager::CreateRenderPass(std::shared_ptr<con
         throw std::runtime_error("CreateRenderPass requires an attachment detail!");
     }
     const vk::Extent2D extent = m_swapChain ? *m_swapChain->getExtent2D() : vk::Extent2D{1, 1};
-    const RenderPassBlueprint blueprint = detail->build(extent.width, extent.height, m_msaaSamples);
+    RenderPassBlueprint blueprint = detail->build(extent.width, extent.height, m_msaaSamples);
+
+    // Offscreen / MRT passes keep one independent attachment set per in-flight
+    // frame so two frames never race on the same target.  The count is an
+    // engine-level invariant (driven by Create(window, framesInFlight)), so it
+    // must not depend on a hard-coded value in the example-side config.
+    if (!blueprint.swapChainSized) {
+        blueprint.framebufferCount = m_maxFramesInFlight;
+    }
 
     auto renderPass = std::make_shared<BasicRenderPass>(getLogicalDevice(), m_physicalDeviceMemoryProperties,
                                                         m_allocator, blueprint);
@@ -524,9 +532,18 @@ void RenderManager::reCreateSwapChain()
     int height = 0;
     int depth = 0;
     std::tie(width, height, depth) = m_window.getFramebufferSize();
-    while (width == 0 || height == 0) {
-        std::tie(width, height, depth) = m_window.getFramebufferSize();
-        m_window.waitEvents();
+    // A minimised / unfocused window reports 0x0.  Waiting here with
+    // waitEvents() deadlocks: the loop blocks until an event arrives, and the
+    // event that would fix the size (restore) may never come while we hold the
+    // thread.  SwapChain::chooseSwapExtent already clamps to the device's
+    // minImageExtent, so a 0x0 request produces a valid (small) swapchain; the
+    // next real resize event rebuilds it at the correct size.  Only clamp to 1
+    // to guard against drivers with a degenerate minImageExtent.
+    if (width <= 0) {
+        width = 1;
+    }
+    if (height <= 0) {
+        height = 1;
     }
 
     m_device->waitIdle();

@@ -52,8 +52,17 @@ inline std::vector<Vertex> CubeVertices(const glm::vec3 &color = glm::vec3(1.0f)
     };
 }
 
+// CubeVertices() is already an expanded 36-vertex triangle list (each face's
+// 6th vertex repeats its 3rd).  The matching index buffer is therefore the
+// identity permutation; an old 24-vertex cube table used to live here and
+// produced degenerate triangles / missing faces if ever paired with these
+// vertices.  Every example currently draws non-indexed, so this is provided
+// for completeness only.
 inline std::vector<uint32_t> CubeIndices()
 {
-    return {0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4, 8, 9, 10, 10, 11, 8,
-            12, 13, 14, 14, 15, 12, 16, 17, 18, 18, 19, 16, 20, 21, 22, 22, 23, 20};
+    std::vector<uint32_t> indices(36);
+    for (uint32_t i = 0; i < 36; ++i) {
+        indices[i] = i;
+    }
+    return indices;
 }

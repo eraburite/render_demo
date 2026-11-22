@@ -110,6 +110,8 @@ public:
 
         if (m_mode == Mode::eOffscreen) {
             bp.swapChainSized = false;
+            // Placeholder: RenderManager::CreateRenderPass overwrites this with
+            // the actual in-flight frame count so each frame gets its own target.
             bp.framebufferCount = 2;
             OffscreenTargetSpec target;
             target.attachmentIndex = 0;
@@ -146,6 +148,7 @@ public:
         bp.sampleCount = vk::SampleCountFlagBits::e1;
         bp.swapChainSized = false;
         bp.colorAttachmentCount = 3;
+        // Placeholder; RenderManager::CreateRenderPass sets it to framesInFlight.
         bp.framebufferCount = 2;
 
         const vk::Format formats[] = {vk::Format::eR32G32B32A32Sfloat, vk::Format::eR32G32B32A32Sfloat,

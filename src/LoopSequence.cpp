@@ -367,6 +367,10 @@ void LoopSequence::recordPass(const std::shared_ptr<IRenderPass> &renderPass, co
     try {
         body();
     } catch (...) {
+        // Keep the scope guarantee: a throwing body must not leave the render
+        // pass open, or the next record on this buffer would hit a validation
+        // error ("render pass already active").
+        renderPass->end(cmd);
         m_activeRenderPass.reset();
         throw;
     }

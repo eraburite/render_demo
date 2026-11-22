@@ -85,7 +85,7 @@ BufferBundle DeviceResourceUtils::createBuffer(const std::shared_ptr<vk::Device>
     const bool pooled = allocator != nullptr && memRequirements.size <= kSmallAllocationThreshold;
     DeviceMemorySlice slice;
     if (pooled) {
-        slice = allocator->allocate(memRequirements.size, typeIndex, memProp.flags);
+        slice = allocator->allocate(memRequirements.size, typeIndex, memProp.flags, memRequirements.alignment);
     } else {
         vk::MemoryAllocateInfo allocInfo(memRequirements.size, typeIndex);
         vk::DeviceMemory memory{};
@@ -134,7 +134,7 @@ ImageBundle DeviceResourceUtils::createImage(const std::shared_ptr<vk::Device> &
     const bool pooled = allocator != nullptr && memRequirements.size <= kSmallAllocationThreshold;
     DeviceMemorySlice slice;
     if (pooled) {
-        slice = allocator->allocate(memRequirements.size, typeIndex, memProp.flags);
+        slice = allocator->allocate(memRequirements.size, typeIndex, memProp.flags, memRequirements.alignment);
     } else {
         vk::MemoryAllocateInfo allocInfo(memRequirements.size, typeIndex);
         vk::DeviceMemory memory{};
