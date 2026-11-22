@@ -1,53 +1,28 @@
 #pragma once
 #include "CmdOpBase.h"
 #include "GraphicsPipeline.h"
-#include "typedefs.h"
-#include "SwapChain.h"
 
+// Draw operation: binds one graphics pipeline and issues one draw.  Render pass
+// begin/end is owned by LoopSequence::recordPass, not by the op.
 class CmdOpDrawFrame : public CmdOpBase {
 public:
-    CmdOpDrawFrame(const std::shared_ptr<GraphicsPipeline> &pipeline)
-    {
-        m_pipeline = pipeline;
-    }
+    using CmdOpBase::OnUpdateRawData;
+    explicit CmdOpDrawFrame(std::shared_ptr<GraphicsPipeline> pipeline) : m_pipeline(std::move(pipeline)) {}
 
-    void OnUpdateRawData(ResourceTypes resourceType, const void *data, size_t size) override
+    void OnUpdateRawData(ResourceId id, uint32_t frame, const void *data, size_t size) override
     {
-        // non-op
+        m_pipeline->asset()->UpdateDescriptorResourceData(ResourceKey::make_key(id, frame), data, size);
     }
-
-    void OnUpdateRawData(ResourceId resourceId, uint32_t currentFrame, const void *data, size_t size) override
+    void OnUpdateRawData(ResourceTypes, uint32_t frame, const void *data, size_t size) override
     {
-        m_pipeline->UploadDescriptorResourceData(resourceId, currentFrame, data, size);
+        m_pipeline->asset()->UpdateConstantsResource(frame, data, size);
     }
-
-    void OnUpdateRawData(ResourceTypes resourceType, uint32_t currentFrame, const void *data, size_t size) override
+    UpdateFrequency GetFrequency() const override { return UpdateFrequency::eEachFrame; }
+    void Record(const vk::CommandBuffer &cmd, uint32_t frame, DescriptorBindingState &state) override
     {
-        m_pipeline->UploadConstantsResource(resourceType, currentFrame, data, size);
-    }
-
-    UpdateFrequency GetFrequency() const override
-    {
-        return UpdateFrequency::eEachFrame;
-    }
-
-    void BindFrameBuffer(const std::shared_ptr<vk::Framebuffer> &framebuffer,
-                         const std::shared_ptr<vk::Extent2D> &swapChainExtent) override
-    {
-        m_framebuffer = framebuffer;
-        m_swapChainExtent = swapChainExtent;
-    }
-
-    void Record(const vk::CommandBuffer &commandBuffer, uint32_t currentFrame) override
-    {
-        // m_pipeline->recordUploadCommand(commandBuffer, currentFrame);
-        m_pipeline->BeginRenderPass(commandBuffer, m_framebuffer, m_swapChainExtent);
-        m_pipeline->recordDrawCommand(commandBuffer, currentFrame);
-        m_pipeline->EndRenderPass(commandBuffer);
+        m_pipeline->recordDrawCommand(cmd, frame, state);
     }
 
 private:
     std::shared_ptr<GraphicsPipeline> m_pipeline;
-    std::shared_ptr<vk::Framebuffer> m_framebuffer;
-    std::shared_ptr<vk::Extent2D> m_swapChainExtent;
 };

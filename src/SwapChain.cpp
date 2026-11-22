@@ -1,35 +1,61 @@
 #include "SwapChain.h"
-#include "IUnifiedWindow.h"
+
 #include "DeviceResourceUtils.h"
+#include "IUnifiedWindow.h"
+
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <tuple>
+
+namespace {
+void check(vk::Result result, const char *what)
+{
+    if (result != vk::Result::eSuccess) {
+        throw std::runtime_error(std::string(what) + " failed: " + vk::to_string(result));
+    }
+}
+
+bool isPresentResult(vk::Result result)
+{
+    return result == vk::Result::eSuccess || result == vk::Result::eSuboptimalKHR;
+}
+} // namespace
 
 SwapChain::SwapChain(std::shared_ptr<vk::Device> device, IUnifiedWindow &window,
-                     const QueueFamilyIndices &queueFamilyIndices, const SwapChainSupportDetails &swapChainSupport) :
-    m_device(device)
+                     const QueueFamilyIndices &queueFamilyIndices, const SwapChainSupportDetails &swapChainSupport,
+                     const std::shared_ptr<vk::SurfaceKHR> &surface) :
+    m_device(std::move(device)), m_surface(surface)
 {
-    m_surface = window.getSurface();
-    int width, height, depth;
+    if (!m_device || !m_surface) {
+        throw std::runtime_error("swapchain requires a device and a surface!");
+    }
+    int width = 0;
+    int height = 0;
+    int depth = 0;
     std::tie(width, height, depth) = window.getFramebufferSize();
-    // std:: cout << " create swapchain width: " << width << ", height" << height << std:: endl;
     create(width, height, queueFamilyIndices, swapChainSupport);
 }
 
-SwapChain::~SwapChain() {}
+SwapChain::~SwapChain() = default;
 
-void SwapChain::create(int window_width, int window_height, const QueueFamilyIndices &queueFamilyIndices,
+void SwapChain::create(int windowWidth, int windowHeight, const QueueFamilyIndices &queueFamilyIndices,
                        const SwapChainSupportDetails &swapChainSupport)
 {
-    createSwapChain(window_width, window_height, queueFamilyIndices, swapChainSupport);
+    createSwapChain(windowWidth, windowHeight, queueFamilyIndices, swapChainSupport);
     createImageViews();
 }
 
-void SwapChain::createSwapChain(int window_width, int window_height, const QueueFamilyIndices &indices,
+void SwapChain::createSwapChain(int windowWidth, int windowHeight, const QueueFamilyIndices &indices,
                                 const SwapChainSupportDetails &swapChainSupport)
 {
-    vk::SurfaceFormatKHR surfaceFormat = swapChainSupport.chooseSwapSurfaceFormat();
-    vk::PresentModeKHR presentMode = swapChainSupport.chooseSwapPresentMode();
-    vk::Extent2D extent = swapChainSupport.chooseSwapExtent(window_width, window_height);
+    const vk::SurfaceFormatKHR surfaceFormat = swapChainSupport.chooseSwapSurfaceFormat();
+    const vk::PresentModeKHR presentMode = swapChainSupport.chooseSwapPresentMode();
+    const vk::Extent2D extent = swapChainSupport.chooseSwapExtent(windowWidth, windowHeight);
+
     uint32_t imageCount = swapChainSupport.capabilities.minImageCount + 1;
-    if (swapChainSupport.capabilities.maxImageCount > 0 && imageCount > swapChainSupport.capabilities.maxImageCount) {
+    if (swapChainSupport.capabilities.maxImageCount > 0
+        && imageCount > swapChainSupport.capabilities.maxImageCount) {
         imageCount = swapChainSupport.capabilities.maxImageCount;
     }
 
@@ -42,11 +68,11 @@ void SwapChain::createSwapChain(int window_width, int window_height, const Queue
     createInfo.imageArrayLayers = 1;
     createInfo.imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
 
-    uint32_t queueFamilyIndices[] = {indices.graphicsFamily.value(), indices.presentFamily.value()};
+    const uint32_t queueFamilies[] = {indices.graphicsFamily.value(), indices.presentFamily.value()};
     if (indices.graphicsFamily != indices.presentFamily) {
         createInfo.imageSharingMode = vk::SharingMode::eConcurrent;
         createInfo.queueFamilyIndexCount = 2;
-        createInfo.pQueueFamilyIndices = queueFamilyIndices;
+        createInfo.pQueueFamilyIndices = queueFamilies;
     } else {
         createInfo.imageSharingMode = vk::SharingMode::eExclusive;
     }
@@ -55,24 +81,24 @@ void SwapChain::createSwapChain(int window_width, int window_height, const Queue
     createInfo.compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque;
     createInfo.presentMode = presentMode;
     createInfo.clipped = VK_TRUE;
+    createInfo.oldSwapchain = nullptr;
 
-    vk::SwapchainKHR swapChain;
-    if (m_device->createSwapchainKHR(&createInfo, nullptr, &swapChain) != vk::Result::eSuccess) {
-        throw std::runtime_error(" failed to create swap chain!");
-    }
+    vk::SwapchainKHR swapchain{};
+    check(m_device->createSwapchainKHR(&createInfo, nullptr, &swapchain), "vkCreateSwapchainKHR");
 
-    m_swapChainKHR =
-        std::shared_ptr<vk::SwapchainKHR>(new vk::SwapchainKHR(swapChain), [device = m_device](vk::SwapchainKHR *p) {
-            if (p && *p) {
-                device->destroySwapchainKHR(*p, nullptr);
-            }
-            delete p;
-        });
+    m_swapChainKHR = std::shared_ptr<vk::SwapchainKHR>(new vk::SwapchainKHR(swapchain),
+                                                       [device = m_device](vk::SwapchainKHR *swapchainPtr) {
+                                                           if (swapchainPtr != nullptr && *swapchainPtr) {
+                                                               device->destroySwapchainKHR(*swapchainPtr, nullptr);
+                                                           }
+                                                           delete swapchainPtr;
+                                                       });
 
-    auto ret = m_device->getSwapchainImagesKHR(*m_swapChainKHR, &imageCount, nullptr);
+    check(m_device->getSwapchainImagesKHR(*m_swapChainKHR, &imageCount, nullptr), "vkGetSwapchainImagesKHR (count)");
     m_swapChainImages.resize(imageCount);
-    // std:: cout << "swapChainImages imageCount: " << imageCount << "\n";
-    ret = m_device->getSwapchainImagesKHR(*m_swapChainKHR, &imageCount, m_swapChainImages.data());
+    check(m_device->getSwapchainImagesKHR(*m_swapChainKHR, &imageCount, m_swapChainImages.data()),
+          "vkGetSwapchainImagesKHR");
+
     m_swapChainImageFormat = std::make_shared<vk::Format>(surfaceFormat.format);
     m_swapChainExtent = std::make_shared<vk::Extent2D>(extent);
 }
@@ -80,77 +106,95 @@ void SwapChain::createSwapChain(int window_width, int window_height, const Queue
 void SwapChain::createImageViews()
 {
     m_swapChainImageViews.resize(m_swapChainImages.size());
-    for (size_t i = 0; i < m_swapChainImages.size(); i++) {
+    for (size_t i = 0; i < m_swapChainImages.size(); ++i) {
         m_swapChainImageViews[i] = DeviceResourceUtils::createImageView(
-            m_device, m_swapChainImages[i], *m_swapChainImageFormat, 1, vk::ImageAspectFlagBits::eColor);
+            m_device, m_swapChainImages[i], *m_swapChainImageFormat, vk::ImageAspectFlagBits::eColor, 1);
     }
 }
 
-void SwapChain::createFramebuffers(std::shared_ptr<vk::RenderPass> renderPass,
-                                   std::shared_ptr<vk::ImageView> massImageView,
-                                   std::shared_ptr<vk::ImageView> depthImageView)
+void SwapChain::createFramebuffers(vk::RenderPass renderPass,
+                                   const std::vector<std::vector<vk::ImageView>> &attachmentsPerFrame)
 {
-    auto swapChainExtent = getExtent2D();
-    auto swapChainImageViews = getImageViews();
-    m_swapChainFramebuffers.resize(swapChainImageViews.size());
-    for (size_t i = 0; i < swapChainImageViews.size(); i++) {
-        std::array<vk::ImageView, 3> attachments = {
-            *massImageView,         // 对应 Index 0 (renderPass colorAttachment)
-            *depthImageView,        // 对应 Index 1 (renderPass depthAttachment)
-            *swapChainImageViews[i] // 对应 Index 2 (renderPass colorAttachmentResolve)
-        };
+    if (!renderPass || !m_swapChainExtent) {
+        throw std::runtime_error("cannot create swapchain framebuffers without a render pass and extent!");
+    }
+    if (attachmentsPerFrame.size() != m_swapChainImageViews.size()) {
+        throw std::runtime_error("framebuffer attachment list must have one entry per swapchain image!");
+    }
 
+    m_swapChainFramebuffers.clear();
+    m_swapChainFramebuffers.reserve(attachmentsPerFrame.size());
+    for (size_t i = 0; i < attachmentsPerFrame.size(); ++i) {
         vk::FramebufferCreateInfo framebufferInfo{};
-        framebufferInfo.renderPass = *renderPass;
-        framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-        framebufferInfo.pAttachments = attachments.data();
-        framebufferInfo.width = swapChainExtent->width;
-        framebufferInfo.height = swapChainExtent->height;
+        framebufferInfo.renderPass = renderPass;
+        framebufferInfo.attachmentCount = static_cast<uint32_t>(attachmentsPerFrame[i].size());
+        framebufferInfo.pAttachments = attachmentsPerFrame[i].data();
+        framebufferInfo.width = m_swapChainExtent->width;
+        framebufferInfo.height = m_swapChainExtent->height;
         framebufferInfo.layers = 1;
-        vk::Framebuffer swapChainFramebuffer{};
-        if (m_device->createFramebuffer(&framebufferInfo, nullptr, &swapChainFramebuffer) != vk::Result::eSuccess) {
-            throw std::runtime_error(" failed to create framebuffer!");
-        }
 
-        m_swapChainFramebuffers[i] = std::shared_ptr<vk::Framebuffer>(
-            new vk::Framebuffer(swapChainFramebuffer),
-            [renderPass, device = m_device, swapChainImageViews, swapChain = m_swapChainKHR](vk::Framebuffer *p) {
-                if (p && *p) {
-                    device->destroyFramebuffer(*p, nullptr);
-                }
-                delete p;
-            });
+        vk::Framebuffer framebuffer{};
+        check(m_device->createFramebuffer(&framebufferInfo, nullptr, &framebuffer), "vkCreateFramebuffer");
+
+        m_swapChainFramebuffers.emplace_back(new vk::Framebuffer(framebuffer),
+                                             [device = m_device, swapchain = m_swapChainKHR,
+                                              views = m_swapChainImageViews](vk::Framebuffer *framebufferPtr) {
+                                                 if (framebufferPtr != nullptr && *framebufferPtr) {
+                                                     device->destroyFramebuffer(*framebufferPtr, nullptr);
+                                                 }
+                                                 delete framebufferPtr;
+                                             });
     }
 }
 
-vk::Result SwapChain::acquireNextImage(std::shared_ptr<vk::Semaphore> imageAvailableSemaphore, uint32_t &imageIndex)
+void SwapChain::createFramebuffers(vk::RenderPass renderPass, const std::vector<vk::ImageView> &commonAttachments)
 {
-    // std:: cout << " before acquireNextImage\n";
-    auto start = std::chrono::steady_clock::now();
-    auto result = m_device->acquireNextImageKHR(*m_swapChainKHR, UINT64_MAX, *imageAvailableSemaphore, VK_NULL_HANDLE,
-                                                &imageIndex);
-    auto end = std::chrono::steady_clock::now();
-    const std::chrono::duration<double, std::milli> diff = end - start;
-    // std:: cout <<" after acquireNextImage cost:" << diff. count() << " ms, imageIndex:  " << imageIndex <<
-    // "\n";
+    std::vector<std::vector<vk::ImageView>> attachmentsPerFrame;
+    attachmentsPerFrame.reserve(m_swapChainImageViews.size());
+    for (const std::shared_ptr<vk::ImageView> &view : m_swapChainImageViews) {
+        std::vector<vk::ImageView> attachments = commonAttachments;
+        attachments.push_back(view ? *view : vk::ImageView{});
+        attachmentsPerFrame.push_back(std::move(attachments));
+    }
+    createFramebuffers(renderPass, attachmentsPerFrame);
+}
+
+vk::Result SwapChain::acquireNextImage(const std::shared_ptr<vk::Semaphore> &imageAvailableSemaphore,
+                                       uint32_t &imageIndex)
+{
+    if (!imageAvailableSemaphore) {
+        throw std::runtime_error("acquireNextImage requires a semaphore!");
+    }
+
+    // The out-parameter overload returns vk::Result without throwing, so a
+    // suboptimal swapchain can be reported to the caller and trigger a rebuild.
+    const vk::Result result = m_device->acquireNextImageKHR(*m_swapChainKHR,
+                                                            std::numeric_limits<uint64_t>::max(),
+                                                            *imageAvailableSemaphore, nullptr, &imageIndex);
+    if (!isPresentResult(result)) {
+        throw std::runtime_error(std::string("vkAcquireNextImageKHR failed: ") + vk::to_string(result));
+    }
     return result;
 }
 
-vk::Result SwapChain::queuePresent(std::shared_ptr<vk::Queue> queue, uint32_t imageIndex,
-                                   std::vector<vk::Semaphore> &waitSemaphore)
+vk::Result SwapChain::queuePresent(const std::shared_ptr<vk::Queue> &queue, uint32_t imageIndex,
+                                   std::vector<vk::Semaphore> &waitSemaphores)
 {
+    if (!queue) {
+        throw std::runtime_error("queuePresent requires a queue!");
+    }
+
     vk::PresentInfoKHR presentInfo{};
-    presentInfo.waitSemaphoreCount = waitSemaphore.size();
-    presentInfo.pWaitSemaphores = waitSemaphore.data();
-    vk::SwapchainKHR swapChains[] = {*m_swapChainKHR};
+    presentInfo.waitSemaphoreCount = static_cast<uint32_t>(waitSemaphores.size());
+    presentInfo.pWaitSemaphores = waitSemaphores.data();
+    const vk::SwapchainKHR swapchains[] = {*m_swapChainKHR};
     presentInfo.swapchainCount = 1;
-    presentInfo.pSwapchains = swapChains;
+    presentInfo.pSwapchains = swapchains;
     presentInfo.pImageIndices = &imageIndex;
-    // std:: cout << " before presentKHR\n";
-    auto start = std::chrono::steady_clock::now();
-    auto result = queue->presentKHR(&presentInfo);
-    auto end = std::chrono::steady_clock::now();
-    const std::chrono::duration<double, std::milli> diff = end - start;
-    // std:: cout <<" after presentKHR cost: " << diff. count() << " ms, result:  " << result <<"\n";
+
+    const vk::Result result = queue->presentKHR(&presentInfo);
+    if (!isPresentResult(result)) {
+        throw std::runtime_error(std::string("vkQueuePresentKHR failed: ") + vk::to_string(result));
+    }
     return result;
 }

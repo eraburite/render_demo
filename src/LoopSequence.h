@@ -1,56 +1,65 @@
 #pragma once
-#include <array>
-#include <cstdint>
+#include <functional>
 #include <memory>
-#include <unordered_map>
+#include <vector>
 #include <vulkan/vulkan.hpp>
-#include "typedefs.h"
 #include "CmdOpBase.h"
+#include "DescriptorBindingState.h"
+#include "IRenderPass.h"
+#include "SequenceBase.h"
 
-class RenderManager;
-
-class LoopSequence : public std::enable_shared_from_this<LoopSequence> {
+// Per-frame command sequence.  Owns per-frame command pool/buffer, semaphores,
+// fences, timestamp pool and the descriptor binding cache.  Supports optional
+// compute submission chained to the graphics submission via a semaphore.
+class LoopSequence : public SequenceBase {
 public:
-    LoopSequence(std::shared_ptr<RenderManager> renderMgr, const vk::PhysicalDeviceProperties &physicalDeviceProperties,
-                 uint32_t maxFrameInFlight);
+    LoopSequence(std::shared_ptr<RenderManager> renderMgr, uint32_t maxFrames);
     ~LoopSequence();
 
-    void eval(std::shared_ptr<CmdOpBase> op);
-    uint32_t getFrameInFlight();
+    [[nodiscard]] bool prepareFrame();
+
+    void beginRecording();
+    void endRecording();
+
+    void beginComputeRecording();
+    void endComputeRecording(bool chainToGraphics = true);
+    void recordComputeBarrier();
+
+    void recordDispatch(const std::shared_ptr<CmdOpBase> &op);
+    void record(const std::shared_ptr<CmdOpBase> &op);
+    void recordPass(const std::shared_ptr<IRenderPass> &renderPass, const std::function<void()> &body);
+
+    void submitFrame();
+    [[nodiscard]] bool presentFrame();
+
+    void InvalidateDescriptorBindings() { m_bindingState.Reset(); }
+    uint32_t getFrameInFlight() const { return m_currentFrame; }
 
 private:
+    void createCommandPools();
     void createCommandBuffers();
     void createSyncObjects();
-    void createCommandPools();
-    void createTimestampQueryPools(uint32_t totalTimestamps /* for each */);
-    void printShaderExecutionTime(uint32_t lastFrame);
-    bool isRecordDone(uint32_t currentFrame) const
-    {
-        return m_isRecordDone[currentFrame] != 0;
-    }
+    void waitIdle();
 
 private:
-    std::shared_ptr<RenderManager> m_renderMgr;
-    vk::PhysicalDeviceProperties m_physicalDeviceProperties;
-    std::shared_ptr<vk::Device> m_device = nullptr;
-    std::shared_ptr<vk::Queue> m_graphicsQueue = nullptr;
-    std::shared_ptr<vk::Queue> m_presentQueue = nullptr;
-    uint32_t m_queueIndex = -1;
-    // Resource Layout
-    // Don't let all frames share a single pool; instead, establish corresponding relationships:
-    // Frame 0 : CommandPool 0->CommandBuffers 0->QueryPool 0 // Process frames 0, 2, 4, ...
-    // Frame 1 : CommandPool 1->CommandBuffers 1->QueryPool 1 // Process frames 1, 3, 5, ...
-    std::vector<std::shared_ptr<vk::CommandPool>> m_commandPools{};
-    std::vector<std::shared_ptr<vk::QueryPool>> m_timestampQueryPools{};
-    // map: currentFrame->commandBuffers
-    std::unordered_map<uint32_t, std::vector<std::shared_ptr<vk::CommandBuffer>>> m_commandBuffers{};
-    uint32_t m_frameCounter = 0;
-    uint32_t m_currFrameIndex = 0; // Index inflight
-    uint32_t m_lastFrameIndex = 0;
-    const uint32_t m_maxFrameInFlight;
+    uint32_t m_maxFrames = 2;
+    uint32_t m_currentFrame = 0;
+    uint32_t m_imageIndex = 0;
+    uint32_t m_computeFamily = 0;
+    bool m_computeActive = false;
 
-    std::vector<int> m_isRecordDone = {};
-    std::vector<std::shared_ptr<vk::Semaphore>> m_imageAvailableSemaphores;
-    std::vector<std::shared_ptr<vk::Semaphore>> m_renderFinishedSemaphores;
+    std::shared_ptr<vk::Queue> m_computeQueue;
+
+    std::vector<std::shared_ptr<vk::CommandPool>> m_commandPools;      // graphics
+    std::vector<std::shared_ptr<vk::CommandBuffer>> m_commandBuffers;  // graphics, one per frame
+    std::vector<std::shared_ptr<vk::CommandPool>> m_computePools;
+    std::vector<std::shared_ptr<vk::CommandBuffer>> m_computeBuffers;
+
+    std::vector<std::shared_ptr<vk::Semaphore>> m_imageAvailable;
+    std::vector<std::shared_ptr<vk::Semaphore>> m_renderFinished;
+    std::vector<std::shared_ptr<vk::Semaphore>> m_computeFinished;
     std::vector<std::shared_ptr<vk::Fence>> m_inFlightFences;
+    std::vector<std::shared_ptr<vk::Fence>> m_computeFences;
+
+    DescriptorBindingState m_bindingState;
 };

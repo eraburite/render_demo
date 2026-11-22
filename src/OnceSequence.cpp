@@ -1,135 +1,179 @@
-#include "typedefs.h"
-#include "RenderManager.h"
-#include <cstdint>
+#include "CmdOpBase.h"
 #include "OnceSequence.h"
 
-OnceSequence::OnceSequence(std::shared_ptr<RenderManager> renderMgr) : m_renderMgr(renderMgr)
+#include "RenderManager.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <utility>
+
+namespace {
+
+void check(vk::Result result, const char *what)
 {
-    m_physicalDevice = renderMgr->getPhysicalDevice();
-    m_device = renderMgr->getLogicalDevice();
-    m_graphicsQueue = renderMgr->getGraphicsQueue();
-    m_queueIndex = renderMgr->getQueueFamilyIndices().graphicsFamily.value();
-    m_fence = m_device->createFence(vk::FenceCreateInfo());
+    if (result != vk::Result::eSuccess) {
+        throw std::runtime_error(std::string(what) + " failed: " + vk::to_string(result));
+    }
+}
+
+std::shared_ptr<vk::CommandBuffer> allocateCommandBuffer(const std::shared_ptr<vk::Device> &device,
+                                                         const std::shared_ptr<vk::CommandPool> &pool)
+{
+    vk::CommandBufferAllocateInfo allocInfo{};
+    allocInfo.commandPool = *pool;
+    allocInfo.level = vk::CommandBufferLevel::ePrimary;
+    allocInfo.commandBufferCount = 1;
+
+    vk::CommandBuffer commandBuffer{};
+    check(device->allocateCommandBuffers(&allocInfo, &commandBuffer), "vkAllocateCommandBuffers");
+    return std::shared_ptr<vk::CommandBuffer>(new vk::CommandBuffer(commandBuffer),
+                                              [device, pool](vk::CommandBuffer *handle) {
+                                                  if (handle != nullptr) {
+                                                      device->freeCommandBuffers(*pool, 1, handle);
+                                                      delete handle;
+                                                  }
+                                              });
+}
+
+vk::CommandBufferBeginInfo oneTimeBeginInfo()
+{
+    vk::CommandBufferBeginInfo beginInfo{};
+    beginInfo.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
+    return beginInfo;
+}
+
+} // namespace
+
+OnceSequence::OnceSequence(std::shared_ptr<RenderManager> renderMgr) : SequenceBase(std::move(renderMgr))
+{
     createCommandPool();
-    createTimestampQueryPool(2);
+    createFence();
 }
 
 OnceSequence::~OnceSequence()
 {
-    m_device->destroy(m_fence, (vk::Optional<const vk::AllocationCallbacks>)nullptr);
+    if (m_device) {
+        m_device->waitIdle();
+    }
+    m_fence.reset();
+    m_commandPool.reset();
 }
 
 void OnceSequence::createCommandPool()
 {
     vk::CommandPoolCreateInfo poolInfo{};
-    // poolInfo. flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
-    poolInfo.queueFamilyIndex = m_queueIndex;
-    vk::CommandPool commandPool;
-    if (m_device->createCommandPool(&poolInfo, nullptr, &commandPool) != vk::Result::eSuccess) {
-        throw std::runtime_error(" failed to create graphics command pool!");
-    }
+    poolInfo.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
+    poolInfo.queueFamilyIndex = m_graphicsFamily;
 
-    m_commandPool =
-        std::shared_ptr<vk::CommandPool>(new vk::CommandPool(commandPool), [device = m_device](vk::CommandPool *p) {
-            if (p && *p) {
-                device->destroyCommandPool(*p, nullptr);
-            }
-            delete p;
-        });
+    vk::CommandPool pool{};
+    check(m_device->createCommandPool(&poolInfo, nullptr, &pool), "vkCreateCommandPool");
+    m_commandPool = std::shared_ptr<vk::CommandPool>(new vk::CommandPool(pool),
+                                                     [device = m_device](vk::CommandPool *handle) {
+                                                         if (handle != nullptr && *handle) {
+                                                             device->destroyCommandPool(*handle);
+                                                         }
+                                                         delete handle;
+                                                     });
 }
 
-void OnceSequence::createTimestampQueryPool(uint32_t totalTimestamps)
+void OnceSequence::createFence()
 {
-    if (!m_physicalDevice) {
-        throw std::runtime_error(" Sequence physical device is null");
-    }
-    vk::PhysicalDeviceProperties physicalDeviceProperties = m_physicalDevice->getProperties();
-    if (physicalDeviceProperties.limits.timestampComputeAndGraphics) {
-        vk::QueryPoolCreateInfo queryPoolInfo;
-        queryPoolInfo.setQueryCount(totalTimestamps); // For example, it's set to 2 now,  one will store the start
-        queryPoolInfo.setQueryType(vk::QueryType::eTimestamp);
-        auto pool = m_device->createQueryPool(queryPoolInfo);
-        m_timestampQueryPool =
-            std::shared_ptr<vk::QueryPool>(new vk::QueryPool(pool), [device = m_device](vk::QueryPool *p) {
-                if (p && *p) {
-                    device->destroy(*p, nullptr);
-                }
-                delete p;
-            });
-        // std::cout << " Query pool for timestamps created\n";
-    } else {
-        throw std::runtime_error(" Device does not support timestamps");
-    }
+    vk::FenceCreateInfo fenceInfo{};
+    vk::Fence fence{};
+    check(m_device->createFence(&fenceInfo, nullptr, &fence), "vkCreateFence");
+    m_fence = std::shared_ptr<vk::Fence>(new vk::Fence(fence), [device = m_device](vk::Fence *handle) {
+        if (handle != nullptr && *handle) {
+            device->destroyFence(*handle);
+        }
+        delete handle;
+    });
 }
 
-void OnceSequence::printShaderExecutionTime()
+void OnceSequence::emitToDevice(const std::shared_ptr<ShaderAssetGroup> &asset)
 {
-    if (m_timestampQueryPool) {
-        uint64_t results[2];
-
-        auto result =
-            m_device->getQueryPoolResults(*m_timestampQueryPool, 0, 2, sizeof(results), results, sizeof(uint64_t),
-                                          vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWait);
-
-        vk::PhysicalDeviceProperties physicalDeviceProperties = m_physicalDevice->getProperties();
-        float timestampPeriod = physicalDeviceProperties.limits.timestampPeriod;
-        double duration_ms = (results[1] - results[0]) * (double)timestampPeriod / 1e6;
-        std::cout << " Shader:: upload data total cost: " << duration_ms << " ms\n";
-    }
-}
-
-void OnceSequence::eval(std::shared_ptr<CmdOpBase> op)
-{
-    // alloc command buffer
-    vk::CommandBuffer commandBuffer{};
-    vk::CommandBufferAllocateInfo allocInfo{};
-    allocInfo.commandPool = *m_commandPool;
-    allocInfo.level = vk::CommandBufferLevel::ePrimary;
-    allocInfo.commandBufferCount = 1;
-    if (m_device->allocateCommandBuffers(&allocInfo, &commandBuffer) != vk::Result::eSuccess) {
-        throw std::runtime_error("failed to allocate command buffers!");
+    if (!asset) {
+        return;
     }
 
-    // begin record
-    // NOTE: Silently updating textures in the background is a classic Vulka n performance optimization scenario
-    // Core strategy: pre-recording + vk::CommandBufferUsageFlagBits::eSimultaneousUse
-    // Allocate a dedicated Transfer Queue (if the GPU supports it, specifically for background data transfer, withol
-    // interfering with the rendering stream)
-    vk::CommandBufferBeginInfo beginInfo{};
-    commandBuffer.begin(beginInfo);
+    std::shared_ptr<vk::CommandBuffer> commandBuffer = allocateCommandBuffer(m_device, m_commandPool);
+    commandBuffer->begin(oneTimeBeginInfo());
+    asset->SyncDataToDevice(*commandBuffer, 0);
+    commandBuffer->end();
 
-    // Reset the query pool after command-> begin(must be executed during recording).
-    if (m_timestampQueryPool) {
-        commandBuffer.resetQueryPool(*m_timestampQueryPool, 0, 2);
-    }
-    // Record command start time
-    if (m_timestampQueryPool) {
-        commandBuffer.writeTimestamp(vk::PipelineStageFlagBits::eVertexInput, *m_timestampQueryPool, 0);
-    }
-
-    // record op,  such as  'Cmd0pSyncDevice',  ' Copy
-    op->Record(commandBuffer, 0);
-
-    // Record command end time
-    if (m_timestampQueryPool) {
-        commandBuffer.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, *m_timestampQueryPool, 1);
-    }
-
-    // end record
-    commandBuffer.end();
-
-    // submit
     vk::SubmitInfo submitInfo{};
     submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &commandBuffer;
-    auto result = m_graphicsQueue->submit(1, &submitInfo, m_fence);
+    submitInfo.pCommandBuffers = &*commandBuffer;
+    check(m_graphicsQueue->submit(1, &submitInfo, *m_fence), "vkQueueSubmit (upload)");
+    check(m_device->waitForFences(1, &*m_fence, VK_TRUE, std::numeric_limits<uint64_t>::max()),
+          "vkWaitForFences (upload)");
+    check(m_device->resetFences(1, &*m_fence), "vkResetFences (upload)");
 
-    //  Waiting for finish
-    uint64_t waitFor = UINT64_MAX;
-    result = m_device->waitForFences(1, &m_fence, VK_TRUE, waitFor);
-    m_device->resetFences({m_fence});
+    // Command buffer is one-shot; return it to the pool before releasing staging.
+    commandBuffer.reset();
+    asset->OnUploadCompleted();
+}
 
-    // At this point, the GPU has already written the timestamp to the Query Pool,// and the CPU can safely read it.
-    printShaderExecutionTime();
-    m_device->freeCommandBuffers(*m_commandPool, 1, &commandBuffer);
+void OnceSequence::submit(const std::shared_ptr<CmdOpBase> &op, const std::shared_ptr<ShaderAssetGroup> &asset)
+{
+    if (!op) {
+        return;
+    }
+
+    std::shared_ptr<vk::CommandBuffer> commandBuffer = allocateCommandBuffer(m_device, m_commandPool);
+    commandBuffer->begin(oneTimeBeginInfo());
+    DescriptorBindingState bindingState;
+    op->Record(*commandBuffer, 0, bindingState);
+    commandBuffer->end();
+
+    vk::SubmitInfo submitInfo{};
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &*commandBuffer;
+    check(m_graphicsQueue->submit(1, &submitInfo, *m_fence), "vkQueueSubmit (once)");
+    check(m_device->waitForFences(1, &*m_fence, VK_TRUE, std::numeric_limits<uint64_t>::max()),
+          "vkWaitForFences (once)");
+    check(m_device->resetFences(1, &*m_fence), "vkResetFences (once)");
+
+    commandBuffer.reset();
+    if (asset) {
+        asset->OnUploadCompleted();
+    }
+}
+
+std::vector<std::byte> OnceSequence::ReadBack(const std::shared_ptr<ShaderAssetGroup> &asset, ResourceKey key,
+                                              size_t byteSize)
+{
+    if (!asset) {
+        return {};
+    }
+
+    std::shared_ptr<vk::CommandBuffer> commandBuffer = allocateCommandBuffer(m_device, m_commandPool);
+    commandBuffer->begin(oneTimeBeginInfo());
+    asset->RecordDescriptorResourceReadback(key, *commandBuffer, key.currentFrame());
+    commandBuffer->end();
+
+    vk::SubmitInfo submitInfo{};
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &*commandBuffer;
+    check(m_graphicsQueue->submit(1, &submitInfo, *m_fence), "vkQueueSubmit (readback)");
+    check(m_device->waitForFences(1, &*m_fence, VK_TRUE, std::numeric_limits<uint64_t>::max()),
+          "vkWaitForFences (readback)");
+    check(m_device->resetFences(1, &*m_fence), "vkResetFences (readback)");
+
+    commandBuffer.reset();
+    std::vector<std::byte> result = asset->ReadStagedDescriptorResource(key);
+    if (byteSize > 0 && result.size() > byteSize) {
+        result.resize(byteSize);
+    }
+    asset->OnUploadCompleted();
+    return result;
+}
+
+std::vector<std::byte> OnceSequence::ReadBack(const std::shared_ptr<ShaderAssetGroup> &asset, ResourceId id,
+                                              size_t byteSize)
+{
+    return ReadBack(asset, ResourceKey::make_key(id, 0), byteSize);
 }

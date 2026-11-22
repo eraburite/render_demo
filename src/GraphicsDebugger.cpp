@@ -1,39 +1,43 @@
 #include "GraphicsDebugger.h"
+
+#include <algorithm>
 #include <iostream>
+#include <set>
+#include <stdexcept>
+#include <string>
 #include <unordered_set>
 
 namespace {
-static const std::vector<const char *> validationLayers = {
+const std::vector<const char *> validationLayers = {
     "VK_LAYER_KHRONOS_validation",
 };
 
-static const std::vector<const char *> validationExtensions = {
+const std::vector<const char *> validationExtensions = {
     VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
     VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME,
 };
 
-// configure GPU Validation Features.
-static const VkValidationFeatureEnableEXT validationFeatureEnables[] = {
-    VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT, VK_VALIDATION_FEATURE_ENABLE_BEST_PRACTICES_EXT,
-    VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT};
+const VkValidationFeatureEnableEXT validationFeatureEnables[] = {
+    VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT,
+};
 
-// debugger
 VkResult CreateDebugUtilsMessengerEXT(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT *pCreateInfo,
                                       const VkAllocationCallbacks *pAllocator,
                                       VkDebugUtilsMessengerEXT *pDebugMessenger)
 {
-    auto func = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
+    auto func = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
+        vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT"));
     if (func != nullptr) {
         return func(instance, pCreateInfo, pAllocator, pDebugMessenger);
-    } else {
-        return VK_ERROR_EXTENSION_NOT_PRESENT;
     }
+    return VK_ERROR_EXTENSION_NOT_PRESENT;
 }
 
 void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger,
                                    const VkAllocationCallbacks *pAllocator)
 {
-    auto func = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
+    auto func = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
+        vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT"));
     if (func != nullptr) {
         func(instance, debugMessenger, pAllocator);
     }
@@ -43,6 +47,9 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBits
                                              VkDebugUtilsMessageTypeFlagsEXT messageType,
                                              const VkDebugUtilsMessengerCallbackDataEXT *pCallbackData, void *pUserData)
 {
+    (void)messageSeverity;
+    (void)messageType;
+    (void)pUserData;
     std::cerr << " validation layer: " << pCallbackData->pMessage << std::endl;
     return VK_FALSE;
 }
@@ -54,18 +61,17 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT &create
     createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT
                                  | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT
                                  | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-
     createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT
                              | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
                              | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-
     createInfo.pfnUserCallback = debugCallback;
-    createInfo.pNext = nullptr; // as the last in pNext chain
+    createInfo.pNext = nullptr; // keep this the last node in the pNext chain
 }
-}; // end namespace
+} // namespace
 
-GraphicsDebugger::GraphicsDebugger() {}
-GraphicsDebugger::~GraphicsDebugger() {}
+GraphicsDebugger::GraphicsDebugger() = default;
+
+GraphicsDebugger::~GraphicsDebugger() = default;
 
 std::vector<const char *> GraphicsDebugger::getRequiredLayerNames() const
 {
@@ -79,20 +85,14 @@ std::vector<const char *> GraphicsDebugger::getRequiredExtensions() const
 
 bool GraphicsDebugger::checkValidationLayerSupport() const
 {
-    // uint32 t layerCount;
-    // vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
-    // std:: vector<VkLayerProperties> availableLayers(layerCount);
-    // vkEnumerateInstanceLayerProperties(&layerCount, availableLayers. data());
-    std::vector<vk::LayerProperties> availableLayerProperties = vk::enumerateInstanceLayerProperties();
+    const std::vector<vk::LayerProperties> availableLayers = vk::enumerateInstanceLayerProperties();
     std::unordered_set<std::string> availableLayerSet;
-    for (const vk::LayerProperties &layerProperties : availableLayerProperties) {
-        std::string layerName(layerProperties.layerName.data());
-        std::cout << "layerName: " << layerName << "\n";
-        availableLayerSet.insert(layerName);
+    for (const vk::LayerProperties &layer : availableLayers) {
+        availableLayerSet.insert(layer.layerName.data());
     }
 
     for (const char *layerName : validationLayers) {
-        if (availableLayerSet.find(layerName) == availableLayerSet.end()) {
+        if (availableLayerSet.count(layerName) == 0) {
             return false;
         }
         if (!checkValidationFeatureSupport(layerName)) {
@@ -108,48 +108,57 @@ bool GraphicsDebugger::checkValidationFeatureSupport(const char *layerName) cons
         return true;
     }
 
-    // uint32 t extensionCount = 0;
-    // vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, nullptr);
-    // std:: vector<VkExtensionProperties> availableExtensions(extensionCount);
-    // vkEnumerateInstanceExtensionProperties(layerName, &extensionCount,  availableExtensions. data( ));
-    std::vector<vk::ExtensionProperties> extensionProperties =
+    const std::vector<vk::ExtensionProperties> availableExtensions =
         vk::enumerateInstanceExtensionProperties(std::string(layerName));
-    std::unordered_set<std::string> availableExtSet;
-    for (const vk::ExtensionProperties &ext : extensionProperties) {
-        std::cout << " ext.extensionName: " << ext.extensionName << "\n";
-        availableExtSet.insert(ext.extensionName);
+    std::set<std::string> availableExtensionSet;
+    for (const vk::ExtensionProperties &extension : availableExtensions) {
+        availableExtensionSet.insert(extension.extensionName.data());
     }
 
     return std::all_of(validationExtensions.begin(), validationExtensions.end(),
-                       [&availableExtSet](const char *extName) { return availableExtSet.count(extName) > 0; });
+                       [&availableExtensionSet](const char *name) {
+                           return availableExtensionSet.count(name) > 0;
+                       });
 }
 
 VkValidationFeaturesEXT &GraphicsDebugger::getValidationFeatures()
 {
     populateDebugMessengerCreateInfo(m_debugCreateInfo);
+    m_validationFeatures = {};
     m_validationFeatures.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT;
-    m_validationFeatures.enabledValidationFeatureCount = 2;
+    m_validationFeatures.enabledValidationFeatureCount =
+        static_cast<uint32_t>(std::size(validationFeatureEnables));
     m_validationFeatures.pEnabledValidationFeatures = validationFeatureEnables;
-    // setting the pNext chain, pointing to m debugCreateInfo
+    // The messenger create info is kept alive by this object and is the tail
+    // of the chain, as required by the validation feature specification.
     m_validationFeatures.pNext = &m_debugCreateInfo;
     return m_validationFeatures;
 }
 
-void GraphicsDebugger::setupDebugMessenger(std::shared_ptr<vk::Instance> instance)
+void GraphicsDebugger::setupDebugMessenger(const std::shared_ptr<vk::Instance> &instance)
 {
-    VkDebugUtilsMessengerCreateInfoEXT createInfo;
-    populateDebugMessengerCreateInfo(createInfo);
-    VkDebugUtilsMessengerEXT debugMessenger{};
-
-    if (CreateDebugUtilsMessengerEXT(*instance, &createInfo, nullptr, &debugMessenger) != VK_SUCCESS) {
-        throw std::runtime_error(" failed to set up debug messenger!");
+    if (!instance) {
+        throw std::runtime_error("cannot set up debug messenger without a valid instance!");
     }
 
+    VkDebugUtilsMessengerCreateInfoEXT createInfo{};
+    populateDebugMessengerCreateInfo(createInfo);
+
+    VkDebugUtilsMessengerEXT debugMessenger{};
+    const VkResult result =
+        CreateDebugUtilsMessengerEXT(static_cast<VkInstance>(*instance), &createInfo, nullptr, &debugMessenger);
+    if (result != VK_SUCCESS) {
+        throw std::runtime_error("failed to set up debug messenger!");
+    }
+
+    // The deleter captures a (possibly non-owning) view of the instance so the
+    // messenger is always destroyed before the instance itself.
     m_debugMessenger = std::shared_ptr<VkDebugUtilsMessengerEXT>(
-        new VkDebugUtilsMessengerEXT(debugMessenger), [instance](VkDebugUtilsMessengerEXT *p) {
-            if (p && *p) {
-                DestroyDebugUtilsMessengerEXT(*instance, *p, nullptr);
+        new VkDebugUtilsMessengerEXT(debugMessenger),
+        [instance](VkDebugUtilsMessengerEXT *messenger) {
+            if (messenger != nullptr && *messenger != VK_NULL_HANDLE) {
+                DestroyDebugUtilsMessengerEXT(static_cast<VkInstance>(*instance), *messenger, nullptr);
             }
-            delete p;
+            delete messenger;
         });
 }

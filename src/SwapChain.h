@@ -1,45 +1,45 @@
 #pragma once
-#include "typedefs.h"
 #include <memory>
+#include <vector>
+#include <vulkan/vulkan.hpp>
+#include "typedefs.h"
 
 class IUnifiedWindow;
 
+// Owns the swapchain, its images and image views.  Framebuffer construction is
+// kept generic: the render pass decides the attachment set.
 class SwapChain {
 public:
     SwapChain(std::shared_ptr<vk::Device> device, IUnifiedWindow &window, const QueueFamilyIndices &queueFamilyIndices,
-              const SwapChainSupportDetails &wapChainSupport);
+              const SwapChainSupportDetails &swapChainSupport, const std::shared_ptr<vk::SurfaceKHR> &surface);
     ~SwapChain();
 
-    std::shared_ptr<vk::Extent2D> getExtent2D() const
-    {
-        return m_swapChainExtent;
-    }
-
-    std::vector<std::shared_ptr<vk::ImageView>> getImageViews() const
-    {
-        return m_swapChainImageViews;
-    }
-
-    std::shared_ptr<vk::Format> getImageFormat() const
-    {
-        return m_swapChainImageFormat;
-    }
-
+    const std::shared_ptr<vk::Extent2D> &getExtent2D() const { return m_swapChainExtent; }
+    const std::vector<std::shared_ptr<vk::ImageView>> &getImageViews() const { return m_swapChainImageViews; }
+    const std::shared_ptr<vk::Format> &getImageFormat() const { return m_swapChainImageFormat; }
     std::shared_ptr<vk::Framebuffer> getFramebuffer(uint32_t imageIndex) const
     {
-        return m_swapChainFramebuffers[imageIndex];
+        return imageIndex < m_swapChainFramebuffers.size() ? m_swapChainFramebuffers[imageIndex] : nullptr;
     }
+    vk::SwapchainKHR handle() const { return m_swapChainKHR ? *m_swapChainKHR : vk::SwapchainKHR{}; }
 
-    void createFramebuffers(std::shared_ptr<vk::RenderPass> renderPass, std::shared_ptr<vk::ImageView> msaaImageView,
-                            std::shared_ptr<vk::ImageView> depthImageView);
-    vk::Result acquireNextImage(std::shared_ptr<vk::Semaphore> imageAvailableSemaphore, uint32_t &imageIndex);
-    vk::Result queuePresent(std::shared_ptr<vk::Queue> queue, uint32_t imageIndex,
-                            std::vector<vk::Semaphore> &waitSemaphore);
+    // Build one framebuffer per swapchain image.  Each entry in
+    // attachmentsPerFrame is the complete attachment list for that image
+    // (including the swapchain image view).
+    void createFramebuffers(vk::RenderPass renderPass,
+                            const std::vector<std::vector<vk::ImageView>> &attachmentsPerFrame);
+    // Convenience overload: commonAttachments are followed by the matching
+    // swapchain image view for each frame.
+    void createFramebuffers(vk::RenderPass renderPass, const std::vector<vk::ImageView> &commonAttachments);
+
+    vk::Result acquireNextImage(const std::shared_ptr<vk::Semaphore> &imageAvailableSemaphore, uint32_t &imageIndex);
+    vk::Result queuePresent(const std::shared_ptr<vk::Queue> &queue, uint32_t imageIndex,
+                            std::vector<vk::Semaphore> &waitSemaphores);
 
 private:
-    void create(int window_width, int window_height, const QueueFamilyIndices &queueFamilyIndices,
+    void create(int windowWidth, int windowHeight, const QueueFamilyIndices &queueFamilyIndices,
                 const SwapChainSupportDetails &swapChainSupport);
-    void createSwapChain(int window_width, int window_height, const QueueFamilyIndices &queueFamilyIndices,
+    void createSwapChain(int windowWidth, int windowHeight, const QueueFamilyIndices &queueFamilyIndices,
                          const SwapChainSupportDetails &swapChainSupport);
     void createImageViews();
 
@@ -52,5 +52,4 @@ private:
     std::shared_ptr<vk::Extent2D> m_swapChainExtent;
     std::vector<std::shared_ptr<vk::ImageView>> m_swapChainImageViews;
     std::vector<std::shared_ptr<vk::Framebuffer>> m_swapChainFramebuffers;
-    // std:: unordered   map< FramebufferKey, vk:: Framebuffer, KeyHash> m_ framebufferCache;//TODO hash cached
 };

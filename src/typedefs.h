@@ -1,15 +1,25 @@
 #pragma once
 #include <chrono>
 #include <cstdint>
-#include <optional>
+#include <functional>
 #include <iostream>
+#include <limits>
+#include <memory>
+#include <optional>
+#include <string>
+#include <unordered_map>
+#include <variant>
+#include <vector>
 #include <vulkan/vulkan.hpp>
+
+inline constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
 
 struct QueueFamilyIndices {
     std::optional<uint32_t> graphicsFamily;
     std::optional<uint32_t> presentFamily;
+    std::optional<uint32_t> computeFamily;
 
-    bool isComplete()
+    bool isComplete() const
     {
         return graphicsFamily.has_value() && presentFamily.has_value();
     }
@@ -27,22 +37,20 @@ struct SwapChainSupportDetails {
 
     vk::SurfaceFormatKHR chooseSwapSurfaceFormat() const
     {
-        const std::vector<vk::SurfaceFormatKHR> &availableFormats = formats;
-        for (const auto &availableFormat : availableFormats) {
+        for (const auto &availableFormat : formats) {
             if (availableFormat.format == vk::Format::eB8G8R8A8Srgb
                 && availableFormat.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
                 return availableFormat;
             }
         }
-        return availableFormats[0];
+        return formats[0];
     }
 
     vk::PresentModeKHR chooseSwapPresentMode() const
     {
-        const std::vector<vk::PresentModeKHR> &availablePresentModes = presentModes;
-        for (const auto &availablePresentMode : availablePresentModes) {
-            if (availablePresentMode == vk::PresentModeKHR::eMailbox) {
-                return availablePresentMode;
+        for (const auto &mode : presentModes) {
+            if (mode == vk::PresentModeKHR::eMailbox) {
+                return mode;
             }
         }
         return vk::PresentModeKHR::eImmediate;
@@ -52,36 +60,34 @@ struct SwapChainSupportDetails {
     {
         if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
             return capabilities.currentExtent;
-        } else {
-            vk::Extent2D actualExtent = {static_cast<uint32_t>(window_width), static_cast<uint32_t>(window_height)};
-
-            actualExtent.width =
-                std::clamp(actualExtent.width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
-            actualExtent.height =
-                std::clamp(actualExtent.height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
-            return actualExtent;
         }
+        vk::Extent2D actualExtent = {static_cast<uint32_t>(window_width), static_cast<uint32_t>(window_height)};
+        actualExtent.width =
+            std::clamp(actualExtent.width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
+        actualExtent.height =
+            std::clamp(actualExtent.height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
+        return actualExtent;
     }
 };
 
 struct DeviceRequirement {
     bool graphics = true;
     bool present = true;
+    bool compute = false;
     std::vector<const char *> extensions;
 };
 
-// NOTE: for Layered Descriptor Set Design
 enum class UpdateFrequency {
-    eStatic,       // Only once (e. g., vertex mesh, global texture)
-    eEnvironment,  // Occasional updates (such as those related to SwapChain after resizing events)
-    eEachFrame,    // Updated every frame (e. g., UniformBuffer)
-    eEachInstance, // Model Matrices or Instance Index
+    eStatic,
+    eEnvironment,
+    eEachFrame,
+    eEachInstance,
 };
 
 enum class MemoryTypes {
-    eDevice = 0,        ///< Type is device memory, source and destination
-    eHost = 1,          ///< Type is host memory, source and destination
-    eDeviceAndHost = 2, ///< Type is host-visible and host-coherent device memory
+    eDevice = 0,
+    eHost = 1,
+    eDeviceAndHost = 2,
 };
 
 enum class DataTypes {
@@ -98,19 +104,17 @@ enum class DataTypes {
 };
 
 enum class ResourceTypes {
-    // Memory0bJecıs type
-    // Category Bits
-    eCategoryInput = 0x100,      // 0001 0000 0000
-    eCategoryDescriptor = 0x200, // 0010 0000 0000
-    eCategoryConstants = 0x400,  // 0100 0000 0000
+    eCategoryInput = 0x100,
+    eCategoryDescriptor = 0x200,
+    eCategoryConstants = 0x400,
 
     eUnknow = -1,
     eVertex = 0 | eCategoryInput,
     eIndex = 1 | eCategoryInput,
     eUniform = 2 | eCategoryDescriptor,
-    eStorage = 3 | eCategoryDescriptor, // storage buffer, may define storage image if need
+    eStorage = 3 | eCategoryDescriptor,
     eTexture = 4 | eCategoryDescriptor,
-    ePushConst = 5 | eCategoryConstants, // pushConstants, may define specJalizationConstants 11 need
+    ePushConst = 5 | eCategoryConstants,
 };
 
 template <class T>
@@ -123,27 +127,23 @@ inline void hash_combine(std::size_t &seed, const T &v)
 class ResourceId {
 public:
     ResourceId() = default;
-    ResourceId(uint32_t setId, uint32_t binding, uint32_t location = 0) : m_setId(setId), m_binding(binding) {}
+    ResourceId(uint32_t setId, uint32_t binding, uint32_t location = 0) :
+        m_setId(setId), m_binding(binding), m_location(location)
+    {
+    }
 
     void SetResourceId(uint32_t setId, uint32_t binding)
     {
         m_setId = setId;
         m_binding = binding;
     }
-
-    auto getSetId() const
-    {
-        return m_setId;
-    }
-
-    auto getBindingId() const
-    {
-        return m_binding;
-    }
+    auto getSetId() const { return m_setId; }
+    auto getBindingId() const { return m_binding; }
+    auto getLocation() const { return m_location; }
 
     bool operator==(const ResourceId &other) const
     {
-        return m_setId == other.m_setId && m_binding == other.m_binding;
+        return m_setId == other.m_setId && m_binding == other.m_binding && m_location == other.m_location;
     }
 
     static std::size_t hash(const ResourceId &id)
@@ -151,12 +151,14 @@ public:
         std::size_t seed = 0;
         hash_combine(seed, id.m_setId);
         hash_combine(seed, id.m_binding);
+        hash_combine(seed, id.m_location);
         return seed;
     }
 
 private:
     uint32_t m_setId = 0;
     uint32_t m_binding = 0;
+    uint32_t m_location = 0;
 };
 
 class ResourceKey {
@@ -170,17 +172,13 @@ public:
     {
         return m_resourceId == other.m_resourceId && m_currentFrame == other.m_currentFrame;
     }
-
-    auto getResourceId() const
-    {
-        return m_resourceId;
-    }
+    auto getResourceId() const { return m_resourceId; }
+    uint32_t currentFrame() const { return m_currentFrame; }
 
     static ResourceKey make_key(ResourceId resourceId, uint32_t currentFrame)
     {
         return ResourceKey(resourceId, currentFrame);
     }
-
     static ResourceKey make_key(ResourceId resourceId)
     {
         return ResourceKey(resourceId, 0);
@@ -194,11 +192,7 @@ private:
 
 class ResourceIdHasher {
 public:
-    std::size_t operator()(const ResourceId &rId) const noexcept
-    {
-        std::size_t seed = ResourceId::hash(rId);
-        return seed;
-    }
+    std::size_t operator()(const ResourceId &rId) const noexcept { return ResourceId::hash(rId); }
 };
 
 class ResourceKeyHasher {
@@ -212,37 +206,42 @@ public:
 };
 
 struct GBufferSpec {
-    uint32_t elementCount;
-    uint32_t elementSize; // sizeof
-    DataTypes elementType;
-    size_t getTotalByte() const
-    {
-        return elementCount * elementSize;
-    }
+    uint32_t elementCount = 1;
+    uint32_t elementSize = 1;
+    DataTypes elementType = DataTypes::eCustom;
+    size_t getTotalByte() const { return elementCount * elementSize; }
 };
 
 struct TextureImageSpec {
-    uint32_t width;         // image widrh
-    uint32_t height;        // image height
-    uint32_t channels;      // rgba
-    uint32_t miplevels = 1; // as default
-    size_t getTotalPixels() const
-    {
-        return width * height * channels;
-    }
+    uint32_t width = 1;
+    uint32_t height = 1;
+    uint32_t channels = 4;
+    uint32_t miplevels = 1;
+    size_t getTotalPixels() const { return width * height * channels; }
 };
 
 inline constexpr bool IsInputResource(ResourceTypes type)
 {
     return (static_cast<uint32_t>(type) & static_cast<uint32_t>(ResourceTypes::eCategoryInput)) != 0;
 }
-
 inline constexpr bool IsDescriptorResource(ResourceTypes type)
 {
     return (static_cast<uint32_t>(type) & static_cast<uint32_t>(ResourceTypes::eCategoryDescriptor)) != 0;
 }
-
 inline constexpr bool IsConstantsResource(ResourceTypes type)
 {
     return (static_cast<uint32_t>(type) & static_cast<uint32_t>(ResourceTypes::eCategoryConstants)) != 0;
 }
+
+struct DispatchSize {
+    uint32_t groupCountX = 1;
+    uint32_t groupCountY = 1;
+    uint32_t groupCountZ = 1;
+
+    static DispatchSize FromInvocationCount(uint32_t invocationCount, uint32_t localSizeX)
+    {
+        DispatchSize size;
+        size.groupCountX = (invocationCount + localSizeX - 1) / localSizeX;
+        return size;
+    }
+};

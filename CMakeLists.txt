@@ -1,56 +1,49 @@
 cmake_minimum_required(VERSION 3.22)
+project(render_demo LANGUAGES CXX)
 
-project(render_demo)
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+endif()
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Vulkan REQUIRED)
-
 if(Vulkan_FOUND AND NOT TARGET Vulkan::Headers)
     add_library(Vulkan::Headers INTERFACE IMPORTED)
     set_target_properties(Vulkan::Headers PROPERTIES
         INTERFACE_INCLUDE_DIRECTORIES "${Vulkan_INCLUDE_DIRS}")
 endif()
 
-
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
 include(vulkan_shader_compiler)
 
-# Compiling shader
-# To add more shaders simply copy the vulkan_compile_shader command and replace it with your new shader
-vulkan_compile_shader(
-    INFILE shader/lighting.vert
-    OUTFILE shader/lighting_vert.hpp
-    NAMESPACE "shader")
-vulkan_compile_shader(
-    INFILE shader/lighting.frag
-    OUTFILE shader/lighting_frag.hpp
-    NAMESPACE "shader")
+# Generated configuration: absolute path to the repository root.
+set(PROJECT_ROOT_PATH "${CMAKE_CURRENT_SOURCE_DIR}")
+configure_file(configuration/root_directory.h.in ${CMAKE_CURRENT_BINARY_DIR}/generated/root_directory.h @ONLY)
 
-
-# Then add it to the library, so you can access it later in your code
-add_library(shader INTERFACE 
-    shader/lighting_vert.hpp
-    shader/lighting_frag.hpp)
-
-target_include_directories(shader INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
-
-file(GLOB HEADFILES "src/*.h")
-file(GLOB SRCFILES "src/*.cpp")
-
-# Setting up main example code
-add_executable(${CMAKE_PROJECT_NAME}
-    external/glm/include/glm/detail/glm.cpp
-    ${SRCFILES}
-    ${HEADFILES}
+# globalConfig: the single interface target providing include dirs and link libs.
+add_library(globalConfig INTERFACE)
+target_include_directories(globalConfig INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/examples/common>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/external>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/external/glm/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/external/glfw/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/generated>
 )
+target_link_directories(globalConfig INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/external/glfw/lib)
+target_link_libraries(globalConfig INTERFACE glfw3 Vulkan::Vulkan)
 
-set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES
-    CXX_STANDARD 20
-    CXX_STANDARD_REQUIRED ON
-    CXX_EXTENSIONS OFF
-)
+# example_common: compiled once (GLFWwindow / TextureLoader / glm.cpp)
+file(GLOB EXAMPLE_COMMON_SRC "examples/common/*.cpp")
+add_library(example_common STATIC ${EXAMPLE_COMMON_SRC})
+target_link_libraries(example_common PUBLIC globalConfig)
 
-target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/external)
-target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/external/glm/include)
-target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/external/glfw/include)
-target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/external/glfw/lib)
-target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE glfw3 shader Vulkan::Vulkan)
+# myEngine: the core static library.
+file(GLOB ENGINE_SRC "src/*.cpp")
+add_library(myEngine STATIC ${ENGINE_SRC})
+target_link_libraries(myEngine PUBLIC globalConfig)
+
+add_subdirectory(examples)

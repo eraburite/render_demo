@@ -1,98 +1,113 @@
 #pragma once
 #include <memory>
+#include <string>
 #include <unordered_map>
+#include <vector>
 #include <vulkan/vulkan.hpp>
-#include "typedefs.h"
+#include "DeviceMemoryAllocator.h"
+#include "IDescriptorSetDetail.h"
+#include "IRenderPass.h"
 #include "SwapChain.h"
-#include "RenderPass.h"
-#include "GraphicsPipeline.h"
-#include "MemoryObject.h"
-#include "VertexInputStructs.h"
-#include "DescriptorStructs.h"
+#include "IVertexInputStateGroup.h"
+#include "typedefs.h"
 
-class ImageResources;
 class IUnifiedWindow;
+class EventManager;
+class GraphicsDebugger;
+class SwapChain;
 class OnceSequence;
 class LoopSequence;
-class GraphicsDebugger;
+class ShaderAssetGroup;
+class GraphicsPipeline;
+class ComputePipeline;
+class IAttachmentDetail;
 
+// The single public entry point.  Two-phase construction: the constructor only
+// wires events; initVulkan() runs inside Create() after the control block exists
+// so shared_from_this() is valid.
 class RenderManager : public std::enable_shared_from_this<RenderManager> {
 public:
-    RenderManager(IUnifiedWindow &window, uint32_t maxFrameInFlight);
+    static std::shared_ptr<RenderManager> Create(IUnifiedWindow &window, uint32_t maxFramesInFlight);
     ~RenderManager();
 
-    std::shared_ptr<vk::PhysicalDevice> getPhysicalDevice() const
-    {
-        return m_physicalDevice;
-    }
+    RenderManager(const RenderManager &) = delete;
+    RenderManager &operator=(const RenderManager &) = delete;
 
-    std::shared_ptr<vk::Device> getLogicalDevice() const
-    {
-        return m_device;
-    }
-
-    std::shared_ptr<vk::Queue> getGraphicsQueue() const
-    {
-        return m_graphicsQueue;
-    }
-
-    std::shared_ptr<vk::Queue> getPresentQueue() const
-    {
-        return m_presentQueue;
-    }
-
-    QueueFamilyIndices getQueueFamilyIndices() const
-    {
-        return m_queueFamilyIndices;
-    }
-
-    std::shared_ptr<SwapChain> getSwapChain() const
-    {
-        return m_swapChain;
-    }
-
-    bool checkAndResetResize();
-    void recreateSwapChain();
-
-    std::shared_ptr<GraphicsPipeline>
-    CreatePipeline(const VertexInputParam &inputLayout, const PipelineDescriptorParams &descLayout,
-                   const std::unordered_map<std::string, std::vector<uint32_t>> &shadersSpirv);
+    // Factories
+    std::shared_ptr<ShaderAssetGroup>
+    CreateShaderAssetGroup(std::shared_ptr<const IVertexInputStateGroup> vertexInput,
+                           std::shared_ptr<const IDescriptorSetLayoutGroup> descriptorLayout);
+    std::shared_ptr<ShaderAssetGroup>
+    CreateShaderAssetGroup(std::shared_ptr<const IDescriptorSetLayoutGroup> descriptorLayout); // empty vertex input
+    std::shared_ptr<IRenderPass> CreateRenderPass(std::shared_ptr<const IAttachmentDetail> detail);
+    std::shared_ptr<GraphicsPipeline> CreatePipeline(std::shared_ptr<const IVertexInputStateGroup> vertexInput,
+                                                    std::shared_ptr<const IDescriptorSetLayoutGroup> descriptorLayout,
+                                                    std::shared_ptr<ShaderAssetGroup> asset,
+                                                    const std::shared_ptr<IRenderPass> &renderPass, uint32_t subpass);
+    std::shared_ptr<ComputePipeline> CreateComputePipeline(
+        std::shared_ptr<const IDescriptorSetLayoutGroup> descriptorLayout, std::shared_ptr<ShaderAssetGroup> asset,
+        const std::string &spirvEntry = "comp");
 
     std::shared_ptr<OnceSequence> UploadSequence();
     std::shared_ptr<LoopSequence> DrawFrameSequence();
 
+    // Accessors (aliasing shared_ptr; keeps manager alive)
+    std::shared_ptr<vk::Instance> getInstance() const;
+    std::shared_ptr<vk::Device> getLogicalDevice() const;
+    std::shared_ptr<vk::PhysicalDevice> getPhysicalDevice() const { return m_physicalDevice; }
+    std::shared_ptr<vk::Queue> getGraphicsQueue() const { return m_graphicsQueue; }
+    std::shared_ptr<vk::Queue> getComputeQueue() const { return m_computeQueue; }
+    std::shared_ptr<vk::Queue> getPresentQueue() const { return m_presentQueue; }
+    std::shared_ptr<SwapChain> getSwapChain() const { return m_swapChain; }
+    std::shared_ptr<DeviceMemoryAllocator> getMemoryAllocator() const { return m_allocator; }
+    QueueFamilyIndices getQueueFamilyIndices() const { return m_queueFamilyIndices; }
+    uint32_t getComputeQueueFamilyIndex() const;
+    std::vector<uint32_t> sharedQueueFamilies() const;
+
+    vk::Format DefaultDepthFormat() const { return m_depthFormat; }
+    vk::SampleCountFlagBits getMaxUsableSampleCount() const { return m_msaaSamples; }
+    uint32_t maxFramesInFlight() const { return m_maxFramesInFlight; }
+    const vk::PhysicalDeviceProperties &deviceProperties() const { return m_physicalDeviceProperties; }
+    const vk::PhysicalDeviceMemoryProperties &memoryProperties() const { return m_physicalDeviceMemoryProperties; }
+
+    bool checkAndResetResize();
+    void reCreateSwapChain();
+
 private:
+    explicit RenderManager(IUnifiedWindow &window, uint32_t maxFramesInFlight);
     void initVulkan();
     void createInstance();
-    void createDevice(const DeviceRequirement &req); // Logical device
+    void createDevice(const DeviceRequirement &req);
     std::vector<const char *> getInstanceRequiredExtensions();
-    vk::SampleCountFlagBits getMaxUsableSampleCount();
-    uint32_t getMaxPushConstantSize();
-    // the buffer layout/ buffersize is certain
-    std::shared_ptr<MemoryObject> VertexBuffer(GBufferSpec buffMeta);
-    std::shared_ptr<MemoryObject> IndexBuffer(GBufferSpec buffMeta);
-    std::shared_ptr<MemoryObject> UniformBuffers(GBufferSpec buffMeta);
-    std::shared_ptr<MemoryObject> StorageBuffers(GBufferSpec buffMeta);
-    std::shared_ptr<MemoryObject> TextureObjects(TextureImageSpec imagMeta);
+    void registerRenderPass(const std::shared_ptr<IRenderPass> &renderPass);
+
+    // Non-owning views (empty deleter) for manager-owned members, avoiding
+    // "member -> handle -> manager" reference cycles.
+    std::shared_ptr<vk::Instance> instanceView() const;
+    std::shared_ptr<vk::Device> deviceView() const;
 
 private:
     IUnifiedWindow &m_window;
-    std::shared_ptr<vk::Instance> m_instance{nullptr};
-    std::shared_ptr<GraphicsDebugger> m_debugger{nullptr};
-    std::shared_ptr<vk::SurfaceKHR> m_surface;
-    std::shared_ptr<vk::PhysicalDevice> m_physicalDevice{nullptr};
-    std::shared_ptr<vk::Device> m_device{nullptr}; // Associated with m_physicalDevice
-    std::shared_ptr<MyRenderPass> m_renderPass;
-    const uint32_t m_maxFrameInFlight{1};
+    uint32_t m_maxFramesInFlight = 2;
 
-    uint32_t m_maxPushConstantSize{0};
-    vk::SampleCountFlagBits m_msaaSamples{vk::SampleCountFlagBits::e1};
-    std::shared_ptr<ImageResources> m_msaaSamplesImage;
-    std::shared_ptr<ImageResources> m_depthStencil;
+    std::shared_ptr<vk::Instance> m_instance;
+    std::shared_ptr<GraphicsDebugger> m_debugger;
+    std::shared_ptr<vk::SurfaceKHR> m_surface;
+    std::shared_ptr<vk::PhysicalDevice> m_physicalDevice;
+    std::shared_ptr<vk::Device> m_device;
+    std::shared_ptr<DeviceMemoryAllocator> m_allocator;
+
+    vk::Format m_depthFormat = vk::Format::eD24UnormS8Uint;
+    vk::SampleCountFlagBits m_msaaSamples = vk::SampleCountFlagBits::e1;
     vk::PhysicalDeviceMemoryProperties m_physicalDeviceMemoryProperties{};
     vk::PhysicalDeviceProperties m_physicalDeviceProperties{};
-    QueueFamilyIndices m_queueFamilyIndices; // Associated with m_ physicalDevice
+    QueueFamilyIndices m_queueFamilyIndices;
     std::shared_ptr<SwapChain> m_swapChain;
-    std::shared_ptr<vk::Queue> m_graphicsQueue; // Associated with m_ device
-    std::shared_ptr<vk::Queue> m_presentQueue;  // Associated with m_ device
+
+    std::shared_ptr<vk::Queue> m_graphicsQueue;
+    std::shared_ptr<vk::Queue> m_computeQueue;
+    std::shared_ptr<vk::Queue> m_presentQueue;
+
+    std::shared_ptr<EventManager> m_events;
+    std::vector<std::weak_ptr<IRenderPass>> m_renderPasses;
 };

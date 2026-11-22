@@ -1,265 +1,392 @@
 #include "LoopSequence.h"
+
 #include "RenderManager.h"
 #include "SwapChain.h"
 
-LoopSequence::LoopSequence(std::shared_ptr<RenderManager> renderMgr,
-                           const vk::PhysicalDeviceProperties &physicalDeviceProperties, uint32_t maxFrameInFlight) :
-    m_renderMgr(renderMgr), m_physicalDeviceProperties(physicalDeviceProperties), m_maxFrameInFlight(maxFrameInFlight)
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace {
+
+void check(vk::Result result, const char *what)
 {
-    m_device = renderMgr->getLogicalDevice();
-    m_graphicsQueue = renderMgr->getGraphicsQueue();
-    m_presentQueue = renderMgr->getPresentQueue();
-    m_queueIndex = renderMgr->getQueueFamilyIndices().graphicsFamily.value();
-    m_isRecordDone.resize(m_maxFrameInFlight, 0);
+    if (result != vk::Result::eSuccess) {
+        throw std::runtime_error(std::string(what) + " failed: " + vk::to_string(result));
+    }
+}
+
+std::shared_ptr<vk::CommandBuffer> allocateCommandBuffer(const std::shared_ptr<vk::Device> &device,
+                                                         const std::shared_ptr<vk::CommandPool> &pool)
+{
+    vk::CommandBufferAllocateInfo allocInfo{};
+    allocInfo.commandPool = *pool;
+    allocInfo.level = vk::CommandBufferLevel::ePrimary;
+    allocInfo.commandBufferCount = 1;
+
+    vk::CommandBuffer commandBuffer{};
+    check(device->allocateCommandBuffers(&allocInfo, &commandBuffer), "vkAllocateCommandBuffers");
+    return std::shared_ptr<vk::CommandBuffer>(new vk::CommandBuffer(commandBuffer),
+                                              [device, pool](vk::CommandBuffer *handle) {
+                                                  if (handle != nullptr) {
+                                                      device->freeCommandBuffers(*pool, 1, handle);
+                                                      delete handle;
+                                                  }
+                                              });
+}
+
+std::shared_ptr<vk::Semaphore> createSemaphore(const std::shared_ptr<vk::Device> &device)
+{
+    vk::SemaphoreCreateInfo createInfo{};
+    vk::Semaphore semaphore{};
+    check(device->createSemaphore(&createInfo, nullptr, &semaphore), "vkCreateSemaphore");
+    return std::shared_ptr<vk::Semaphore>(new vk::Semaphore(semaphore), [device](vk::Semaphore *handle) {
+        if (handle != nullptr && *handle) {
+            device->destroySemaphore(*handle);
+        }
+        delete handle;
+    });
+}
+
+std::shared_ptr<vk::Fence> createFence(const std::shared_ptr<vk::Device> &device)
+{
+    vk::FenceCreateInfo createInfo{};
+    createInfo.flags = vk::FenceCreateFlagBits::eSignaled;
+    vk::Fence fence{};
+    check(device->createFence(&createInfo, nullptr, &fence), "vkCreateFence");
+    return std::shared_ptr<vk::Fence>(new vk::Fence(fence), [device](vk::Fence *handle) {
+        if (handle != nullptr && *handle) {
+            device->destroyFence(*handle);
+        }
+        delete handle;
+    });
+}
+
+void waitAndResetFence(const std::shared_ptr<vk::Device> &device, const std::shared_ptr<vk::Fence> &fence,
+                       const char *what)
+{
+    check(device->waitForFences(1, &*fence, VK_TRUE, std::numeric_limits<uint64_t>::max()), what);
+    check(device->resetFences(1, &*fence), "vkResetFences");
+}
+
+} // namespace
+
+LoopSequence::LoopSequence(std::shared_ptr<RenderManager> renderMgr, uint32_t maxFrames) :
+    SequenceBase(std::move(renderMgr)), m_maxFrames(maxFrames == 0 ? 1 : maxFrames)
+{
+    m_computeQueue = m_renderMgr->getComputeQueue();
+    if (!m_computeQueue) {
+        m_computeQueue = m_graphicsQueue;
+    }
+    m_computeFamily = m_renderMgr->getComputeQueueFamilyIndex();
+
     createCommandPools();
     createCommandBuffers();
     createSyncObjects();
-    createTimestampQueryPools(2);
+
+    // One query pool per frame slot: reading one frame while another resets
+    // its own pool would otherwise race with the GPU.
+    for (uint32_t frame = 0; frame < m_maxFrames; ++frame) {
+        CreateTimestampQueryPool(2); // may legitimately return nullptr
+    }
 }
 
-LoopSequence::~LoopSequence() {}
-
-uint32_t LoopSequence::getFrameInFlight()
+LoopSequence::~LoopSequence()
 {
-    return m_currFrameIndex;
-}
+    waitIdle();
 
-void LoopSequence::eval(std::shared_ptr<CmdOpBase> op)
-{
-    vk::Result result = vk::Result::eErrorUnknown;
-    m_currFrameIndex = (m_frameCounter) % m_maxFrameInFlight;
-    m_lastFrameIndex = (m_frameCounter + m_maxFrameInFlight - 1) % m_maxFrameInFlight;
-    // Block the current thread and wait for the previous commit of the current group to complete.
-    // std:: cout << " before waitForFences\n";
-    auto start = std::chrono::steady_clock::now();
-    result = m_device->waitForFences(1, m_inFlightFences[m_currFrameIndex].get(), VK_TRUE, UINT64_MAX);
-    result = m_device->resetFences(1, m_inFlightFences[m_currFrameIndex].get());
-    auto end = std::chrono::steady_clock::now();
-    std::chrono::duration<double, std::milli> diff = end - start;
-    // std:: cout << " after waitForFences cost: " << diff. count() << " ms\n";
-    // At this point,  the GPU has already written the previous timestamp to the Query Pool, and the CPU can safely read
-    // it.
-    // Note that the timestamp data is not yet ready when printing for the first time;  this step needs to be skipped.
-    if (isRecordDone(m_lastFrameIndex)) {
-        printShaderExecutionTime(m_lastFrameIndex);
-    }
-
-    uint32_t imageIndex = -1;
-    auto swapChain = m_renderMgr->getSwapChain();
-    result = swapChain->acquireNextImage(m_imageAvailableSemaphores[m_currFrameIndex], imageIndex);
-    if (result == vk::Result::eErrorOutOfDateKHR) {
-        m_renderMgr->recreateSwapChain();
-        return;
-    } else if (result != vk::Result::eSuccess && result != vk::Result::eSuboptimalKHR) {
-        throw std::runtime_error(" failed to acquire swap chain   image!");
-    }
-
-    // std:: cout << " before recordCommandBuffers\n":
-    start = std::chrono::steady_clock::now();
-    m_isRecordDone[m_currFrameIndex] = 0;
-    // reset commandPool before each-frame record
-    m_device->resetCommandPool(*m_commandPools[m_currFrameIndex], vk::CommandPoolResetFlagBits::eReleaseResources);
-    // begin, Recording has started.Currently,  only  the 0th commandBuffer is being used; see createCommandBuffers.
-    auto activeCommandBuffer = m_commandBuffers[m_currFrameIndex][0];
-    activeCommandBuffer->begin(vk::CommandBufferBeginInfo());
-    // Reset the query pool after command-> begin(must be executed during recording).
-    if (m_timestampQueryPools[m_currFrameIndex]) {
-        // queryCount should match to createTimestampQueryPool(2)
-        activeCommandBuffer->resetQueryPool(*m_timestampQueryPools[m_currFrameIndex], 0, 2);
-    }
-    // Record command start [Ime
-    if (m_timestampQueryPools[m_currFrameIndex]) {
-        activeCommandBuffer->writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe,
-                                            *m_timestampQueryPools[m_currFrameIndex], 0);
-    }
-
-    // loop call, record concrete Shader command
-    op->BindFrameBuffer(swapChain->getFramebuffer(imageIndex), swapChain->getExtent2D());
-    op->Record(*activeCommandBuffer, m_currFrameIndex);
-    // Record command end time
-    if (m_timestampQueryPools[m_currFrameIndex]) {
-        activeCommandBuffer->writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe,
-                                            *m_timestampQueryPools[m_currFrameIndex], 1);
-    }
-
-    // end
-    activeCommandBuffer->end();
-    m_isRecordDone[m_currFrameIndex] = 1;
-    end = std::chrono::steady_clock::now();
-    diff = end - start;
-    // std:: cout << " after recordCommandBuffers cost" " << dɪff. count() <<" ms\n";
-
-    // do eval
-    vk::SubmitInfo submitInfo{};
-    std::vector<vk::Semaphore> waitSemaphores = {*m_imageAvailableSemaphores[m_currFrameIndex]};
-    vk::PipelineStageFlags waitStages[] = {vk::PipelineStageFlagBits::eColorAttachmentOutput};
-    submitInfo.waitSemaphoreCount = waitSemaphores.size();
-    submitInfo.pWaitSemaphores = waitSemaphores.data();
-    submitInfo.pWaitDstStageMask = waitStages;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = activeCommandBuffer.get();
-
-    std::vector<vk::Semaphore> signalSemaphores = {*m_renderFinishedSemaphores[m_currFrameIndex]};
-    submitInfo.signalSemaphoreCount = signalSemaphores.size();
-    submitInfo.pSignalSemaphores = signalSemaphores.data();
-    // std:: cout << " before submit\n";
-    start = std::chrono::steady_clock::now();
-    if (m_graphicsQueue->submit(1, &submitInfo, *m_inFlightFences[m_currFrameIndex]) != vk::Result::eSuccess) {
-        throw std::runtime_error(" failed to submit draw command buffer!");
-    }
-    end = std::chrono::steady_clock::now();
-    diff = end - start;
-    // std:: cout << " after submit cost: " << diff. count() << " ms\n";
-    // start = std:: chrono:: steady   clock:: now();
-    // result = m_ device->waitForFences(1, m_ inFlightFences[m_currFrame]. get(),     VK      TRUE,
-    // UINT64 MAX); end = std:: chrono:: steady   clock:: now(); diff = end - start; std:: co ut << "
-    // after submit, waitForFences cost:  " << diff. count() << " ms\n"; after eval, then q ueue to
-    // present
-    result = swapChain->queuePresent(m_presentQueue, imageIndex, signalSemaphores);
-    if (result == vk::Result::eErrorOutOfDateKHR || result == vk::Result::eSuboptimalKHR
-        || m_renderMgr->checkAndResetResize()) {
-        m_renderMgr->recreateSwapChain();
-    } else if (result != vk::Result::eSuccess) {
-        throw std::runtime_error(" failed to present swap chain image!");
-    }
-    // finally, finished all, add m_frameCounter
-    m_frameCounter += 1;
-    return;
+    m_renderFinished.clear();
+    m_imageAvailable.clear();
+    m_computeFinished.clear();
+    m_inFlightFences.clear();
+    m_computeFences.clear();
+    m_commandBuffers.clear();
+    m_computeBuffers.clear();
+    m_commandPools.clear();
+    m_computePools.clear();
+    m_timestampPools.clear();
 }
 
 void LoopSequence::createCommandPools()
 {
-    m_commandPools.resize(m_maxFrameInFlight);
-    for (int i = 0; i < m_maxFrameInFlight; i++) {
-        vk::CommandPoolCreateInfo poolInfo{};
-        poolInfo.queueFamilyIndex = m_queueIndex;
-        vk::CommandPool commandPool;
-        if (m_device->createCommandPool(&poolInfo, nullptr, &commandPool) != vk::Result::eSuccess) {
-            throw std::runtime_error(" failed to create graphics command pool!");
-        }
-        m_commandPools[i] =
-            std::shared_ptr<vk::CommandPool>(new vk::CommandPool(commandPool), [device = m_device](vk::CommandPool *p) {
-                if (p && *p) {
-                    device->destroyCommandPool(*p, nullptr);
-                }
-                delete p;
-            });
-    }
-}
+    m_commandPools.resize(m_maxFrames);
+    m_computePools.resize(m_maxFrames);
 
-void LoopSequence::createTimestampQueryPools(uint32_t totalTimestamps)
-{
-    if (m_physicalDeviceProperties.limits.timestampComputeAndGraphics) {
-        m_timestampQueryPools.resize(m_maxFrameInFlight);
-        for (int i = 0; i < m_maxFrameInFlight; i++) {
-            vk::QueryPoolCreateInfo queryPoolInfo;
-            queryPoolInfo.setQueryCount(
-                totalTimestamps); // For example,    it's      set  to 2 now, one         will   store the start
-            queryPoolInfo.setQueryType(vk::QueryType::eTimestamp);
-            auto pool = m_device->createQueryPool(queryPoolInfo);
-            m_timestampQueryPools[i] =
-                std::shared_ptr<vk::QueryPool>(new vk::QueryPool(pool), [device = m_device](vk::QueryPool *p) {
-                    if (p && *p) {
-                        device->destroyQueryPool(*p, nullptr);
-                    }
-                    delete p;
-                });
-        }
-    } else {
-        throw std::runtime_error(" Device does not support timestamps");
+    for (uint32_t frame = 0; frame < m_maxFrames; ++frame) {
+        vk::CommandPoolCreateInfo graphicsInfo{};
+        graphicsInfo.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
+        graphicsInfo.queueFamilyIndex = m_graphicsFamily;
+        vk::CommandPool graphicsPool{};
+        check(m_device->createCommandPool(&graphicsInfo, nullptr, &graphicsPool), "vkCreateCommandPool (graphics)");
+        m_commandPools[frame] = std::shared_ptr<vk::CommandPool>(new vk::CommandPool(graphicsPool),
+                                                                 [device = m_device](vk::CommandPool *handle) {
+                                                                     if (handle != nullptr && *handle) {
+                                                                         device->destroyCommandPool(*handle);
+                                                                     }
+                                                                     delete handle;
+                                                                 });
+
+        vk::CommandPoolCreateInfo computeInfo{};
+        computeInfo.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
+        computeInfo.queueFamilyIndex = m_computeFamily;
+        vk::CommandPool computePool{};
+        check(m_device->createCommandPool(&computeInfo, nullptr, &computePool), "vkCreateCommandPool (compute)");
+        m_computePools[frame] = std::shared_ptr<vk::CommandPool>(new vk::CommandPool(computePool),
+                                                                 [device = m_device](vk::CommandPool *handle) {
+                                                                     if (handle != nullptr && *handle) {
+                                                                         device->destroyCommandPool(*handle);
+                                                                     }
+                                                                     delete handle;
+                                                                 });
     }
 }
 
 void LoopSequence::createCommandBuffers()
 {
-    m_commandBuffers.reserve(m_maxFrameInFlight);
-    for (int i = 0; i < m_maxFrameInFlight; i++) {
-        std::vector<vk::CommandBuffer> commandBuffers{};
-        commandBuffers.resize(1); // TODO: we only need a command for each-frame now
-        vk::CommandBufferAllocateInfo allocInfo{};
-        allocInfo.commandPool = *m_commandPools[i];
-        allocInfo.level = vk::CommandBufferLevel::ePrimary;
-        allocInfo.commandBufferCount = commandBuffers.size();
-        if (m_device->allocateCommandBuffers(&allocInfo, commandBuffers.data()) != vk::Result::eSuccess) {
-            throw std::runtime_error(" failed to allocate command buffers!");
-        }
-
-        for (auto &buffer : commandBuffers) {
-            m_commandBuffers[i].emplace_back(
-                new vk::CommandBuffer(buffer),
-                [device = m_device, commandPool = m_commandPools[i]](vk::CommandBuffer *ptr) {
-                    if (ptr) {
-                        device->freeCommandBuffers(*commandPool, 1, ptr); // free GPU resources
-                        delete ptr; // free the memory of the shared   ptr on the heap.
-                    }
-                });
-        }
+    m_commandBuffers.resize(m_maxFrames);
+    m_computeBuffers.resize(m_maxFrames);
+    for (uint32_t frame = 0; frame < m_maxFrames; ++frame) {
+        m_commandBuffers[frame] = allocateCommandBuffer(m_device, m_commandPools[frame]);
+        m_computeBuffers[frame] = allocateCommandBuffer(m_device, m_computePools[frame]);
     }
 }
 
 void LoopSequence::createSyncObjects()
 {
-    m_imageAvailableSemaphores.resize(m_maxFrameInFlight);
-    m_renderFinishedSemaphores.resize(m_maxFrameInFlight);
-    m_inFlightFences.resize(m_maxFrameInFlight);
-    vk::SemaphoreCreateInfo semaphoreInfo{};
-    vk::FenceCreateInfo fenceInfo{};
-    fenceInfo.flags = vk::FenceCreateFlagBits::eSignaled;
-    for (size_t i = 0; i < m_maxFrameInFlight; i++) {
-        vk::Semaphore imageAvailableSemaphores{};
-        if (m_device->createSemaphore(&semaphoreInfo, nullptr, &imageAvailableSemaphores) != vk::Result::eSuccess) {
-            throw std::runtime_error(" failed to create synchronization objects for a frame!");
-        }
+    const std::shared_ptr<SwapChain> swapChain = m_renderMgr->getSwapChain();
+    const uint32_t imageCount = swapChain ? static_cast<uint32_t>(swapChain->getImageViews().size()) : 0;
+    // renderFinished is waited on by vkQueuePresentKHR, which may still hold it
+    // after the graphics fence signals.  Indexing it by swapchain image (rather
+    // than by frame slot) guarantees reuse only after that image is re-acquired,
+    // at which point its previous presentation is complete (VUID 00067).
+    const uint32_t presentSemaphoreCount = std::max(imageCount, static_cast<uint32_t>(1));
 
-        m_imageAvailableSemaphores[i] = std::shared_ptr<vk::Semaphore>(new vk::Semaphore(imageAvailableSemaphores),
-                                                                       [device = m_device](vk::Semaphore *p) {
-                                                                           if (p && *p) {
-                                                                               device->waitIdle();
-                                                                               device->destroySemaphore(*p, nullptr);
-                                                                               delete p;
-                                                                           }
-                                                                       });
+    m_imageAvailable.resize(m_maxFrames);
+    m_renderFinished.resize(presentSemaphoreCount);
+    m_computeFinished.resize(m_maxFrames);
+    m_inFlightFences.resize(m_maxFrames);
+    m_computeFences.resize(m_maxFrames);
 
-        vk::Semaphore renderFinishedSemaphores{};
-        if (m_device->createSemaphore(&semaphoreInfo, nullptr, &renderFinishedSemaphores) != vk::Result::eSuccess) {
-            throw std::runtime_error(" failed to create synchronization objects for a frame!");
-        }
-
-        m_renderFinishedSemaphores[i] = std::shared_ptr<vk::Semaphore>(new vk::Semaphore(renderFinishedSemaphores),
-                                                                       [device = m_device](vk::Semaphore *p) {
-                                                                           if (p && *p) {
-                                                                               device->waitIdle();
-                                                                               device->destroySemaphore(*p, nullptr);
-                                                                               delete p;
-                                                                           }
-                                                                       });
-
-        vk::Fence inFlightFences{};
-        if (m_device->createFence(&fenceInfo, nullptr, &inFlightFences) != vk::Result::eSuccess) {
-            throw std::runtime_error(" failed to create synchronization objects for a frame!");
-        }
-
-        m_inFlightFences[i] =
-            std::shared_ptr<vk::Fence>(new vk::Fence(inFlightFences), [device = m_device](vk::Fence *p) {
-                device->waitIdle();
-                device->destroyFence(*p, nullptr);
-                delete p;
-            });
+    for (uint32_t frame = 0; frame < m_maxFrames; ++frame) {
+        m_imageAvailable[frame] = createSemaphore(m_device);
+        m_computeFinished[frame] = createSemaphore(m_device);
+        m_inFlightFences[frame] = createFence(m_device);
+        m_computeFences[frame] = createFence(m_device);
+    }
+    for (uint32_t i = 0; i < presentSemaphoreCount; ++i) {
+        m_renderFinished[i] = createSemaphore(m_device);
     }
 }
 
-void LoopSequence::printShaderExecutionTime(uint32_t lastFrame)
+void LoopSequence::waitIdle()
 {
-    if (m_timestampQueryPools[lastFrame]) {
-        uint64_t results[2];
-        // Get results from_the GPU (use WAIT BIT to ensure synchronization)
-        auto result = m_device->getQueryPoolResults(*m_timestampQueryPools[lastFrame], 0, 2, sizeof(results), results,
-                                                    sizeof(uint64_t),
-                                                    vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWait);
-        // Calculate the difference and multiply it by the hardware clock cycle (timestampPeriod is
-        // in nanoseconds).
-        float timestampPeriod = m_physicalDeviceProperties.limits.timestampPeriod;
-        double duration_ms = (results[1] - results[0]) * (double)timestampPeriod / 1e6;
-        std::cout << " Shader:: draw a frame total cost: " << duration_ms << " ms\n";
+    if (m_device) {
+        m_device->waitIdle();
     }
+}
+
+bool LoopSequence::prepareFrame()
+{
+    const uint32_t frame = m_currentFrame;
+    waitAndResetFence(m_device, m_inFlightFences[frame], "vkWaitForFences (frame)");
+
+    // The previous frame's timestamps are safe to read now that its fence
+    // has signaled.  On the very first frame there is nothing to sample.
+    if (frame != 0) {
+        LogExecutionTime((frame + m_maxFrames - 1) % m_maxFrames);
+    }
+
+    const std::shared_ptr<SwapChain> swapChain = m_renderMgr->getSwapChain();
+    if (!swapChain) {
+        return false;
+    }
+
+    // Call the device directly so eErrorOutOfDateKHR can be handled here
+    // (the SwapChain helper converts that recoverable result into an exception).
+    const vk::Result acquireResult = m_device->acquireNextImageKHR(
+        swapChain->handle(), std::numeric_limits<uint64_t>::max(), *m_imageAvailable[frame], nullptr, &m_imageIndex);
+    if (acquireResult == vk::Result::eErrorOutOfDateKHR) {
+        m_renderMgr->reCreateSwapChain();
+        return false;
+    }
+    if (acquireResult != vk::Result::eSuccess && acquireResult != vk::Result::eSuboptimalKHR) {
+        throw std::runtime_error(std::string("vkAcquireNextImageKHR failed: ") + vk::to_string(acquireResult));
+    }
+    return true;
+}
+
+void LoopSequence::beginComputeRecording()
+{
+    const uint32_t frame = m_currentFrame;
+    waitAndResetFence(m_device, m_computeFences[frame], "vkWaitForFences (compute)");
+    // Enhanced-mode overload throws on failure (no C-style Result overload).
+    m_device->resetCommandPool(*m_computePools[frame], vk::CommandPoolResetFlags{});
+    m_computeBuffers[frame]->begin(vk::CommandBufferBeginInfo{});
+}
+
+void LoopSequence::recordComputeBarrier()
+{
+    vk::MemoryBarrier barrier{};
+    barrier.srcAccessMask = vk::AccessFlagBits::eShaderWrite;
+    barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
+    m_computeBuffers[m_currentFrame]->pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
+                                                      vk::PipelineStageFlagBits::eComputeShader,
+                                                      vk::DependencyFlags{}, 1, &barrier, 0, nullptr, 0, nullptr);
+}
+
+void LoopSequence::endComputeRecording(bool chainToGraphics)
+{
+    const uint32_t frame = m_currentFrame;
+    const vk::CommandBuffer &cmd = *m_computeBuffers[frame];
+
+    vk::MemoryBarrier barrier{};
+    barrier.srcAccessMask = vk::AccessFlagBits::eShaderWrite;
+    if (chainToGraphics) {
+        // Release compute writes at the end of this queue's execution.  The
+        // graphics queue acquires visibility via the computeFinished semaphore
+        // plus the graphics-side wait stage; eVertexInput is not a valid
+        // pipeline stage for a compute-only queue family.
+        barrier.dstAccessMask = vk::AccessFlagBits::eMemoryWrite;
+        cmd.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eBottomOfPipe,
+                            vk::DependencyFlags{}, 1, &barrier, 0, nullptr, 0, nullptr);
+    } else {
+        barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
+        cmd.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader,
+                            vk::DependencyFlags{}, 1, &barrier, 0, nullptr, 0, nullptr);
+    }
+    cmd.end();
+
+    vk::SubmitInfo submitInfo{};
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmd;
+    const vk::Semaphore computeFinished = *m_computeFinished[frame];
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = &computeFinished;
+    check(m_computeQueue->submit(1, &submitInfo, *m_computeFences[frame]), "vkQueueSubmit (compute)");
+    m_computeActive = true;
+}
+
+void LoopSequence::beginRecording()
+{
+    const uint32_t frame = m_currentFrame;
+    m_device->resetCommandPool(*m_commandPools[frame], vk::CommandPoolResetFlags{});
+    const vk::CommandBuffer &cmd = *m_commandBuffers[frame];
+    cmd.begin(vk::CommandBufferBeginInfo{});
+
+    if (frame < m_timestampPools.size() && m_timestampPools[frame]) {
+        cmd.resetQueryPool(*m_timestampPools[frame], 0, 2);
+        cmd.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, *m_timestampPools[frame], 0);
+    }
+    m_bindingState.Reset();
+}
+
+void LoopSequence::endRecording()
+{
+    const uint32_t frame = m_currentFrame;
+    const vk::CommandBuffer &cmd = *m_commandBuffers[frame];
+    if (frame < m_timestampPools.size() && m_timestampPools[frame]) {
+        cmd.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, *m_timestampPools[frame], 1);
+    }
+    cmd.end();
+}
+
+void LoopSequence::recordDispatch(const std::shared_ptr<CmdOpBase> &op)
+{
+    if (!op) {
+        return;
+    }
+    DescriptorBindingState computeBindingState;
+    op->Record(*m_computeBuffers[m_currentFrame], m_currentFrame, computeBindingState);
+}
+
+void LoopSequence::record(const std::shared_ptr<CmdOpBase> &op)
+{
+    if (!op) {
+        return;
+    }
+    op->Record(*m_commandBuffers[m_currentFrame], m_currentFrame, m_bindingState);
+}
+
+void LoopSequence::recordPass(const std::shared_ptr<IRenderPass> &renderPass, const std::function<void()> &body)
+{
+    if (!renderPass) {
+        return;
+    }
+    const vk::CommandBuffer &cmd = *m_commandBuffers[m_currentFrame];
+    // Swapchain-sized framebuffers are built one per swapchain image and must
+    // be selected by the acquired image index; offscreen framebuffers are
+    // built per in-flight frame slot.  Using the frame index for both wrote
+    // into the wrong swapchain image and presented an unrendered UNDEFINED one.
+    const uint32_t framebufferIndex = renderPass->isSwapChainSized() ? m_imageIndex : m_currentFrame;
+    renderPass->begin(cmd, framebufferIndex, renderPass->extent());
+    body();
+    renderPass->end(cmd);
+}
+
+void LoopSequence::submitFrame()
+{
+    const uint32_t frame = m_currentFrame;
+    // Always acquire the swapchain image first.  When a compute pass feeds the
+    // graphics pass, also wait on its completion semaphore; the image-available
+    // semaphore still must be consumed or the next acquire finds it signaled.
+    vk::Semaphore waitSemaphores[2] = {*m_imageAvailable[frame], {}};
+    vk::PipelineStageFlags waitStages[2] = {vk::PipelineStageFlagBits::eColorAttachmentOutput, {}};
+    uint32_t waitCount = 1;
+    if (m_computeActive) {
+        waitSemaphores[waitCount] = *m_computeFinished[frame];
+        waitStages[waitCount] = vk::PipelineStageFlagBits::eVertexInput;
+        ++waitCount;
+    }
+    const vk::Semaphore renderFinished = *m_renderFinished[m_imageIndex];
+    const vk::CommandBuffer &cmd = *m_commandBuffers[frame];
+
+    vk::SubmitInfo submitInfo{};
+    submitInfo.waitSemaphoreCount = waitCount;
+    submitInfo.pWaitSemaphores = waitSemaphores;
+    submitInfo.pWaitDstStageMask = waitStages;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmd;
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = &renderFinished;
+
+    check(m_graphicsQueue->submit(1, &submitInfo, *m_inFlightFences[frame]), "vkQueueSubmit (graphics)");
+    m_computeActive = false;
+}
+
+bool LoopSequence::presentFrame()
+{
+    const std::shared_ptr<SwapChain> swapChain = m_renderMgr->getSwapChain();
+    if (!swapChain) {
+        return false;
+    }
+
+    // Direct presentKHR keeps eErrorOutOfDateKHR recoverable (the SwapChain
+    // helper turns it into an exception).
+    const vk::Semaphore renderFinished = *m_renderFinished[m_imageIndex];
+    vk::PresentInfoKHR presentInfo{};
+    presentInfo.waitSemaphoreCount = 1;
+    presentInfo.pWaitSemaphores = &renderFinished;
+    const vk::SwapchainKHR swapchains[] = {swapChain->handle()};
+    presentInfo.swapchainCount = 1;
+    presentInfo.pSwapchains = swapchains;
+    presentInfo.pImageIndices = &m_imageIndex;
+
+    const vk::Result presentResult = m_presentQueue->presentKHR(&presentInfo);
+    if (presentResult == vk::Result::eErrorOutOfDateKHR || presentResult == vk::Result::eSuboptimalKHR
+        || m_renderMgr->checkAndResetResize()) {
+        m_renderMgr->reCreateSwapChain();
+        return false;
+    }
+    if (presentResult != vk::Result::eSuccess) {
+        throw std::runtime_error(std::string("vkQueuePresentKHR failed: ") + vk::to_string(presentResult));
+    }
+
+    m_currentFrame = (m_currentFrame + 1) % m_maxFrames;
+    return true;
 }

@@ -1,0 +1,39 @@
+#version 450
+// Minimal Bayer demosaic + normalized RGB float output (3 floats per pixel).
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 1) readonly buffer UnpackedImage { uint unpacked[]; };
+layout(std430, set = 0, binding = 2) writeonly buffer RgbImage { float rgb[]; };
+layout(push_constant) uniform Params { uint width; uint height; } params;
+
+float sample16(uint x, uint y) {
+    uint wordIndex = (y * params.width + x) / 2u;
+    uint word = unpacked[wordIndex];
+    uint value = ((x & 1u) == 0u) ? (word & 0x0000FFFFu) : (word >> 16u);
+    return float(value) / 65535.0;
+}
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    if (index >= params.width * params.height) return;
+    uint x = index % params.width;
+    uint y = index / params.width;
+    uint xm = x > 0u ? x - 1u : x;
+    uint xp = x < params.width - 1u ? x + 1u : x;
+    uint ym = y > 0u ? y - 1u : y;
+    uint yp = y < params.height - 1u ? y + 1u : y;
+
+    float g = 0.25 * (sample16(xm, y) + sample16(xp, y) + sample16(x, ym) + sample16(x, yp));
+    float base = sample16(x, y);
+    float r, gr, b;
+    if ((y & 1u) == 0u) {
+        if ((x & 1u) == 0u) { r = base; b = g; gr = g; }
+        else { r = g; b = g; gr = base; }
+    } else {
+        if ((x & 1u) == 0u) { r = g; b = g; gr = base; }
+        else { r = g; b = base; gr = g; }
+    }
+    uint outIndex = index * 3u;
+    rgb[outIndex + 0u] = r;
+    rgb[outIndex + 1u] = gr;
+    rgb[outIndex + 2u] = b;
+}
