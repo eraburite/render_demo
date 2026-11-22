@@ -10,6 +10,7 @@ layout(push_constant) uniform ModelMatrix { mat4 model; } modelMatrix;
 layout(location = 0) out vec3 fragPos;
 layout(location = 1) out vec3 fragNormal;
 layout(location = 2) out vec2 fragTexCoord;
+layout(location = 3) out vec3 fragAlbedo;
 
 void main() {
     vec4 world = modelMatrix.model * vec4(inPosition, 1.0);
@@ -17,4 +18,5 @@ void main() {
     fragPos = world.xyz;
     fragNormal = mat3(transpose(inverse(modelMatrix.model))) * inNormal;
     fragTexCoord = inTexCoord;
+    fragAlbedo = inColor;
 }

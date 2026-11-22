@@ -18,5 +18,8 @@ public:
     // Number of vertices to draw when there is no vertex input (SSBO-driven).
     virtual uint32_t getVertexCount() const = 0;
 
+    // Number of instances per draw (gl_InstanceIndex driven); always >= 1.
+    virtual uint32_t drawInstanceCount() const = 0;
+
     virtual std::shared_ptr<const IVertexInputStateGroup> sharedClone() const = 0;
 };

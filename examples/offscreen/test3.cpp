@@ -11,6 +11,7 @@
 #include "GLFWwindow.h"
 #include "Geometry.h"
 #include "RenderCommon.h"
+#include "TextureLoader.h"
 
 #include "AttachmentDetailConfig.h"
 #include "DescriptorLayoutConfig.h"
@@ -30,6 +31,17 @@
 #include "shader/quad_vert.hpp"
 
 namespace {
+
+// Same primary/fallback lookup as the other examples (PROJECT_ROOT_PATH-based
+// resolution happens inside loadTexture()).
+LoadedTexture loadTextureAuto(const std::string &primary, const std::string &fallback)
+{
+    try {
+        return loadTexture(primary);
+    } catch (const std::exception &) {
+        return loadTexture(fallback);
+    }
+}
 
 // IAttachmentDetail wrapper that pins the offscreen attachment to 512x512
 // instead of the swapchain extent supplied by RenderManager::CreateRenderPass.
@@ -115,13 +127,20 @@ void test()
     auto camera = std::make_shared<Camera>(glm::vec3(0.0f, 0.0f, 3.0f));
     GLFWwindow window(800, 600, camera);
     auto mgr = RenderManager::Create(window, MAX_FRAMES_IN_FLIGHT);
-    const vk::Extent2D displayExtent = *mgr->getSwapChain()->getExtent2D();
     auto vertices = CubeVertices(glm::vec3(1.0f));
+    auto texture = loadTextureAuto("assets/textures/awesomeface.png", "build/textures/awesomeface.png");
 
-    // ---- pass A: phong layout (empty set 0 keeps shader set IDs aligned) ---
+    // ---- pass A: phong layout (set 0 carries the base-colour texture) ------
     auto phongLayout = std::make_shared<DescriptorLayoutAtlas>(MAX_FRAMES_IN_FLIGHT);
-    auto emptySet = DescriptorLayoutAtlas::makeSet<GlobalComponent, GlobalComponentTable>(
-        0, {}, UpdateFrequency::eStatic, true);
+    // Pass A samples a real texture so the offscreen target holds texture-mapped
+    // albedo: pass B then shows the exact same image, which is the point of this
+    // example.  (Previously set 0 was empty and phong.frag was lit by the light
+    // alone, so the cube came out flat grey.)
+    auto baseColorSet = DescriptorLayoutAtlas::makeSet<GlobalComponent, GlobalComponentTable>(
+        0, {GlobalComponent::ebaseColor}, UpdateFrequency::eStatic, true);
+    baseColorSet.specs[0] = TextureImageSpec{static_cast<uint32_t>(texture.width),
+                                             static_cast<uint32_t>(texture.height),
+                                             static_cast<uint32_t>(texture.channels), (texture.mipLevels)};
     auto environmentSet = DescriptorLayoutAtlas::makeSet<EnvironmentComponent, EnvironmentComponentTable>(
         1, {EnvironmentComponent::eCameraMatrix}, UpdateFrequency::eEachFrame, false);
     environmentSet.specs[0] = GBufferSpec{1, static_cast<uint32_t>(sizeof(CameraMatrix)), DataTypes::eCustom};
@@ -129,7 +148,7 @@ void test()
         2, {FrameComponent::eViewEyePosition, FrameComponent::eLightSource}, UpdateFrequency::eEachFrame, false);
     frameSet.specs[0] = GBufferSpec{1, static_cast<uint32_t>(sizeof(ViewEyePoint)), DataTypes::eCustom};
     frameSet.specs[1] = GBufferSpec{1, static_cast<uint32_t>(sizeof(LightSource)), DataTypes::eCustom};
-    phongLayout->setDetails({emptySet, environmentSet, frameSet});
+    phongLayout->setDetails({baseColorSet, environmentSet, frameSet});
     phongLayout->setPushConstant(static_cast<uint32_t>(sizeof(ObjectParams)), vk::ShaderStageFlagBits::eVertex);
 
     auto vertexInput = std::make_shared<VertexInputAtlas>(
@@ -167,6 +186,7 @@ void test()
     auto upload = mgr->UploadSequence();
     auto syncOp = std::make_shared<CmdSyncDevice>(phongAsset);
     syncOp->OnUpdateRawData(ResourceTypes::eVertex, vertices);
+    syncOp->OnUpdateRawData(ResourceId(0, 0), 0u, texture.pixels);
     upload->submit(syncOp, phongAsset);
 
     // ---- frame loop ------------------------------------------------------
@@ -176,14 +196,23 @@ void test()
     auto frameSync = std::make_shared<CmdSyncDevice>(phongAsset);
 
     while (!window.shouldClose()) {
+        // Pump the GLFW message queue first: processInputEvents() only reads the
+        // cached key state, so without polling the resize callback never fires
+        // (no swapchain rebuild) and the close button / ESC are ignored.
+        window.poolEvents();
         float currentTime = 0.0f;
         window.processInputEvents(currentTime);
         if (!sequence->prepareFrame()) {
             continue;
         }
         const uint32_t frame = sequence->getFrameInFlight();
-        auto cameraMatrix = MakeCameraMatrix(*camera, static_cast<float>(displayExtent.width),
-                                             static_cast<float>(displayExtent.height));
+        // Pass A renders into a fixed 512 x 512 target while pass B stretches that
+        // square over the whole window, so pass A must use the *window* aspect:
+        // the horizontal squash in the offscreen image and the stretch in pass B
+        // cancel exactly, leaving the cube undistorted at any window size.  The
+        // extent is re-read every frame because a resize rebuilds the swapchain.
+        const vk::Extent2D extent = *mgr->getSwapChain()->getExtent2D();
+        auto cameraMatrix = MakeCameraMatrix(*camera, extent);
         ViewEyePoint eye{};
         eye.position = MakeEyePoint(*camera);
         LightSource light{};

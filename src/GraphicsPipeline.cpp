@@ -373,13 +373,14 @@ void GraphicsPipeline::recordDrawCommand(const vk::CommandBuffer &cmd, uint32_t 
         m_asset->bindToPipeline(cmd);
     }
 
+    const uint32_t instanceCount = m_vertexInput ? m_vertexInput->drawInstanceCount() : 1u;
     if (m_vertexInput && m_vertexInput->hasIndexBuffer()) {
-        cmd.drawIndexed(m_vertexInput->indexCount(), 1, 0, 0, 0);
+        cmd.drawIndexed(m_vertexInput->indexCount(), instanceCount, 0, 0, 0);
     } else if (!m_vertexInput || m_vertexInput->isEmptyInputState()) {
         // No vertex input: shaders generate vertices from gl_VertexIndex.
         const uint32_t vertexCount = m_vertexInput ? m_vertexInput->getVertexCount() : 0;
-        cmd.draw(vertexCount == 0 ? 3 : vertexCount, 1, 0, 0);
+        cmd.draw(vertexCount == 0 ? 3 : vertexCount, instanceCount, 0, 0);
     } else {
-        cmd.draw(m_vertexInput->vertexCount(), 1, 0, 0);
+        cmd.draw(m_vertexInput->vertexCount(), instanceCount, 0, 0);
     }
 }

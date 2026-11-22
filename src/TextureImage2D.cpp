@@ -102,9 +102,13 @@ void TextureImage2D::createSampler()
     samplerInfo.magFilter = vk::Filter::eLinear;
     samplerInfo.minFilter = vk::Filter::eLinear;
     samplerInfo.mipmapMode = vk::SamplerMipmapMode::eLinear;
-    samplerInfo.addressModeU = vk::SamplerAddressMode::eRepeat;
-    samplerInfo.addressModeV = vk::SamplerAddressMode::eRepeat;
-    samplerInfo.addressModeW = vk::SamplerAddressMode::eRepeat;
+    // Every mesh in this project maps UVs exactly onto [0, 1] per face, so the
+    // wrap modes must not be eRepeat: with linear filtering, u = 0 and u = 1 sit
+    // on the texel border and would blend the opposite edge into the face border
+    // (a one-texel seam along every cube edge, amplified by mip selection).
+    samplerInfo.addressModeU = vk::SamplerAddressMode::eClampToEdge;
+    samplerInfo.addressModeV = vk::SamplerAddressMode::eClampToEdge;
+    samplerInfo.addressModeW = vk::SamplerAddressMode::eClampToEdge;
     // Without physical-device limits here, use the widely supported maximum.
     samplerInfo.anisotropyEnable = VK_TRUE;
     samplerInfo.maxAnisotropy = 16.0f;

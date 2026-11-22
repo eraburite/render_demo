@@ -44,7 +44,6 @@ void test()
     auto camera = std::make_shared<Camera>(glm::vec3(0.0f, 0.0f, 3.0f));
     GLFWwindow window(800, 600, camera);
     auto mgr = RenderManager::Create(window, MAX_FRAMES_IN_FLIGHT);
-    const vk::Extent2D displayExtent = *mgr->getSwapChain()->getExtent2D();
 
     auto vertices = CubeVertices(glm::vec3(1.0f));
     auto texture = loadTextureAuto("assets/textures/awesomeface.png", "build/textures/awesomeface.png");
@@ -97,6 +96,10 @@ void test()
     auto frameSync = std::make_shared<CmdSyncDevice>(asset);
 
     while (!window.shouldClose()) {
+        // Pump the GLFW message queue first: processInputEvents() only reads the
+        // cached key state, so without polling the resize callback never fires
+        // (no swapchain rebuild) and the close button / ESC are ignored.
+        window.poolEvents();
         float currentTime = 0.0f;
         window.processInputEvents(currentTime);
         if (!sequence->prepareFrame()) {
@@ -104,8 +107,10 @@ void test()
         }
 
         const uint32_t frame = sequence->getFrameInFlight();
-        auto cameraMatrix = MakeCameraMatrix(*camera, static_cast<float>(displayExtent.width),
-                                             static_cast<float>(displayExtent.height));
+        // The swapchain is rebuilt on resize, so the projection has to follow the
+        // live extent or the cube would be stretched after every window resize.
+        const vk::Extent2D extent = *mgr->getSwapChain()->getExtent2D();
+        auto cameraMatrix = MakeCameraMatrix(*camera, extent);
         auto model = MakeSpinningModel(currentTime);
         drawOp->OnUpdateRawData(ResourceId(1, 0), frame, cameraMatrix);
         drawOp->OnUpdateRawData(ResourceTypes::ePushConst, frame, model);

@@ -28,6 +28,9 @@ public:
     void recordDispatch(const std::shared_ptr<CmdOpBase> &op);
     void record(const std::shared_ptr<CmdOpBase> &op);
     void recordPass(const std::shared_ptr<IRenderPass> &renderPass, const std::function<void()> &body);
+    // Advances the render pass opened by the enclosing recordPass() body to the
+    // next subpass.  Throws when called outside recordPass().
+    void nextSubpass();
 
     void submitFrame();
     [[nodiscard]] bool presentFrame();
@@ -39,6 +42,8 @@ private:
     void createCommandPools();
     void createCommandBuffers();
     void createSyncObjects();
+    void ensureRenderFinishedSize(uint32_t imageIndex);
+    void rebuildSwapChain();
     void waitIdle();
 
 private:
@@ -62,4 +67,6 @@ private:
     std::vector<std::shared_ptr<vk::Fence>> m_computeFences;
 
     DescriptorBindingState m_bindingState;
+    // Render pass currently open inside recordPass(); used by nextSubpass().
+    std::shared_ptr<IRenderPass> m_activeRenderPass;
 };

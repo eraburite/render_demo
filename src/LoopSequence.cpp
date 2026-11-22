@@ -75,6 +75,16 @@ void waitAndResetFence(const std::shared_ptr<vk::Device> &device, const std::sha
     check(device->resetFences(1, &*fence), "vkResetFences");
 }
 
+// Wait without resetting.  The frame fence is reset in submitFrame() right
+// before the submit that signals it, so a frame that ends early (out-of-date
+// swapchain -> prepareFrame() returns false, nothing is submitted) keeps its
+// fence signaled instead of leaving prepareFrame() blocked forever on the next
+// iteration for the same frame slot.
+void waitFence(const std::shared_ptr<vk::Device> &device, const std::shared_ptr<vk::Fence> &fence, const char *what)
+{
+    check(device->waitForFences(1, &*fence, VK_TRUE, std::numeric_limits<uint64_t>::max()), what);
+}
+
 } // namespace
 
 LoopSequence::LoopSequence(std::shared_ptr<RenderManager> renderMgr, uint32_t maxFrames) :
@@ -184,6 +194,28 @@ void LoopSequence::createSyncObjects()
     }
 }
 
+void LoopSequence::ensureRenderFinishedSize(uint32_t imageIndex)
+{
+    // A rebuilt swapchain may expose more images than the one this sequence was
+    // constructed with, and m_renderFinished is indexed by image index.  Grow the
+    // table on demand; fresh semaphores are unsignaled and unused, so this is
+    // safe while older frames are still in flight.
+    while (imageIndex >= m_renderFinished.size()) {
+        m_renderFinished.push_back(createSemaphore(m_device));
+    }
+}
+
+void LoopSequence::rebuildSwapChain()
+{
+    // checkAndResetResize() consumes the window's resize flag and notifies the
+    // WindowEvent listener, which performs the rebuild.  Only fall back to an
+    // explicit rebuild when the out-of-date condition did not come from that
+    // flag, so a plain resize rebuilds the swapchain exactly once.
+    if (!m_renderMgr->checkAndResetResize()) {
+        m_renderMgr->reCreateSwapChain();
+    }
+}
+
 void LoopSequence::waitIdle()
 {
     if (m_device) {
@@ -194,7 +226,9 @@ void LoopSequence::waitIdle()
 bool LoopSequence::prepareFrame()
 {
     const uint32_t frame = m_currentFrame;
-    waitAndResetFence(m_device, m_inFlightFences[frame], "vkWaitForFences (frame)");
+    // Wait only; the fence is reset in submitFrame() together with the submit
+    // that re-signals it (see waitFence()).
+    waitFence(m_device, m_inFlightFences[frame], "vkWaitForFences (frame)");
 
     // The previous frame's timestamps are safe to read now that its fence
     // has signaled.  On the very first frame there is nothing to sample.
@@ -202,7 +236,10 @@ bool LoopSequence::prepareFrame()
         LogExecutionTime((frame + m_maxFrames - 1) % m_maxFrames);
     }
 
-    const std::shared_ptr<SwapChain> swapChain = m_renderMgr->getSwapChain();
+    // Non-const: the reference is dropped before a rebuild, otherwise the old
+    // swapchain outlives RenderManager::reCreateSwapChain() and the new
+    // vkCreateSwapchainKHR fails with VK_ERROR_NATIVE_WINDOW_IN_USE_KHR.
+    std::shared_ptr<SwapChain> swapChain = m_renderMgr->getSwapChain();
     if (!swapChain) {
         return false;
     }
@@ -212,7 +249,8 @@ bool LoopSequence::prepareFrame()
     const vk::Result acquireResult = m_device->acquireNextImageKHR(
         swapChain->handle(), std::numeric_limits<uint64_t>::max(), *m_imageAvailable[frame], nullptr, &m_imageIndex);
     if (acquireResult == vk::Result::eErrorOutOfDateKHR) {
-        m_renderMgr->reCreateSwapChain();
+        swapChain.reset();
+        rebuildSwapChain();
         return false;
     }
     if (acquireResult != vk::Result::eSuccess && acquireResult != vk::Result::eSuboptimalKHR) {
@@ -325,8 +363,23 @@ void LoopSequence::recordPass(const std::shared_ptr<IRenderPass> &renderPass, co
     // into the wrong swapchain image and presented an unrendered UNDEFINED one.
     const uint32_t framebufferIndex = renderPass->isSwapChainSized() ? m_imageIndex : m_currentFrame;
     renderPass->begin(cmd, framebufferIndex, renderPass->extent());
-    body();
+    m_activeRenderPass = renderPass;
+    try {
+        body();
+    } catch (...) {
+        m_activeRenderPass.reset();
+        throw;
+    }
     renderPass->end(cmd);
+    m_activeRenderPass.reset();
+}
+
+void LoopSequence::nextSubpass()
+{
+    if (!m_activeRenderPass) {
+        throw std::runtime_error("nextSubpass() must be called inside recordPass()");
+    }
+    m_activeRenderPass->nextSubpass(*m_commandBuffers[m_currentFrame]);
 }
 
 void LoopSequence::submitFrame()
@@ -343,6 +396,7 @@ void LoopSequence::submitFrame()
         waitStages[waitCount] = vk::PipelineStageFlagBits::eVertexInput;
         ++waitCount;
     }
+    ensureRenderFinishedSize(m_imageIndex);
     const vk::Semaphore renderFinished = *m_renderFinished[m_imageIndex];
     const vk::CommandBuffer &cmd = *m_commandBuffers[frame];
 
@@ -355,13 +409,18 @@ void LoopSequence::submitFrame()
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = &renderFinished;
 
+    // Reset right before the submit that signals it so an aborted frame cannot
+    // leave the fence unsignaled and stall the next wait (see waitFence()).
+    check(m_device->resetFences(1, &*m_inFlightFences[frame]), "vkResetFences");
     check(m_graphicsQueue->submit(1, &submitInfo, *m_inFlightFences[frame]), "vkQueueSubmit (graphics)");
     m_computeActive = false;
 }
 
 bool LoopSequence::presentFrame()
 {
-    const std::shared_ptr<SwapChain> swapChain = m_renderMgr->getSwapChain();
+    // Non-const: released before any rebuild so the old swapchain is destroyed
+    // by RenderManager::reCreateSwapChain() (VUID / NATIVE_WINDOW_IN_USE).
+    std::shared_ptr<SwapChain> swapChain = m_renderMgr->getSwapChain();
     if (!swapChain) {
         return false;
     }
@@ -378,9 +437,16 @@ bool LoopSequence::presentFrame()
     presentInfo.pImageIndices = &m_imageIndex;
 
     const vk::Result presentResult = m_presentQueue->presentKHR(&presentInfo);
-    if (presentResult == vk::Result::eErrorOutOfDateKHR || presentResult == vk::Result::eSuboptimalKHR
-        || m_renderMgr->checkAndResetResize()) {
-        m_renderMgr->reCreateSwapChain();
+    // Our reference must be gone before the swapchain is recreated.
+    swapChain.reset();
+    if (presentResult == vk::Result::eErrorOutOfDateKHR || presentResult == vk::Result::eSuboptimalKHR) {
+        rebuildSwapChain();
+        return false;
+    }
+    // The resize flag is consumed by the WindowEvent listener, which already
+    // rebuilt the swapchain and framebuffers; rebuilding again here would
+    // recreate them twice per resize.
+    if (m_renderMgr->checkAndResetResize()) {
         return false;
     }
     if (presentResult != vk::Result::eSuccess) {

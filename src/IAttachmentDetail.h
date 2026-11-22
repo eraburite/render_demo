@@ -91,11 +91,47 @@ inline std::vector<vk::SubpassDependency> makeDependencies(DependencyPreset pres
                 vk::DependencyFlagBits::eByRegion));
             break;
         case DependencyPreset::eMultiSubpass:
-            deps.push_back(vk::SubpassDependency(0, 1, vk::PipelineStageFlagBits::eColorAttachmentOutput,
-                                                 vk::PipelineStageFlagBits::eFragmentShader,
-                                                 vk::AccessFlagBits::eColorAttachmentWrite,
-                                                 vk::AccessFlagBits::eInputAttachmentRead,
-                                                 vk::DependencyFlagBits::eByRegion));
+            // Subpass 1 writes the same color/depth attachments subpass 0 wrote,
+            // so the 0->1 dependency must order those attachment writes before
+            // the second subpass reads and writes them again.
+            deps.push_back(vk::SubpassDependency(
+                VK_SUBPASS_EXTERNAL, 0, vk::PipelineStageFlagBits::eBottomOfPipe,
+                vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests,
+                vk::AccessFlagBits::eMemoryRead,
+                vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite
+                    | vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+                vk::DependencyFlagBits::eByRegion));
+            deps.push_back(vk::SubpassDependency(
+                0, 1,
+                vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eLateFragmentTests,
+                vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests,
+                vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+                vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite
+                    | vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+                vk::DependencyFlagBits::eByRegion));
+            // The resolve (presented) attachment is first used in subpass 1, so
+            // its UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL transition happens at
+            // vkCmdNextSubpass rather than at render pass begin.  An
+            // EXTERNAL -> 1 dependency keeps that transition ordered against
+            // the acquire that handed us the swapchain image.
+            deps.push_back(vk::SubpassDependency(
+                VK_SUBPASS_EXTERNAL, 1, vk::PipelineStageFlagBits::eBottomOfPipe,
+                vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests,
+                vk::AccessFlagBits::eMemoryRead,
+                vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+                vk::DependencyFlagBits::eByRegion));
+            // Release both subpasses' attachment writes towards the presentation
+            // engine (or the next frame's layout transition).
+            deps.push_back(vk::SubpassDependency(
+                1, VK_SUBPASS_EXTERNAL,
+                vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eLateFragmentTests,
+                vk::PipelineStageFlagBits::eBottomOfPipe | vk::PipelineStageFlagBits::eColorAttachmentOutput
+                    | vk::PipelineStageFlagBits::eEarlyFragmentTests,
+                vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite
+                    | vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+                vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eColorAttachmentRead
+                    | vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+                vk::DependencyFlagBits::eByRegion));
             break;
         case DependencyPreset::eOffscreen:
             // Offscreen framebuffers share one set of attachment images across

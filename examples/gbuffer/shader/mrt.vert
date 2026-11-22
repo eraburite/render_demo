@@ -17,5 +17,8 @@ void main() {
     gl_Position = camera.proj * camera.view * world;
     fragWorldPos = world.xyz;
     fragWorldNormal = mat3(transpose(inverse(model))) * inNormal;
-    fragAlbedo = mix(inColor, vec3(0.85, 0.35, 0.2), step(0.5, inColor.r) * step(inColor.g, 0.5));
+    // Albedo travels through the G-buffer; the deferred pass multiplies it by the
+    // light contribution.  (The previous expression mixed in a hard-coded orange
+    // that the step() factors never selected - dead code.)
+    fragAlbedo = inColor;
 }

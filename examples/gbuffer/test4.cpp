@@ -60,13 +60,16 @@ std::shared_ptr<vk::Sampler> makeSampler(const std::shared_ptr<vk::Device> &devi
     return std::shared_ptr<vk::Sampler>(new vk::Sampler(sampler), [device](vk::Sampler *p) { if (p) { device->destroySampler(*p); } delete p; });
 }
 
+// Three cubes side by side.  Spacing and camera distance are chosen together so
+// the rotated cubes (bounding radius ~0.87) stay inside the 45-degree frustum:
+// half-width at z = 0 is 4.5 * tan(22.5) * 4/3 = 2.49 > 1.4 + 0.87.
 std::vector<glm::mat4> makeModels(uint32_t count)
 {
     std::vector<glm::mat4> models;
     models.reserve(count);
     for (uint32_t i = 0; i < count; ++i) {
         glm::mat4 model = glm::mat4(1.0f);
-        model = glm::translate(model, glm::vec3(static_cast<float>(i) * 1.8f - 1.8f, 0.0f, 0.0f));
+        model = glm::translate(model, glm::vec3(static_cast<float>(i) * 1.4f - 1.4f, 0.0f, 0.0f));
         model = glm::rotate(model, glm::radians(20.0f * static_cast<float>(i)), glm::vec3(1.0f, 0.3f, 0.5f));
         models.push_back(model);
     }
@@ -77,10 +80,9 @@ std::vector<glm::mat4> makeModels(uint32_t count)
 
 void test()
 {
-    auto camera = std::make_shared<Camera>(glm::vec3(0.0f, 0.0f, 3.0f));
+    auto camera = std::make_shared<Camera>(glm::vec3(0.0f, 0.0f, 4.5f));
     GLFWwindow window(800, 600, camera);
     auto mgr = RenderManager::Create(window, MAX_FRAMES_IN_FLIGHT);
-    const vk::Extent2D displayExtent = *mgr->getSwapChain()->getExtent2D();
     auto vertices = CubeVertices(glm::vec3(1.0f));
     const auto models = makeModels(3);
 
@@ -103,7 +105,8 @@ void test()
         0,
         std::vector<VertexComponent>{VertexComponent::ePosition, VertexComponent::eColor, VertexComponent::eUV,
                                      VertexComponent::eNormal},
-        static_cast<uint32_t>(vertices.size()), 0u, DataTypes::eUnsignedInt, false, 0u);
+        static_cast<uint32_t>(vertices.size()), 0u, DataTypes::eUnsignedInt, false, 0u,
+        static_cast<uint32_t>(models.size()));
     auto mrtAsset = mgr->CreateShaderAssetGroup(vertexInput, mrtLayout);
     mrtAsset->addShaderSpirvCode("vert", std::vector<uint32_t>(shader::MRT_VERT_SPV.begin(),
                                                                shader::MRT_VERT_SPV.end()));
@@ -183,14 +186,18 @@ void test()
     auto deferredFrameSync = std::make_shared<CmdSyncDevice>(deferredAsset);
 
     while (!window.shouldClose()) {
+        // Pump the GLFW message queue first: processInputEvents() only reads the
+        // cached key state, so without polling the resize callback never fires
+        // (no swapchain rebuild) and the close button / ESC are ignored.
+        window.poolEvents();
         float currentTime = 0.0f;
         window.processInputEvents(currentTime);
         if (!sequence->prepareFrame()) {
             continue;
         }
         const uint32_t frame = sequence->getFrameInFlight();
-        auto cameraMatrix = MakeCameraMatrix(*camera, static_cast<float>(displayExtent.width),
-                                             static_cast<float>(displayExtent.height));
+        const vk::Extent2D extent = *mgr->getSwapChain()->getExtent2D();
+        auto cameraMatrix = MakeCameraMatrix(*camera, extent);
         auto model = MakeSpinningModel(currentTime);
         LightSource light{};
         light.position = glm::vec4(1.5f, 2.0f, 2.0f, 1.0f);

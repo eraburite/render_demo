@@ -26,14 +26,20 @@ public:
         bp.swapChainSized = isSwapChainSized();
         bp.colorAttachmentCount = 1;
 
-        const bool useResolve = (m_mode == Mode::eMSAA);
+        // eMultiSubpass turns the same color+depth attachments into two
+        // subpasses: the second one (e.g. light cubes) reuses the results of
+        // the first (e.g. lit scene) without leaving the render pass.
+        const bool multiSubpass = (m_preset == DependencyPreset::eMultiSubpass);
+        // A 1x device cannot resolve; fall back to a plain single-sample pass.
+        const bool useResolve = (m_mode == Mode::eMSAA) && (bp.sampleCount != vk::SampleCountFlagBits::e1);
 
         // color attachment (attachment 0)
         vk::AttachmentDescription color{};
         color.format = m_colorFormat;
         color.samples = bp.sampleCount;
         color.loadOp = vk::AttachmentLoadOp::eClear;
-        color.storeOp = useResolve ? vk::AttachmentStoreOp::eDontCare : vk::AttachmentStoreOp::eStore;
+        color.storeOp = (useResolve && !multiSubpass) ? vk::AttachmentStoreOp::eDontCare
+                                                      : vk::AttachmentStoreOp::eStore;
         color.initialLayout = vk::ImageLayout::eUndefined;
         color.finalLayout = useResolve ? vk::ImageLayout::eColorAttachmentOptimal : m_finalColorLayout;
         bp.attachments.push_back(color);
@@ -44,7 +50,8 @@ public:
             depth.format = m_depthFormat;
             depth.samples = bp.sampleCount;
             depth.loadOp = vk::AttachmentLoadOp::eClear;
-            depth.storeOp = vk::AttachmentStoreOp::eDontCare;
+            // The second subpass performs depth tests against subpass 0's writes.
+            depth.storeOp = multiSubpass ? vk::AttachmentStoreOp::eStore : vk::AttachmentStoreOp::eDontCare;
             // Vulkan-Hpp defaults stencilLoadOp to eLoad, which is invalid when
             // the format carries stencil and initialLayout is UNDEFINED.
             depth.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
@@ -54,11 +61,16 @@ public:
             bp.attachments.push_back(depth);
         }
 
-        SubpassBlueprint subpass;
-        subpass.colorAttachments.push_back(vk::AttachmentReference(0, vk::ImageLayout::eColorAttachmentOptimal));
-        if (m_depthFormat != vk::Format::eUndefined) {
-            subpass.depthStencil = vk::AttachmentReference(1, vk::ImageLayout::eDepthStencilAttachmentOptimal);
-        }
+        auto makeSubpass = [&]() {
+            SubpassBlueprint subpass;
+            subpass.colorAttachments.push_back(vk::AttachmentReference(0, vk::ImageLayout::eColorAttachmentOptimal));
+            if (m_depthFormat != vk::Format::eUndefined) {
+                subpass.depthStencil = vk::AttachmentReference(1, vk::ImageLayout::eDepthStencilAttachmentOptimal);
+            }
+            return subpass;
+        };
+
+        SubpassBlueprint subpass = makeSubpass();
 
         if (useResolve) {
             // resolve attachment (attachment 2)
@@ -70,10 +82,22 @@ public:
             resolve.initialLayout = vk::ImageLayout::eUndefined;
             resolve.finalLayout = m_finalColorLayout;
             bp.attachments.push_back(resolve);
-            subpass.resolveAttachments.push_back(vk::AttachmentReference(2, vk::ImageLayout::eColorAttachmentOptimal));
+            // Resolve must happen once, in the subpass that finishes the image.
+            if (!multiSubpass) {
+                subpass.resolveAttachments.push_back(
+                    vk::AttachmentReference(2, vk::ImageLayout::eColorAttachmentOptimal));
+            }
         }
 
         bp.subpasses.push_back(subpass);
+        if (multiSubpass) {
+            SubpassBlueprint second = makeSubpass();
+            if (useResolve) {
+                second.resolveAttachments.push_back(
+                    vk::AttachmentReference(2, vk::ImageLayout::eColorAttachmentOptimal));
+            }
+            bp.subpasses.push_back(second);
+        }
         bp.dependencies = makeDependencies(m_preset);
 
         bp.clearValues.push_back(vk::ClearValue(vk::ClearColorValue(std::array<float, 4>{0.05f, 0.06f, 0.09f, 1.0f})));

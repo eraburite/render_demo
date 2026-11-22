@@ -13,9 +13,20 @@ inline CameraMatrix MakeCameraMatrix(const Camera &camera, float width, float he
 {
     CameraMatrix result;
     result.view = camera.GetViewMatrix();
-    result.proj = glm::perspective(glm::radians(fov), width / height, 0.1f, 100.0f);
+    // A minimised window reports a 0-height framebuffer; dividing by zero would
+    // turn the whole projection into NaN and blank the frame.
+    const float safeHeight = height > 0.0f ? height : 1.0f;
+    result.proj = glm::perspective(glm::radians(fov), width / safeHeight, 0.1f, 100.0f);
     result.proj[1][1] *= -1;
     return result;
+}
+
+// Always feed this overload the *current* swapchain extent (query it every
+// frame).  Building the projection once from the startup extent keeps the old
+// aspect ratio after a resize, which stretches every object on screen.
+inline CameraMatrix MakeCameraMatrix(const Camera &camera, const vk::Extent2D &extent, float fov = 45.0f)
+{
+    return MakeCameraMatrix(camera, static_cast<float>(extent.width), static_cast<float>(extent.height), fov);
 }
 
 // Spin about the model's own Y axis plus a fixed -20 degree X tilt so that

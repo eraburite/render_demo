@@ -1,5 +1,6 @@
 // particle: one compute pass updates 8192 particles in an SSBO, the graphics
 // pass expands them into camera-facing quads reading the very same asset.
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -41,16 +42,29 @@ struct Particle {
     glm::vec4 color;
 };
 
+// Push constant payload shared by compute and vertex stages.  The vertex shader
+// needs the view basis (first two rows of the view matrix) to billboard a quad
+// towards the camera, and view * proj alone cannot recover it.  128 bytes is
+// exactly the minimum guaranteed maxPushConstantsSize.
+struct ViewProjection {
+    glm::mat4 view;
+    glm::mat4 proj;
+};
+
 std::vector<Particle> makeParticles()
 {
     std::vector<Particle> particles;
     particles.reserve(PARTICLE_COUNT);
     std::mt19937 rng(12345u);
     std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    // The seed state matches the respawn state in particle.comp: a narrow column
+    // near the top whose horizontal velocity grows with the spawn offset.  Using
+    // the full frustum here instead made the first second look like wallpaper and
+    // only converged to the fountain after one full fall cycle.
     for (uint32_t i = 0; i < PARTICLE_COUNT; ++i) {
         Particle p{};
-        p.position = glm::vec4(dist(rng) * 1.5f, dist(rng) * 1.5f, dist(rng) * 0.5f, 1.0f);
-        p.velocity = glm::vec4(dist(rng) * 0.1f, 0.4f + std::abs(dist(rng)) * 0.4f, 0.0f, 0.0f);
+        p.position = glm::vec4(dist(rng) * 0.25f, 0.2f + std::abs(dist(rng)) * 1.0f, dist(rng) * 0.4f, 1.0f);
+        p.velocity = glm::vec4(p.position.x * 2.0f, 0.6f + std::abs(dist(rng)) * 0.6f, 0.0f, 0.0f);
         p.color = glm::vec4(0.5f + 0.5f * dist(rng), 0.5f + 0.5f * dist(rng), 0.5f + 0.5f * dist(rng), 1.0f);
         particles.push_back(p);
     }
@@ -64,10 +78,9 @@ void test()
     auto camera = std::make_shared<Camera>(glm::vec3(0.0f, 0.0f, 3.0f));
     GLFWwindow window(800, 600, camera);
     auto mgr = RenderManager::Create(window, MAX_FRAMES_IN_FLIGHT);
-    const vk::Extent2D displayExtent = *mgr->getSwapChain()->getExtent2D();
 
     // ---- one compute layout, shared by compute and graphics --------------
-    PushConstantDetail viewProjPush{static_cast<uint32_t>(sizeof(glm::mat4)),
+    PushConstantDetail viewProjPush{static_cast<uint32_t>(sizeof(ViewProjection)),
                                     vk::ShaderStageFlagBits::eCompute | vk::ShaderStageFlagBits::eVertex, 0};
     auto layout = std::make_shared<ComputeLayoutAtlas>(
         std::vector<ComputeComponent>{ComputeComponent::eParameter, ComputeComponent::eParticleInput,
@@ -123,7 +136,15 @@ void test()
     auto drawOp = std::make_shared<CmdOpDrawFrame>(graphicsPipeline);
     auto frameSync = std::make_shared<CmdSyncDevice>(asset);
 
+    // Wall-clock delta so the simulation speed does not depend on the refresh
+    // rate; the old fixed 1/60 step drifted whenever frames were slower.
+    float previousTime = 0.0f;
+
     while (!window.shouldClose()) {
+        // Pump the GLFW message queue first: processInputEvents() only reads the
+        // cached key state, so without polling the resize callback never fires
+        // (no swapchain rebuild) and the close button / ESC are ignored.
+        window.poolEvents();
         float currentTime = 0.0f;
         window.processInputEvents(currentTime);
         if (!sequence->prepareFrame()) {
@@ -131,12 +152,16 @@ void test()
         }
         const uint32_t frame = sequence->getFrameInFlight();
 
-        const float deltaTime = 1.0f / 60.0f;
-        dispatchOp->OnUpdateRawData(ResourceId(0, 0), frame, deltaTime);
-        auto cameraMatrix = MakeCameraMatrix(*camera, static_cast<float>(displayExtent.width),
-                                             static_cast<float>(displayExtent.height));
-        glm::mat4 viewProj = cameraMatrix.proj * cameraMatrix.view;
-        drawOp->OnUpdateRawData(ResourceTypes::ePushConst, frame, viewProj);
+        const float deltaTime =
+            previousTime > 0.0f ? std::min(std::max(currentTime - previousTime, 0.0f), 0.1f) : 1.0f / 60.0f;
+        previousTime = currentTime;
+        // The parameter block is declared as float + 3 floats of padding; send the
+        // whole 16-byte vec4 so the padding is never uninitialised memory.
+        dispatchOp->OnUpdateRawData(ResourceId(0, 0), frame, glm::vec4(deltaTime, 0.0f, 0.0f, 0.0f));
+        const vk::Extent2D extent = *mgr->getSwapChain()->getExtent2D();
+        const CameraMatrix cameraMatrix = MakeCameraMatrix(*camera, extent);
+        const ViewProjection viewProjection{cameraMatrix.view, cameraMatrix.proj};
+        drawOp->OnUpdateRawData(ResourceTypes::ePushConst, frame, viewProjection);
 
         sequence->beginComputeRecording();
         sequence->recordDispatch(dispatchOp);
