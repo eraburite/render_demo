@@ -2,9 +2,12 @@
 // a deferred fullscreen-triangle lighting pass into the swapchain.
 #include <chrono>
 #include <cstdint>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "Camera.h"
@@ -13,12 +16,15 @@
 #include "RenderCommon.h"
 
 #include "AttachmentDetailConfig.h"
+#include "DebugViewMode.h"
 #include "DescriptorLayoutConfig.h"
+#include "ImageDump.h"
 #include "VertexInputStateConfig.h"
 
 #include "CmdOpDrawFrame.h"
 #include "CmdSyncDevice.h"
 #include "IRenderPass.h"
+#include "ImageReadback.h"
 #include "LoopSequence.h"
 #include "OnceSequence.h"
 #include "RenderManager.h"
@@ -78,7 +84,7 @@ std::vector<glm::mat4> makeModels(uint32_t count)
 
 } // namespace
 
-void test()
+void test(int argc, char **argv)
 {
     auto camera = std::make_shared<Camera>(glm::vec3(0.0f, 0.0f, 4.5f));
     GLFWwindow window(800, 600, camera);
@@ -129,6 +135,10 @@ void test()
          InputAttachmentComponent::eAlbedo},
         UpdateFrequency::eEachFrame, false);
     deferredLayout->setDetails({empty0, empty1, frameSet, empty3, inputSet});
+    // Debug View switch lives in deferred.frag; one 32-byte push constant is all
+    // it needs (see DebugViewPushConstant).
+    deferredLayout->setPushConstant(static_cast<uint32_t>(sizeof(DebugViewPushConstant)),
+                                    vk::ShaderStageFlagBits::eFragment);
 
     auto deferredAsset = mgr->CreateShaderAssetGroup(deferredLayout);
     deferredAsset->addShaderSpirvCode("vert", std::vector<uint32_t>(shader::DEFERRED_VERT_SPV.begin(),
@@ -185,6 +195,86 @@ void test()
     auto frameSync = std::make_shared<CmdSyncDevice>(mrtAsset);
     auto deferredFrameSync = std::make_shared<CmdSyncDevice>(deferredAsset);
 
+    // Keys 0..5 select the Debug View; slot 0 (final) is the default.  The list is
+    // the supported subset for the deferred path, and the key index maps onto it,
+    // so the keys stay 0..5 regardless of the shared enum's ordering.
+    DebugViewState debugView({DebugViewMode::eFinal, DebugViewMode::eAlbedo, DebugViewMode::eNormal,
+                              DebugViewMode::ePosition, DebugViewMode::eLinearDepth,
+                              DebugViewMode::eLightingOnly});
+
+    // ---- debug image dump -------------------------------------------------
+    // The Debug View answers "does it look right?" on screen; P additionally
+    // freezes the current frame's G-Buffer into dump/*.ppm, which keeps the raw
+    // texel values (pick colours, measure ranges, diff two runs).
+    ImageReadback readback(mgr->getLogicalDevice(), mgr->memoryProperties(), mgr->getMemoryAllocator(),
+                           mgr->getGraphicsQueue(), *mgr->getQueueFamilyIndices().graphicsFamily);
+    const std::filesystem::path dumpDirectory = "dump";
+    uint32_t nextDumpIndex = 0;
+    bool dumpKeyHeld = false;
+
+    // Colour slots follow GBufferAttachmentDetail::build(): 0 = position,
+    // 1 = normal, 2 = albedo.
+    const auto dumpGBuffer = [&](uint32_t frame) {
+        const std::vector<vk::Image> &images = passA->offscreenImages();
+        const uint32_t set = frame % setCount;
+        const vk::Extent2D gbufferExtent = passA->extent();
+
+        const auto makeRequest = [&](std::string label, uint32_t slot, DumpEncoding encoding) {
+            DumpRequest request;
+            request.label = std::move(label);
+            request.image = images[set * colorCount + slot];
+            request.format = passA->offscreenColorFormat(slot);
+            request.extent = gbufferExtent;
+            request.layout = vk::ImageLayout::eShaderReadOnlyOptimal;
+            request.encoding = encoding;
+            // Same constants as DebugViewState::pushConstant(), so the file and
+            // the on-screen view encode a channel identically.
+            request.referenceScale = 5.0f;
+            request.eyePosition = camera->Position;
+            request.nearPlane = 0.1f;
+            request.farPlane = 100.0f;
+            return request;
+        };
+
+        std::vector<DumpRequest> requests;
+        requests.push_back(makeRequest("gbuffer-albedo", 2, DumpEncoding::eColor));
+        requests.push_back(makeRequest("gbuffer-normal", 1, DumpEncoding::eNormal));
+        requests.push_back(makeRequest("gbuffer-position", 0, DumpEncoding::ePosition));
+        // Depth is not stored (the pass discards it), so it is reconstructed
+        // from the position channel -- the same thing deferred.frag does for
+        // DebugViewMode::eLinearDepth.
+        requests.push_back(makeRequest("gbuffer-linear-depth", 0, DumpEncoding::eLinearDepth));
+
+        const std::vector<DumpResult> results = DumpImages(readback, requests, dumpDirectory, nextDumpIndex);
+        nextDumpIndex += static_cast<uint32_t>(requests.size());
+
+        std::cout << std::fixed << std::setprecision(3);
+        for (const DumpResult &result : results) {
+            std::cout << "[dump] " << result.path.string() << "  " << result.extent.width << "x"
+                      << result.extent.height << "  alpha-coverage=" << result.alphaCoverage << "  mean=("
+                      << result.meanColor.r << ", " << result.meanColor.g << ", " << result.meanColor.b << ")";
+            if (result.meanNormalLength > 0.0f) {
+                std::cout << "  |n|=" << result.meanNormalLength;
+            }
+            std::cout << "\n";
+        }
+    };
+
+    std::cout << "[debug] press 0..5 to inspect the G-Buffer channels, P to dump them to dump/*.ppm\n"
+              << "[debug] scripted runs: --view <index> --capture <frames>\n";
+
+    const DebugCaptureOptions captureOptions = ParseDebugCaptureOptions(argc, argv);
+    if (captureOptions.viewSpecified) {
+        debugView.select(captureOptions.initialViewIndex);
+    }
+    if (captureOptions.requested()) {
+        std::cout << "[debug] auto-capture after " << captureOptions.framesBeforeCapture << " frames\n";
+    }
+    uint32_t framesRendered = 0;
+    // A dump survives a skipped frame (resize / out-of-date swapchain), so the
+    // key press is never silently lost.
+    bool pendingDump = false;
+
     while (!window.shouldClose()) {
         // Pump the GLFW message queue first: processInputEvents() only reads the
         // cached key state, so without polling the resize callback never fires
@@ -192,6 +282,14 @@ void test()
         window.poolEvents();
         float currentTime = 0.0f;
         window.processInputEvents(currentTime);
+        const auto isKeyDown = [&](int key) { return window.isKeyDown(key); };
+        debugView.poll(isKeyDown, GLFW_KEY_0);
+        if (debugView.changed()) {
+            std::cout << "[debug] view = " << DebugViewModeName(debugView.mode()) << "\n";
+        }
+        const bool dumpRequested =
+            debugKeyJustPressed(isKeyDown, GLFW_KEY_P, dumpKeyHeld) || captureOptions.isCaptureFrame(framesRendered);
+        pendingDump = pendingDump || dumpRequested;
         if (!sequence->prepareFrame()) {
             continue;
         }
@@ -210,6 +308,10 @@ void test()
         mrtDraw->OnUpdateRawData(ResourceTypes::ePushConst, frame, model);
         deferredDraw->OnUpdateRawData(ResourceId(2, 0), frame, makeEye(*camera));
         deferredDraw->OnUpdateRawData(ResourceId(2, 1), frame, light);
+        // The debug switch is per-frame state: push constant storage is indexed by
+        // frame-in-flight, so it has to be re-uploaded every frame.
+        deferredDraw->OnUpdateRawData(ResourceTypes::ePushConst, frame,
+                                      debugView.pushConstant(extent, vk::Extent2D{2048, 2048}));
 
         sequence->beginRecording();
         sequence->record(frameSync);
@@ -218,16 +320,27 @@ void test()
         sequence->recordPass(passB, [&]() { sequence->record(deferredDraw); });
         sequence->endRecording();
         sequence->submitFrame();
+        // Dump after the submit: the capture's transfer barrier is ordered
+        // behind this frame's rendering on the same queue, so the G-Buffer slot
+        // it reads is the one this frame just filled.
+        if (pendingDump) {
+            dumpGBuffer(frame);
+            pendingDump = false;
+        }
         if (!sequence->presentFrame()) {
             continue;
+        }
+        ++framesRendered;
+        if (captureOptions.shouldStop(framesRendered)) {
+            break;
         }
     }
 }
 
-int main()
+int main(int argc, char **argv)
 {
     try {
-        test();
+        test(argc, argv);
         return 0;
     } catch (const std::exception &e) {
         std::cerr << e.what() << "\n";

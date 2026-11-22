@@ -142,6 +142,8 @@ void BasicRenderPass::createAttachments(vk::Extent2D extent)
 {
     m_attachmentSets.clear();
     m_offscreenViews.clear();
+    m_offscreenImages.clear();
+    m_offscreenFormats.clear();
     m_colorCountPerSet = 0;
     m_extent = extent;
 
@@ -198,8 +200,12 @@ void BasicRenderPass::createAttachments(vk::Extent2D extent)
             if (view && samples == vk::SampleCountFlagBits::e1 && !depthTarget) {
                 if (set == 0) {
                     ++m_colorCountPerSet;
+                    // Slot formats and images repeat per frame set; collect them
+                    // once, in slot order.
+                    m_offscreenFormats.push_back(format);
                 }
                 m_offscreenViews.push_back(view);
+                m_offscreenImages.push_back(attachment->image());
             }
             m_attachmentSets[set][index] = std::move(attachment);
         }

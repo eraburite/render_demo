@@ -190,9 +190,12 @@ public:
         bp.subpasses.push_back(subpass);
         bp.dependencies = makeDependencies(DependencyPreset::eOffscreen);
 
+        // Alpha 0 marks "no geometry here".  mrt.frag always writes alpha 1, so the
+        // deferred pass can use the alpha channel as a coverage mask and avoid
+        // running normalize(vec3(0)) on cleared texels (which yields NaN).
         for (int i = 0; i < 3; ++i) {
             bp.clearValues.push_back(
-                vk::ClearValue(vk::ClearColorValue(std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f})));
+                vk::ClearValue(vk::ClearColorValue(std::array<float, 4>{0.0f, 0.0f, 0.0f, 0.0f})));
         }
         bp.clearValues.push_back(vk::ClearValue(vk::ClearDepthStencilValue(1.0f, 0)));
         return bp;

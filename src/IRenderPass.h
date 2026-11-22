@@ -26,4 +26,11 @@ public:
     virtual const std::vector<vk::ImageView> &offscreenViews() const = 0;
     // Number of color views belonging to each frame slot (MRT > 1).
     virtual uint32_t offscreenColorCountPerSet() const = 0;
+
+    // The same colour targets as images, index for index with offscreenViews().
+    // Needed by the debug image dump (src/ImageReadback.h), which copies a
+    // target to host memory and therefore needs the image, not the view.
+    virtual const std::vector<vk::Image> &offscreenImages() const = 0;
+    // Format of each colour slot, indexed by colorSlot (not frame-major).
+    virtual vk::Format offscreenColorFormat(uint32_t colorSlot) const = 0;
 };

@@ -18,3 +18,6 @@
 *.doc
 *.docx
 /shader/*.hpp
+# 渲染调试存盘（Debug View / PPM dump，见 DESIGN.md 13.4）
+/dump
+**/dump

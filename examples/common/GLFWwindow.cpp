@@ -133,6 +133,14 @@ void GLFWwindow::poolEvents()
     glfwPollEvents();
 }
 
+bool GLFWwindow::isKeyDown(int key) const
+{
+    if (m_window == nullptr) {
+        return false;
+    }
+    return glfwGetKey(m_window, key) == GLFW_PRESS;
+}
+
 void GLFWwindow::processInputEvents()
 {
     float currentTime = 0.0f;

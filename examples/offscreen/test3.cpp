@@ -2,9 +2,11 @@
 // to the swapchain with a fullscreen triangle.
 #include <chrono>
 #include <cstdint>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "Camera.h"
@@ -14,12 +16,15 @@
 #include "TextureLoader.h"
 
 #include "AttachmentDetailConfig.h"
+#include "DebugViewMode.h"
 #include "DescriptorLayoutConfig.h"
+#include "ImageDump.h"
 #include "VertexInputStateConfig.h"
 
 #include "CmdOpDrawFrame.h"
 #include "CmdSyncDevice.h"
 #include "IRenderPass.h"
+#include "ImageReadback.h"
 #include "LoopSequence.h"
 #include "OnceSequence.h"
 #include "RenderManager.h"
@@ -122,7 +127,7 @@ std::shared_ptr<ShaderAssetGroup> makeCombinedAsset(
 
 } // namespace
 
-void test()
+void test(int argc, char **argv)
 {
     auto camera = std::make_shared<Camera>(glm::vec3(0.0f, 0.0f, 3.0f));
     GLFWwindow window(800, 600, camera);
@@ -167,6 +172,9 @@ void test()
     auto offscreenSet = DescriptorLayoutAtlas::makeSet<InputAttachmentComponent, InputAttachmentComponentTable>(
         0, {InputAttachmentComponent::ebaseColor}, UpdateFrequency::eEachFrame, false);
     quadLayout->setDetails({offscreenSet});
+    // Debug View switch lives in quad.frag (32-byte push constant).
+    quadLayout->setPushConstant(static_cast<uint32_t>(sizeof(DebugViewPushConstant)),
+                               vk::ShaderStageFlagBits::eFragment);
 
     // ---- render passes ---------------------------------------------------
     auto passA = mgr->CreateRenderPass(std::make_shared<FixedOffscreenDetail>());
@@ -195,6 +203,63 @@ void test()
     auto quadDraw = std::make_shared<CmdOpDrawFrame>(quadPipeline);
     auto frameSync = std::make_shared<CmdSyncDevice>(phongAsset);
 
+    // The forward/offscreen path has no G-Buffer, so the useful debug views are
+    // the screen-space ones: uv gradient, luminance and a 1:1 pixel view.
+    DebugViewState debugView({DebugViewMode::eFinal, DebugViewMode::eUv, DebugViewMode::eLuminance,
+                              DebugViewMode::eNativeScale});
+
+    // ---- debug image dump -------------------------------------------------
+    // P writes the offscreen target itself (before the blit) to dump/*.ppm.
+    // That is the image the quad samples, so it is where a wrong UV direction,
+    // a lost texture or an unexpected aspect ratio has to be diagnosed.
+    ImageReadback readback(mgr->getLogicalDevice(), mgr->memoryProperties(), mgr->getMemoryAllocator(),
+                           mgr->getGraphicsQueue(), *mgr->getQueueFamilyIndices().graphicsFamily);
+    const std::filesystem::path dumpDirectory = "dump";
+    uint32_t nextDumpIndex = 0;
+    bool dumpKeyHeld = false;
+
+    const auto dumpOffscreen = [&](uint32_t frame) {
+        const std::vector<vk::Image> &images = passA->offscreenImages();
+        if (images.empty() || passA->offscreenColorCountPerSet() == 0) {
+            std::cout << "[dump] offscreen pass exposes no colour image\n";
+            return;
+        }
+        const uint32_t setCount = static_cast<uint32_t>(images.size()) / passA->offscreenColorCountPerSet();
+        const uint32_t set = frame % setCount;
+
+        DumpRequest request;
+        request.label = "offscreen-color";
+        request.image = images[set];
+        request.format = passA->offscreenColorFormat(0);
+        request.extent = passA->extent();
+        request.layout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        request.encoding = DumpEncoding::eColor;
+
+        const std::vector<DumpResult> results = DumpImages(readback, {request}, dumpDirectory, nextDumpIndex);
+        nextDumpIndex += 1;
+        std::cout << std::fixed << std::setprecision(3);
+        for (const DumpResult &result : results) {
+            std::cout << "[dump] " << result.path.string() << "  " << result.extent.width << "x"
+                      << result.extent.height << "  mean=(" << result.meanColor.r << ", " << result.meanColor.g
+                      << ", " << result.meanColor.b << ")\n";
+        }
+    };
+
+    std::cout << "[debug] press 0..3: final / uv / luminance / native-1:1, P to dump the offscreen image\n"
+              << "[debug] scripted runs: --view <index> --capture <frames>\n";
+
+    const DebugCaptureOptions captureOptions = ParseDebugCaptureOptions(argc, argv);
+    if (captureOptions.viewSpecified) {
+        debugView.select(captureOptions.initialViewIndex);
+    }
+    if (captureOptions.requested()) {
+        std::cout << "[debug] auto-capture after " << captureOptions.framesBeforeCapture << " frames\n";
+    }
+    uint32_t framesRendered = 0;
+    // A dump survives a skipped frame (resize / out-of-date swapchain), so the
+    // key press is never silently lost.
+    bool pendingDump = false;
+
     while (!window.shouldClose()) {
         // Pump the GLFW message queue first: processInputEvents() only reads the
         // cached key state, so without polling the resize callback never fires
@@ -202,6 +267,14 @@ void test()
         window.poolEvents();
         float currentTime = 0.0f;
         window.processInputEvents(currentTime);
+        const auto isKeyDown = [&](int key) { return window.isKeyDown(key); };
+        debugView.poll(isKeyDown, GLFW_KEY_0);
+        if (debugView.changed()) {
+            std::cout << "[debug] view = " << DebugViewModeName(debugView.mode()) << "\n";
+        }
+        const bool dumpRequested =
+            debugKeyJustPressed(isKeyDown, GLFW_KEY_P, dumpKeyHeld) || captureOptions.isCaptureFrame(framesRendered);
+        pendingDump = pendingDump || dumpRequested;
         if (!sequence->prepareFrame()) {
             continue;
         }
@@ -226,6 +299,9 @@ void test()
         phongDraw->OnUpdateRawData(ResourceId(2, 0), frame, eye);
         phongDraw->OnUpdateRawData(ResourceId(2, 1), frame, light);
         phongDraw->OnUpdateRawData(ResourceTypes::ePushConst, frame, model);
+        // Per-frame: push constant storage is indexed by frame-in-flight.
+        quadDraw->OnUpdateRawData(ResourceTypes::ePushConst, frame,
+                                  debugView.pushConstant(extent, vk::Extent2D{512, 512}));
 
         sequence->beginRecording();
         sequence->record(frameSync);
@@ -233,16 +309,26 @@ void test()
         sequence->recordPass(passB, [&]() { sequence->record(quadDraw); });
         sequence->endRecording();
         sequence->submitFrame();
+        // The transfer barrier inside the capture is ordered behind this frame on
+        // the same queue, so the image holds exactly what pass A just rendered.
+        if (pendingDump) {
+            dumpOffscreen(frame);
+            pendingDump = false;
+        }
         if (!sequence->presentFrame()) {
             continue;
+        }
+        ++framesRendered;
+        if (captureOptions.shouldStop(framesRendered)) {
+            break;
         }
     }
 }
 
-int main()
+int main(int argc, char **argv)
 {
     try {
-        test();
+        test(argc, argv);
         return 0;
     } catch (const std::exception &e) {
         std::cerr << e.what() << "\n";

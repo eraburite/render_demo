@@ -33,6 +33,11 @@ public:
 
     const std::vector<vk::ImageView> &offscreenViews() const override { return m_offscreenViews; }
     uint32_t offscreenColorCountPerSet() const override { return m_colorCountPerSet; }
+    const std::vector<vk::Image> &offscreenImages() const override { return m_offscreenImages; }
+    vk::Format offscreenColorFormat(uint32_t colorSlot) const override
+    {
+        return colorSlot < m_offscreenFormats.size() ? m_offscreenFormats[colorSlot] : vk::Format::eUndefined;
+    }
 
 private:
     void createRenderPass();
@@ -53,6 +58,10 @@ private:
     // Color image views exposed for sampling, laid out frame-major:
     // [setIndex * colorCountPerSet + colorSlot].
     std::vector<vk::ImageView> m_offscreenViews;
+    // Same targets as images (index for index with m_offscreenViews) plus their
+    // per-slot formats; used by the debug image dump.
+    std::vector<vk::Image> m_offscreenImages;
+    std::vector<vk::Format> m_offscreenFormats;
     uint32_t m_colorCountPerSet = 0;
     std::vector<VulkanHandle<vk::Framebuffer, std::function<void(vk::Framebuffer)>>> m_framebuffers;
 };

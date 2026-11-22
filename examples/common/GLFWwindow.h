@@ -32,6 +32,11 @@ public:
     void processInputEvents(float &currentTime);
     void poolEvents();
 
+    // Key query used by the debug views.  key is a GLFW_KEY_* constant.  The
+    // caller must have pumped events first (poolEvents()), otherwise this
+    // reports the previous frame's cached state.
+    bool isKeyDown(int key) const;
+
     Camera *camera() const { return m_camera.get(); }
     const std::shared_ptr<Camera> &cameraShared() const { return m_camera; }
 

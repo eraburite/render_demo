@@ -66,6 +66,7 @@ render_demo/
 │   ├── TextureImage2D.h/.cpp       # 2D 纹理（含 mip 生成）
 │   ├── TextureSamplerCombine.h/.cpp# combined image sampler
 │   ├── ImageAttachment.h/.cpp      # 深度 / MSAA 附件
+│   ├── ImageReadback.h/.cpp        # GPU -> 主机一次性回读（调试用，见 13.3）
 │   ├── DeviceResourceUtils.h/.cpp  # createImage / createImageView 等
 │   ├── SwapChain.h/.cpp            # swapchain + image views + acquire/present
 │   ├── Event.h                     # EventManager / WindowEvent / SwapChainEvent
@@ -84,6 +85,8 @@ render_demo/
 │   │   ├── DescriptorLayoutConfig.h    # set0~set4 组件枚举与配置表
 │   │   ├── ComputeLayoutConfig.h       # compute set0 组件表 + 单层 layout 模板
 │   │   ├── AttachmentDetailConfig.h    # Simple/GBuffer 附件配置 + DependencyPreset
+│   │   ├── DebugViewMode.h             # 调试视图枚举 + push constant + 按键状态（见 13.2）
+│   │   ├── ImageDump.h/.cpp            # 中间结果编码 + PPM 存盘 + --capture/--view 解析（见 13.4）
 │   │   └── VertexInputStateConfig.h    # Vertex / VertexInputAtlas
 │   ├── simplest/{test1.cpp,shader/}
 │   ├── multi-lighting/{test2.cpp,shader/}
@@ -94,7 +97,7 @@ render_demo/
 └── build_vs/                       # Visual Studio 构建目录（含各示例可执行程序）
 ```
 
-> **说明**：顶层 `CMakeLists.txt` 通过 `file(GLOB "src/*.cpp")` 只收集 `src/` 顶层的新源码。历史 pass 实现（原 `src/legacy/`，37 个文件）、engine 侧未使用的 GLFW 桥接（`GLFWwindow.cpp` / `GLFWwindowUtils.h`，`window_utils` 命名空间函数从未被调用）以及根目录旧 shader 副本均已在代码卫生清理中删除，可从 git 历史（`Initial commit`）追溯。示例侧配置头（`*Config.h`）位于 `examples/common/`，而非引擎库内。
+> **说明**：顶层 `CMakeLists.txt` 通过 `file(GLOB ... CONFIGURE_DEPENDS "src/*.cpp")` 收集 `src/` 顶层源码，`examples/common/*.cpp` 同理——`CONFIGURE_DEPENDS` 会在构建时重新匹配，新增源文件无需手动 re-configure。历史 pass 实现（原 `src/legacy/`，37 个文件）、engine 侧未使用的 GLFW 桥接（`GLFWwindow.cpp` / `GLFWwindowUtils.h`，`window_utils` 命名空间函数从未被调用）以及根目录旧 shader 副本均已在代码卫生清理中删除，可从 git 历史（`Initial commit`）追溯。示例侧配置头（`*Config.h`）位于 `examples/common/`，而非引擎库内。调试存盘目录 `dump/`（见 13.4）由程序运行时创建，已在 `.gitignore` 中忽略。
 
 ---
 
@@ -409,6 +412,7 @@ graph LR
 
 - `createFramebuffers` 负责创建深度附件、MSAA 颜色附件，并按「交换链图像数量（或 frame-in-flight 数量）」创建 framebuffer。
 - **framebuffer 索引规则（重要）**：`begin(cmd, frameIndex, ...)` 的 `frameIndex` 由调用方决定。对 swapchain-sized pass，framebuffer 数量等于交换链图像数，必须用 `acquireNextImage` 返回的 `imageIndex` 选择；对离屏 pass，framebuffer 按 frame-in-flight 数量创建，用帧号选择。`LoopSequence::recordPass()` 已按 `renderPass->isSwapChainSized()` 区分处理（见 4.14）。
+- **附件暴露**：除采样用的 `offscreenViews()` 外，`IRenderPass` 还提供 `offscreenImages()` 与 `offscreenColorFormat(colorSlot)`（与视图同索引的 `vk::Image`、按 slot 重复的格式），供调试回读使用（见 13.3）。单采样颜色附件创建时统一带 `eTransferSrc`，因此可以被 copy 到 staging；MSAA transient 附件会去掉该用途（它只用于 resolve，不参与回读）。
 
 **重构点**
 
@@ -774,6 +778,8 @@ dstAccess = MemoryRead | ColorRead | ColorWrite | DepthStencilAttachmentWrite
 | `TextureLoader` | 以 `STBI_rgb_alpha` 解码，返回 `{pixels, width, height, channels=4, mipLevels}`；先试相对路径，失败回退 `PROJECT_ROOT_PATH` |
 | `DescriptorLayoutConfig.h` | set0~set4 的组件枚举、静态配置表、`DescriptorLayoutAtlas`（含 `frequencyOfSet()` 与 `makeSet(..., bool shared)` 单份层声明）；`PushConstantDetail` 定义在引擎侧 `src/IDescriptorSetDetail.h` |
 | `AttachmentDetailConfig.h` | `SimpleAttachmentDetail`（3 种依赖预设）与 `GBufferAttachmentDetail` |
+| `DebugViewMode.h` | 调试视图枚举 / 32 B push constant / 数字键边沿触发状态；header-only 且不依赖 GLFW（按键查询以回调注入），详见 13.2 |
+| `ImageDump.h/.cpp` | 中间结果 → PPM 的编码与存盘、`DumpResult` 统计量、`--capture` / `--view` 命令行解析，详见 13.4 |
 | `VertexInputStateConfig.h` | `Vertex` 结构、`VertexComponent` 与属性表、`VertexInputAtlas` |
 
 **纹理坐标约定（Vulkan）**：Vulkan 图像与 stb_image 都把第 0 行存在顶部，采样时 UV `(0,0)` 对应左上角 texel。因此 `loadTexture()` 不做垂直翻转，shader 里也不对 V 取反；`CubeVertices` 的 36 个顶点统一按「从面外看 `(0,0)` 在左上角」排布（±Z/±Y 面 V 向下增大，±X 面 U 沿 Z、V 沿 Y，−Y 面 +Z 为上）。若误用 OpenGL 风格 UV（V=0 在几何底部），贴图会上下颠倒；±X 面还会因 U/V 互换而旋转 90°。offscreen 的全屏三角形同样依赖这个约定：NDC `(−1,−1)`（屏幕左上）对应 `uv=(0,0)`，直接采样 offscreen attachment 的左上 texel，无需翻转。
@@ -817,6 +823,7 @@ dstAccess = MemoryRead | ColorRead | ColorWrite | DepthStencilAttachmentWrite
 - **世界空间向量**：`phong.vert` 输出世界空间法线（`transpose(inverse(model))`）、`fragPos`、`fragTexCoord`、`fragAlbedo`；`phong.frag` 里 `Eye=normalize(-(fragPos-eye))` 并对插值后的法线重新归一化。
 - **贴图**：pass A 采样 `awesomeface.png`（set0，单份层语义与 simplest 相同），albedo = `texture(baseColorSampler, uv).rgb * fragAlbedo`，因此离屏目标里就是带贴图的结果，pass B 原样显示——这也是「渲染到纹理」这个例子的目的。早期 set0 是空布局、frag 只用光照颜色，立方体呈现为纯灰色。
 - **模型**：立方体用 `MakeSpinningModel()`（绕 Y 自转 + -20° X 倾斜）。
+- **调试**：`quad.frag` 用 32 B push constant 切出 `eUv`（采样方向 / V 轴）、`eLuminance`（曝光）、`eNativeScale`（1:1 像素）三个视图，按键 `0..3`；`P` 把 512×512 的离屏颜色目标回读成 `dump/NNNN_offscreen-color.ppm`——这是 pass B 采样到的原图，方向/比例问题在这里看得最清楚，详见 13.3。
 
 ### 6.5 gbuffer（test4）
 
@@ -828,6 +835,7 @@ dstAccess = MemoryRead | ColorRead | ColorWrite | DepthStencilAttachmentWrite
 - **模型**：3 个立方体是静态实例，间距 1.4、相机在 z = 4.5，`mrt.vert` 从实例 SSBO 读取模型矩阵；每帧 push constant 上传未被使用（历史遗留）。早期间距 1.8 + 相机 z = 3.0 时，z=0 处可见半宽只有 `3·tan22.5°·4/3 ≈ 1.66`，左右两个立方体被窗口边缘裁掉。
 - **albedo**：`mrt.vert` 直接把顶点色写入 G-Buffer albedo（`fragAlbedo = inColor`）；早期的 `mix(inColor, 橙色, step(...)*step(...))` 里两个 `step()` 之积恒为 0，是永远取不到分支的死代码。
 - **光照**：`mrt.vert` 用 `transpose(inverse(mat3(model)))` 把法线转到世界空间，`deferred.frag` 用世界空间位置/法线与世界空间光源计算，二者一致。
+- **调试**：`deferred.frag` 在光照之前按 push constant 切出 albedo / normal / position / linear-depth / lighting-only 五个通道视图（按键 `0..5`，回车即生效，不需要重建管线）；`P` 一次回读三张 G-Buffer 目标，产出 4 张 2048×2048 PPM（第 4 张是由 position 反推的线性深度），日志同时打印覆盖率、通道均值与法线平均长度。逐通道的期望值与异常表征见 13.5 的校验清单。
 
 ### 6.6 particle（test5）
 
@@ -871,13 +879,21 @@ cmake --build build -j
 ./build/examples/gbuffer/gbuffer
 ./build/examples/particle/particle
 ./build/examples/raw2rgb/raw2rgb
+
+# 调试：数字键切换通道视图，P 存盘；也可脚本化（见 13.6）
+./build/examples/gbuffer/gbuffer --view 2            # 直接进 normal 视图
+./build/examples/gbuffer/gbuffer --capture 30        # 跑 30 帧后存盘并退出
 ```
+
+调试产物默认写到**当前工作目录**下的 `dump/`（已加入 `.gitignore`），文件名形如
+`0000_gbuffer-albedo.ppm`、`0001_gbuffer-normal.ppm`；PPM 为二进制 P6，可用任何看图工具
+或 `ffmpeg` / `ImageMagick` 转换。
 
 构建结构：
 
 - `globalConfig`：唯一提供 include 目录与 glfw/Vulkan 链接的接口目标。
 - `myEngine`：`src/*.cpp`（GLOB）静态库，历史实现已从构建中排除。
-- `example_common`：`GLFWwindow.cpp`、`TextureLoader.cpp`、`glm.cpp`（只编译一次）。
+- `example_common`：`GLFWwindow.cpp`、`TextureLoader.cpp`、`ImageDump.cpp`、`glm.cpp`（只编译一次）。
 - `add_render_example(target source shader_target [generated headers...])`：统一示例可执行配置，生成的 shader 头显式列为依赖，保证干净构建目录也能触起着色器编译。
 - `cmake/vulkan_shader_compiler.cmake`：`glslangValidator` 编译 `.vert/.frag/.comp` → `.spv`，再由 `bin_file_to_header.cmake` 转成 `.hpp`。这两步写在**同一条** `add_custom_command` 里（`.spv` 与 `.hpp` 同时是 OUTPUT），因为 CMake 生成器（MSBuild）在同一轮构建里先判定 `CustomBuild` 批次的输出是否最新：拆成两条链式命令时，头文件的新旧判定发生在 `.spv` 被重写之前，于是改完 shader 需要**构建两次**头文件才会更新——第一次只重编 `.spv`，可执行文件里仍是旧 SPIR-V，表现为「改了 shader 但画面完全没变」（本轮排查 offscreen 的灰色立方体、particle 的空画面就是这个坑）。
 
@@ -914,6 +930,10 @@ cmake --build build -j
 | 构造入口 | `RenderManager` 构造函数已私有，新增示例/工具必须使用 `RenderManager::Create(window, framesInFlight)` |
 | 代码卫生清理 | 已删除 `src/legacy/`（37 个历史文件）、engine 侧 `GLFWwindow.cpp`/`GLFWwindowUtils.h`（`window_utils` 从未被调用）、根目录旧 shader 副本（`shader/{lighting,mrt,deferred}.*`）；示例遗留的 `triangle`/`texture_triangle`/`mirror` shader 本就不存在。全部可从 git `Initial commit` 追溯 |
 | Validation 状态 | VUID 与 `WRITE_AFTER_WRITE`/`READ_AFTER_WRITE` hazard 全部为 0；offscreen/GBuffer 每帧独立附件组，`eSwapChain` 依赖已覆盖 depth 写入，见 4.14 |
+| 调试视图覆盖 | 仅 gbuffer / offscreen 接入 `DebugViewState`；其余示例可在各自 fragment shader 里按 13.2 的约定加分支 |
+| 交换链图像回读 | 未实现：swapchain 未申请 `eTransferSrc`，且 copy 必须录在 present 之前的帧命令缓冲里，故只能回读离屏/G-Buffer 目标，见 13.7 |
+| 深度通道导出 | G-Buffer 与 offscreen 的深度 `storeOp = DontCare`，内容不留存，因此没有深度 PPM；深度用 position 通道反推（`eLinearDepth`） |
+| 回读阻塞 | `ImageReadback::capture()` 提交后同步等 fence，一次 capture 会停顿一个 copy 的时长（2048² RGBA32F 约 64 MB），仅适合手动/脚本触发的调试 |
 
 ---
 
@@ -970,8 +990,7 @@ cmake --build build -j
 
 | 位置 | 内容 |
 | --- | --- |
-| `examples/multi-lighting/test2.cpp`、`examples/gbuffer/test4.cpp` | 每帧上传的 push constant `model` 两段 shader 都不读（死代码） |
-| 顶层 `CMakeLists.txt` | `file(GLOB ...)`：新增源文件不会自动触发重新配置，需手动 re-configure |
+| `examples/multi-lighting/test2.cpp`、`examples/gbuffer/test4.cpp` | 每帧上传的 push constant `model` 两段 shader 都不读（死代码）；gbuffer 的 deferred 布局另有一个 32 B 的调试用 push constant 范围，二者属于不同 asset，`ePushConst` 只会写进对应 asset 的存储 |
 
 ### 9.5 新增一个示例的步骤
 
@@ -1131,3 +1150,214 @@ sequenceDiagram
 3. 设备筛选阶段（`PhysicalDeviceUtils::select`）直接跳过不满足 `samplerAnisotropy`/`shaderClipDistance` 的设备，而不是等到创建逻辑设备时才失败；
 4. 回读类接口（`ReadBack`）在资源不存在时返回空 vector，由调用方判断，避免异常穿透到示例。
 
+
+---
+
+## 13. 渲染调试方案（Debug View 与图像回读）
+
+渲染 bug 的定位成本主要花在「猜哪个环节错了」上：光照不对是法线写反了、位置重建错了，还是
+albedo 采样错了？中间结果（G-Buffer 各通道、离屏颜色、深度）本身看得到，问题就变成判断题。
+本节描述框架提供的两条互补通道，二者共用同一套**通道语义与色彩映射**，所以屏幕上的样子和
+存盘文件里的样子一定一致。
+
+| 通道 | 组件 | 回答的问题 | 开销 |
+| --- | --- | --- | --- |
+| 屏幕可视化 | `examples/common/DebugViewMode.h` + 各示例的 fragment shader | 「它**看起来**对不对？」——逐帧热切换，肉眼比对 | 0 额外 pass / 0 额外 pipeline / 0 额外描述符，只有 32 B push constant |
+| 主机回读 | `src/ImageReadback.h` + `examples/common/ImageDump.h` | 「它**到底是什么值**？」——保留原始 texel，可拾色、量范围、逐字节 diff | 一次阻塞式 copy（手动触发，不进帧循环） |
+
+**为什么不做「再画一遍到屏幕」**：延迟 / 离线示例本来就有全屏 pass 在采样这些中间结果
+（`deferred.frag` 采样 G-Buffer，`quad.frag` 采样离屏颜色），把输出换成中间值只是改一个分支，
+而新建「调试专用 pass + pipeline + 描述符集」不仅要多写一套样板，还要额外处理 pass 之间的
+依赖关系——调试工具本身引入新的同步 bug 是最坏的情况。
+
+**为什么不把图像回读录进帧命令缓冲**：录进帧里需要给 `LoopSequence` 增加「在 present 之前
+插入 copy」的钩子，并处理 copy 与 present 的布局时序；而调试回读是**手动、低频**操作，
+`ImageReadback` 在帧提交之后单独提交一次 copy 命令并等 fence，既不侵入引擎，也不会在正常
+帧里留下任何分支。代价是调用瞬间阻塞（见 13.7）。
+
+### 13.1 组件与数据流
+
+```text
+[attachment image]                          [host]
+ ShaderReadOnlyOptimal
+      │ ① barrier: AllCommands/Write -> Transfer/Read
+      ▼
+ TransferSrcOptimal
+      │ ② vkCmdCopyImageToBuffer（紧凑行距）
+      ▼
+ [host-visible staging buffer] ──③ map+memcpy──▶ Capture{extent, format, pixels}
+      │ ④ barrier: Transfer/Read -> 原 layout               │
+      ▼                                                      ▼
+ 恢复原 layout（下一帧照常使用）                    ⑤ 按 encoding 编码 → P6 PPM
+```
+
+对应实现：
+
+| 步骤 | 位置 | 说明 |
+| --- | --- | --- |
+| ①④ barrier | `ImageReadback::capture()` | 保守屏障：源 `eAllCommands`/`eMemoryWrite`，目标 `eTransfer`/`eTransferRead`；恢复时反向。源 layout 为 `eUndefined` 时 `srcAccessMask` 必须为 0（`VUID-vkImageMemoryBarrier-oldLayout`），且不再恢复 |
+| ② copy | 同上 | `bufferRowLength = 0`（紧凑行距），`imageExtent = {w, h, 1}`，仅 mip0 / layer0 |
+| ③ mapping | 同上 | 用 `slice.offset` 映射（sub-allocation 下 offset 可能非 0，见 9.6） |
+| ⑤ 编码 | `ImageDump.cpp` | 见 13.4 |
+
+### 13.2 `DebugViewMode`：屏幕上的通道确认
+
+枚举是**跨示例的统一语义**，同时也是 push constant 里 `mode` 的取值；每个示例只声明自己
+支持的**子集**，数字键 `0..N-1` 选的是子集里的第 i 项（而不是枚举值本身），因此不同示例的
+按键布局都是「从 0 开始、连续」，互不干扰。
+
+| 枚举 | 值 | 语义 | 路径 |
+| --- | --- | --- | --- |
+| `eFinal` | 0 | 正常着色结果（默认） | 全部 |
+| `eAlbedo` | 1 | G-Buffer albedo 原样输出 | deferred |
+| `eNormal` | 2 | 世界空间法线 `n*0.5+0.5` | deferred |
+| `ePosition` | 3 | 世界空间位置 `p/ref*0.5+0.5` | deferred |
+| `eLinearDepth` | 4 | 到眼睛的距离，近亮远暗 | deferred |
+| `eLightingOnly` | 5 | 去掉 albedo 的纯光照贡献 | deferred |
+| `eUv` | 6 | 屏幕 `(u,v)` 梯度 | forward / offscreen |
+| `eLuminance` | 7 | 亮度灰度 | forward / offscreen |
+| `eNativeScale` | 8 | 中间结果按 1:1 像素居中显示 | offscreen |
+
+| 示例 | 按键 | 支持模式 |
+| --- | --- | --- |
+| gbuffer (test4) | `0..5` | final / albedo / normal / position / linear-depth / lighting-only |
+| offscreen (test3) | `0..3` | final / uv / luminance / native-1:1 |
+| 其他示例 | 无 | 未接入（可在对应 fragment shader 里按同一约定加分支） |
+
+**push constant 布局**（`DebugViewPushConstant`，32 B，`static_assert` 守护）：
+
+| 偏移 | 类型 | 字段 | 用途 |
+| --- | --- | --- | --- |
+| 0 | `uint32_t` | `mode` | 调试模式（枚举值） |
+| 4 | `float` | `nearPlane` | 线性深度映射下限（0.1，与 `MakeCameraMatrix` 一致） |
+| 8 | `float` | `farPlane` | 线性深度映射上限（100） |
+| 12 | `float` | `referenceScale` | position 色彩编码的世界尺度（5.0） |
+| 16/20 | `float` | `viewportWidth` / `viewportHeight` | 交换链像素尺寸（`eNativeScale` 用） |
+| 24/28 | `float` | `contentWidth` / `contentHeight` | 中间结果像素尺寸（`eNativeScale` 用） |
+
+字段刻意全部用 4 B 标量而不用 `vec2`，这样 C++ 与 GLSL 之间不存在任何对齐/填充假设。
+push constant 的存储按 frame-in-flight 索引，所以模式切换必须**每帧**重新上传。
+
+**色彩映射规范**（shader 与 CPU 端 `DumpEncoding` 逐字对应，改一处必须同步另一处）：
+
+| 模式 | 映射 | 备注 |
+| --- | --- | --- |
+| albedo | 原样 | G-Buffer 是 UNORM / SFLOAT，未做色调映射 |
+| normal | `n*0.5+0.5` | +X→红、+Y→绿、+Z→蓝；看到「青绿顶面 + 珊瑚侧面 + 蓝紫正面」说明法线朝外 |
+| position | `clamp(p/ref*0.5+0.5, 0, 1)` | 参考尺度 5.0 使 ±2.5 单位内的场景不饱和 |
+| linear-depth | `1 - clamp((d-near)/(far-near), 0, 1)` | 场景很小时（d≈4.5、far=100）整片接近白，属预期，量具体数值请看 position 通道或 dump 文件 |
+| lighting-only | `ambient + diffuse*NdotL + specular` | albedo 置白，用于区分「光照错」与「albedo 错」 |
+| uv | `vec4(u, v, 0, 1)` | 一眼看出采样方向 / V 轴是否翻转 |
+| luminance | `dot(rgb, vec3(0.2126, 0.7152, 0.0722))` | 曝光 / 对比度检查 |
+
+**背景识别**：G-Buffer 的清屏色 alpha 为 0，`mrt.frag` 对所有覆盖像素写 alpha 1，于是 alpha
+就是覆盖率掩码。`deferred.frag` 先判 `normalSample.a < 0.5` 直接输出背景色，避免对清屏
+texel 执行 `normalize(vec3(0))`（结果是 NaN，会污染整片背景）。屏幕与 PPM 都用这个掩码。
+
+### 13.3 `ImageReadback`：从 GPU 取回一块图像
+
+```cpp
+ImageReadback readback(mgr->getLogicalDevice(), mgr->memoryProperties(),
+                       mgr->getMemoryAllocator(), mgr->getGraphicsQueue(),
+                       *mgr->getQueueFamilyIndices().graphicsFamily);
+
+ImageReadback::Capture capture =
+    readback.capture(image, format, extent, vk::ImageLayout::eShaderReadOnlyOptimal);
+// capture.pixels: 紧凑排列，行序与图像一致（第 0 行是图像顶部）
+```
+
+| 项 | 约定 |
+| --- | --- |
+| 粒度 | 一次 capture 只取 1 个 mip、1 个 layer（调试够用；mip 链/立方体贴图需扩展 `imageSubresource`） |
+| 同步 | 内部 `resetCommandPool` → 录制 → `submit` → `waitForFences(UINT64_MAX)`，返回即数据可用 |
+| 与帧的关系 | 必须在 `submitFrame()` 之后调用。copy 的源阶段是 `eAllCommands`，同队列的屏障足以排在本帧之后，无需 `queueWaitIdle()` |
+| 图像状态 | 返回前恢复原 layout；源 layout 为 `eUndefined` 时不恢复（内容本就无定义，下一个 pass 也会丢弃） |
+| staging | 可增长复用（`m_stagingSize` 只增不减），一次 capture 一次 map/copy/unmap |
+| 支持格式 | `R8G8B8A8_UNORM/SRGB`、`B8G8R8A8_UNORM/SRGB`、`R32G32B32A32_SFLOAT`、`R32_SFLOAT`、`D32_SFLOAT`；其他格式抛异常（`texelSize()` 是格式支持与否的唯一判据） |
+| 访问器 | 附件图像通过 `IRenderPass::offscreenImages()` 暴露，与 `offscreenViews()` **逐索引对应**（frame-major），格式由 `offscreenColorFormat(colorSlot)` 给出；附件创建时已带 `eTransferSrc` 用途（`BasicRenderPass::createAttachments`） |
+
+### 13.4 PPM 存盘：`ImageDump`
+
+`DumpImages(readback, requests, directory, firstIndex)` 对每个 `DumpRequest` 依次
+capture → 编码 → 写 `dump/<NNNN>_<label>.ppm`，返回路径与统计量。
+
+**文件格式**：二进制 P6（`P6` + 可选 `#` 注释行 + `W H` + `255` + RGB 数据）。
+PPM 头部允许注释，所以文件能自描述——这是必要的，因为裸 PPM 没有元数据槽位：
+
+```text
+P6
+# render_demo debug capture
+# channel: gbuffer-normal
+# encoding: normal (n*0.5+0.5)
+# source: VK_FORMAT_R32G32B32A32_SFLOAT
+# background: alpha < 0.5 written as black
+# row order: image row 0 first (no vertical flip)
+2048 2048
+255
+```
+
+**三个容易踩的点**：
+
+1. **不做垂直翻转**。Vulkan 图像、`stb_image` 与 PPM 的行序都是「第 0 行在顶部」，三方一致；
+   如果在这里翻转，文件就会上下颠倒，进而让人误判是渲染或 UV 错了。
+2. **背景写黑**。position / depth 通道里清屏 texel 会编码成中灰，看起来像几何体；用 alpha
+   掩码把它们写成黑色，几何轮廓才清楚（这也是屏幕视图的做法）。
+3. **8 位直写不做 sRGB 变换**。G-Buffer albedo 是线性 UNORM 值，屏幕上显示时已经过交换链的
+   sRGB 编码；PPM 里保留线性值反而更利于比对数值。若需要「看起来与屏幕一致」，在
+   `ImageDump.cpp` 的 `toByte()` 之前加一次 sRGB 编码即可（注意这会让文件不再是原始值）。
+
+**编码与统计**：
+
+| `DumpEncoding` | 映射 | 典型用途 |
+| --- | --- | --- |
+| `eColor` | 原样，clamp 到 `[0,1]` | albedo、离屏颜色 |
+| `eNormal` | `n*0.5+0.5` | 法线朝向 / 是否归一 |
+| `ePosition` | `p/ref*0.5+0.5` | 位置重建是否正确 |
+| `eLinearDepth` | `1 - (‖p-eye‖-near)/(far-near)` | 深度范围（G-Buffer 不存深度，用 position 反推） |
+
+`DumpResult` 同时给出三个不用打开图片就能判断的指标：
+
+| 字段 | 含义 | 怎么用 |
+| --- | --- | --- |
+| `alphaCoverage` | alpha ≥ 0.5 的 texel 占比 | 0 表示「什么都没画」；与画面占比明显不符说明几何/矩阵有问题 |
+| `meanColor` | 写出的 RGB 均值（背景计黑） | 全黑或全白意味着通道饱和 / 未写入 |
+| `meanNormalLength` | 覆盖像素的法线平均长度（仅 `eNormal`） | 应约为 1.000；偏离说明法线未归一（插值后未 `normalize`、或矩阵错） |
+
+### 13.5 G-Buffer 逐通道校验清单
+
+以 gbuffer 示例（3 个旋转立方体、相机 z=4.5）为基准，按一次 `P`（4 张 2048×2048 PPM）
+即可逐项确认：
+
+| 文件 | 期望 | 异常表征 | 常见成因 |
+| --- | --- | --- | --- |
+| `0000_gbuffer-albedo.ppm` | 立方体为顶点色，背景纯黑；`meanColor` ≈ 覆盖率 × 面色 | 全黑 | MRT 第 3 个 attachment 没写 / `outAlbedo` location 错位 |
+| `0001_gbuffer-normal.ppm` | 顶面青绿、侧面珊瑚、正面蓝紫；日志里的法线平均长度 ≈ 1.000 | 颜色随视角闪烁、法线平均长度 ≠ 1 | 法线未转世界空间（用了模型空间）、插值后未归一、`transpose(inverse())` 写成 `inverse()` |
+| `0002_gbuffer-position.ppm` | 三个方块内平滑渐变，方块之间（z 不同）颜色不同 | 整片同色 / 全是中灰 | 位置通道写成 view 空间或屏幕空间；清屏 alpha 不是 0 时背景会变成中灰 |
+| `0003_gbuffer-linear-depth.ppm` | 轮廓内接近白（d≈4.5 相对 far=100），背景黑 | 深度越大反而越亮 | `1-t` 写反；near/far 与投影矩阵不一致 |
+
+> 想量「具体数值」而不是「看颜色」，用 `ePosition` 文件的像素值反解：
+> `p = (rgb/255*2-1)*referenceScale`。
+
+### 13.6 交互与脚本化
+
+| 方式 | 用法 | 说明 |
+| --- | --- | --- |
+| 交互 | 数字键 `0..N-1` 切换视图；`P` 存盘一次 | 边看边切；`P` 在帧提交后捕捉**当前这一帧**的中间结果 |
+| 脚本 | `gbuffer --view 2 --capture 30` | 跑 30 帧、在第 30 帧自动存盘后退出；`--view` 等价于按对应数字键。用于冒烟测试与回归 dump |
+
+`--capture` 走同一条 `DumpImages` 路径，因此 CI 里可以只检查「进程退出码 + 产出文件 +
+日志里的 `|n|`/coverage」，不必人工看图。
+
+> 编号每次运行都从 0 开始，所以同一目录重复运行会覆盖上一轮的同名文件——这是有意的：
+> `0001_gbuffer-normal.ppm` 永远是法线通道，方便跨运行比对（需要留档时把 `dump/` 换个名字即可）。
+
+### 13.7 扩展点与限制
+
+| 项 | 现状 | 扩展方式 |
+| --- | --- | --- |
+| 交换链图像回读 | 未实现（swapchain 未申请 `eTransferSrc`，且 copy 必须在 present 之前录进帧命令缓冲） | 给 `SwapChain` 加 `eTransferSrc`，在 `recordPass` 之后、`submitFrame` 之前插入一个 `CmdOpBase` 做 layout 往返 + copy；或改成「渲染到离屏 + blit 到交换链」的架构 |
+| 深度通道 | 未导出（G-Buffer / offscreen 的深度 `storeOp = DontCare`，内容不留存） | 把深度 `storeOp` 改为 `eStore`、`finalLayout` 改 `eDepthStencilReadOnlyOptimal`，并把 `eDepth` 编码加进 `DumpEncoding` |
+| 每次 capture 阻塞 | `waitForFences` 同步等待 | 改成「提交后不等待，下一帧再读」的延迟回读；调试场景没必要 |
+| 格式覆盖 | 5 类格式 | `ImageReadback::texelSize()` + `ImageDump::layoutOf()` 两处同时扩展 |
+| 编码覆盖 | 4 种 | 在 `DumpEncoding` + `encodeColor()` + 对应 shader 分支三处同步 |
+| 多示例复用 | 仅 gbuffer / offscreen 接入 | 其余示例按 13.2 的「子集 + 数字键」约定接 `DebugViewState`，并按 13.3 暴露附件图像 |

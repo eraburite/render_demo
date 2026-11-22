@@ -36,13 +36,15 @@ target_include_directories(globalConfig INTERFACE
 target_link_directories(globalConfig INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/external/glfw/lib)
 target_link_libraries(globalConfig INTERFACE glfw3 Vulkan::Vulkan)
 
-# example_common: compiled once (GLFWwindow / TextureLoader / glm.cpp)
-file(GLOB EXAMPLE_COMMON_SRC "examples/common/*.cpp")
+# example_common: compiled once (GLFWwindow / TextureLoader / ImageDump / glm.cpp)
+# CONFIGURE_DEPENDS re-globs on every build, so adding a .cpp here does not need
+# a manual re-configure.
+file(GLOB EXAMPLE_COMMON_SRC CONFIGURE_DEPENDS "examples/common/*.cpp")
 add_library(example_common STATIC ${EXAMPLE_COMMON_SRC})
 target_link_libraries(example_common PUBLIC globalConfig)
 
 # myEngine: the core static library.
-file(GLOB ENGINE_SRC "src/*.cpp")
+file(GLOB ENGINE_SRC CONFIGURE_DEPENDS "src/*.cpp")
 add_library(myEngine STATIC ${ENGINE_SRC})
 target_link_libraries(myEngine PUBLIC globalConfig)
 
