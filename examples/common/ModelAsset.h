@@ -52,6 +52,11 @@ struct Material {
     int metallicRoughnessTexture = -1;
     int occlusionTexture = -1;
     int emissiveTexture = -1;
+    // Legacy Phong slot.  glTF has no equivalent (it folds specular into
+    // metallic/roughness), but MTL and most assimp formats do, and dropping the
+    // map on the floor would lose information the file did carry.  PBR shaders
+    // simply ignore it.
+    int specularTexture = -1;
 };
 
 // Attribute presence bits.  Loaders fill the ones the file really carried;

@@ -1,5 +1,6 @@
 #include "ModelLoader.h"
 
+#include "AssimpModelLoader.h"
 #include "GltfModelLoader.h"
 #include "ObjModelLoader.h"
 
@@ -81,9 +82,9 @@ void accumulate(std::unordered_map<uint32_t, glm::vec3> &sums, uint32_t index, c
     }
 }
 
-PostProcessPlan mergePlan(const IModelLoader &loader, const ModelLoadOptions &options)
+PostProcessPlan mergePlan(const IModelLoader &loader, const ModelLoadOptions &options, const std::string &path)
 {
-    PostProcessPlan plan = loader.defaultPlan();
+    PostProcessPlan plan = loader.defaultPlan(path);
     if (options.deduplicate != Toggle::eAuto) plan.deduplicate = options.deduplicate == Toggle::eOn;
     if (options.flipTexCoordV != Toggle::eAuto) plan.flipTexCoordV = options.flipTexCoordV == Toggle::eOn;
     if (options.generateNormals != Toggle::eAuto) plan.generateNormals = options.generateNormals == Toggle::eOn;
@@ -94,6 +95,131 @@ PostProcessPlan mergePlan(const IModelLoader &loader, const ModelLoadOptions &op
 } // namespace
 
 namespace model_post {
+
+void flattenScene(Model &model)
+{
+    if (model.meshes.empty() || model.indices.empty()) return;
+
+    std::vector<MeshVertex> outVertices;
+    std::vector<uint32_t> outIndices;
+    std::vector<Mesh> outMeshes;
+    std::vector<ModelNode> outNodes;
+    outVertices.reserve(model.vertices.size());
+    outIndices.reserve(model.indices.size());
+
+    std::vector<bool> visited(model.meshes.size(), false);
+
+    // Primitives arrive grouped per node (forEachMeshInstance is depth first), so
+    // a change of nodeIndex starts a new output mesh.  Each output primitive keeps
+    // its own index window, which is the invariant dedup and the attribute passes
+    // rely on.
+    int openNodeIndex = -2;
+    Mesh openMesh;
+
+    forEachMeshInstance(model, [&](const glm::mat4 &world, int nodeIndex, const Mesh &mesh,
+                                   const Primitive &primitive) {
+        // forEachMeshInstance hands out references into model.meshes, so the index
+        // of the mesh being visited is its address offset.
+        const size_t meshIndex = static_cast<size_t>(&mesh - model.meshes.data());
+        if (meshIndex < visited.size()) visited[meshIndex] = true;
+
+        if (nodeIndex != openNodeIndex) {
+            if (openNodeIndex != -2 && !openMesh.primitives.empty()) {
+                ModelNode node;
+                node.name = openMesh.name;
+                node.meshIndex = static_cast<int>(outMeshes.size());
+                outMeshes.push_back(std::move(openMesh));
+                outNodes.push_back(std::move(node));
+            }
+            openNodeIndex = nodeIndex;
+            openMesh = Mesh{};
+            openMesh.name = mesh.name;
+        }
+
+        const uint32_t firstIndex = static_cast<uint32_t>(outIndices.size());
+        const glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(world)));
+        const uint32_t end = std::min<uint32_t>(primitive.firstIndex + primitive.indexCount,
+                                                static_cast<uint32_t>(model.indices.size()));
+
+        std::unordered_map<uint32_t, uint32_t> remap;
+        for (uint32_t i = primitive.firstIndex; i < end; ++i) {
+            const uint32_t source = model.indices[i];
+            if (source >= model.vertices.size()) continue;
+            const auto existing = remap.find(source);
+            if (existing != remap.end()) {
+                outIndices.push_back(existing->second);
+                continue;
+            }
+            const MeshVertex &src = model.vertices[source];
+            MeshVertex vertex = src;
+            vertex.position = glm::vec3(world * glm::vec4(src.position, 1.0f));
+            const glm::vec3 normal = normalMatrix * src.normal;
+            const float length = glm::length(normal);
+            vertex.normal = length > 0.0f ? normal / length : src.normal;
+            const uint32_t index = static_cast<uint32_t>(outVertices.size());
+            outVertices.push_back(vertex);
+            remap.emplace(source, index);
+            outIndices.push_back(index);
+        }
+
+        Primitive remapped = primitive;
+        remapped.firstIndex = firstIndex;
+        remapped.indexCount = static_cast<uint32_t>(outIndices.size()) - firstIndex;
+        if (remapped.indexCount > 0) {
+            openMesh.primitives.push_back(remapped);
+        }
+    });
+
+    if (openNodeIndex != -2 && !openMesh.primitives.empty()) {
+        ModelNode node;
+        node.name = openMesh.name;
+        node.meshIndex = static_cast<int>(outMeshes.size());
+        outMeshes.push_back(std::move(openMesh));
+        outNodes.push_back(std::move(node));
+    }
+
+    // Geometry no node reaches would otherwise disappear silently.
+    for (size_t meshIndex = 0; meshIndex < model.meshes.size(); ++meshIndex) {
+        if (visited[meshIndex] || model.meshes[meshIndex].primitives.empty()) continue;
+        const Mesh &mesh = model.meshes[meshIndex];
+        Mesh copy;
+        copy.name = mesh.name;
+        for (const Primitive &primitive : mesh.primitives) {
+            const uint32_t firstIndex = static_cast<uint32_t>(outIndices.size());
+            const uint32_t end = std::min<uint32_t>(primitive.firstIndex + primitive.indexCount,
+                                                    static_cast<uint32_t>(model.indices.size()));
+            for (uint32_t i = primitive.firstIndex; i < end; ++i) {
+                const uint32_t source = model.indices[i];
+                if (source >= model.vertices.size()) continue;
+                outIndices.push_back(static_cast<uint32_t>(outVertices.size()));
+                outVertices.push_back(model.vertices[source]);
+            }
+            Primitive remapped = primitive;
+            remapped.firstIndex = firstIndex;
+            remapped.indexCount = static_cast<uint32_t>(outIndices.size()) - firstIndex;
+            if (remapped.indexCount > 0) copy.primitives.push_back(remapped);
+        }
+        if (copy.primitives.empty()) continue;
+        ModelNode node;
+        node.name = copy.name;
+        node.meshIndex = static_cast<int>(outMeshes.size());
+        outMeshes.push_back(std::move(copy));
+        outNodes.push_back(std::move(node));
+    }
+
+    if (outMeshes.empty()) return;
+
+    model.vertices = std::move(outVertices);
+    model.indices = std::move(outIndices);
+    model.meshes = std::move(outMeshes);
+    model.nodes = std::move(outNodes);
+    model.rootNodes.clear();
+    model.rootNodes.reserve(model.nodes.size());
+    for (size_t i = 0; i < model.nodes.size(); ++i) {
+        model.rootNodes.push_back(static_cast<int>(i));
+    }
+    model.recomputeBounds();
+}
 
 void deduplicateVertices(Model &model)
 {
@@ -292,6 +418,14 @@ ModelLoaderRegistry &ModelLoaderRegistry::instance()
 
 ModelLoaderRegistry::ModelLoaderRegistry()
 {
+    // Registration order is priority order for `extensions()` resolution, which
+    // walks the list in reverse: the hand-written loaders therefore stay
+    // authoritative for .gltf/.obj, and assimp only takes the formats nobody
+    // else covers (.dae, .fbx, .3ds, ...).  That is deliberate -- swapping the
+    // OBJ path onto a third-party importer would change existing examples'
+    // output under a library upgrade, with nothing in this repo to compare
+    // against.
+    registerLoader(std::make_unique<AssimpModelLoader>());
     registerLoader(std::make_unique<GltfModelLoader>());
     registerLoader(std::make_unique<ObjModelLoader>());
 }
@@ -316,6 +450,14 @@ const IModelLoader *ModelLoaderRegistry::find(const std::string &path) const
     return nullptr;
 }
 
+const IModelLoader *ModelLoaderRegistry::findByName(const std::string &name) const
+{
+    for (const auto &loader : m_loaders) {
+        if (name == loader->name()) return loader.get();
+    }
+    return nullptr;
+}
+
 bool ModelLoaderRegistry::supports(const std::string &path) const
 {
     return find(path) != nullptr;
@@ -336,18 +478,31 @@ std::vector<std::string> ModelLoaderRegistry::supportedExtensions() const
 
 Model ModelLoaderRegistry::load(const std::string &path, const ModelLoadOptions &options) const
 {
-    const IModelLoader *loader = find(path);
+    const IModelLoader *loader = nullptr;
+    if (!options.preferredLoader.empty()) {
+        loader = findByName(options.preferredLoader);
+        if (!loader) {
+            throw std::runtime_error("ModelLoader: unknown loader '" + options.preferredLoader + "'");
+        }
+    } else {
+        loader = find(path);
+    }
     if (!loader) {
         std::string supported;
         for (const std::string &extension : supportedExtensions()) {
             if (!supported.empty()) supported += ", ";
             supported += "." + extension;
         }
-        throw std::runtime_error("ModelLoader: no loader for '" + path + "' (supported: " + supported + ")");
+        std::string message = "ModelLoader: no loader for '" + path + "' (supported: " + supported + ")";
+        const std::string assimpProblem = AssimpModelLoader::runtimeDiagnostic();
+        if (!assimpProblem.empty()) {
+            message += "; assimp formats need its runtime, " + assimpProblem;
+        }
+        throw std::runtime_error(message);
     }
 
     Model model = loader->load(path, options);
-    const PostProcessPlan plan = mergePlan(*loader, options);
+    const PostProcessPlan plan = mergePlan(*loader, options, path);
 
     const size_t verticesBefore = model.vertices.size();
     const size_t indicesBefore = model.indices.size();
@@ -355,12 +510,15 @@ Model ModelLoaderRegistry::load(const std::string &path, const ModelLoadOptions 
     uint32_t generatedTangents = 0;
 
     // Order matters:
-    //   dedup      first, while the attribute set is still exactly what the
-    //              file carried -- generated attributes would make vertices
+    //   flatten    first, so every later step sees world-space geometry and the
+    //              bounds normalizeSize reads are the ones a renderer draws.
+    //   dedup      while the attribute set is still exactly what the file
+    //              carried -- generated attributes would make vertices
     //              that are the same in the file look different.
     //   flip V     before tangents, which are derived from UV derivatives.
     //   normals    before tangents, which are orthogonalised against them.
     //   transforms last, they move positions but keep topology.
+    if (options.flattenScene) model_post::flattenScene(model);
     if (plan.deduplicate) model_post::deduplicateVertices(model);
     if (plan.flipTexCoordV) model_post::flipTexCoordV(model);
     if (plan.generateNormals) {

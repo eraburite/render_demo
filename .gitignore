@@ -16,6 +16,7 @@
 # Vendored header-only dependencies that must be versioned (exception to /external/*).
 !/external/tinygltf/
 !/external/stb_image.h
+!/external/assimp/
 .externalNativeBuild
 .vscode
 *.doc

@@ -13,7 +13,7 @@ public:
     std::vector<std::string> extensions() const override { return {"obj"}; }
     Model load(const std::string &path, const ModelLoadOptions &options) const override;
 
-    PostProcessPlan defaultPlan() const override
+    PostProcessPlan defaultPlan(const std::string &) const override
     {
         PostProcessPlan plan;
         plan.deduplicate = true;

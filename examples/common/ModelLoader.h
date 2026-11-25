@@ -46,9 +46,25 @@ struct ModelLoadOptions {
     bool centerAtOrigin = false;
     bool normalizeSize = false; // longest axis becomes 2.0 after centring
 
+    // Bakes every node's world matrix into the vertices and collapses the scene
+    // to one identity root per mesh instance.
+    //
+    // Needed before any geometry-space operation on a hierarchical file:
+    // Model::recomputeBounds only sees the un-instanced vertex buffer, so for a
+    // .dae whose nodes carry a 0.01 scale the bounds describe a model 100x larger
+    // than what a renderer that applies those transforms will draw.  That makes
+    // normalizeSize scale the wrong space and the fixed near/far of the
+    // projection clip the result.
+    bool flattenScene = false;
+
     // Directory used to resolve side-car files (MTL, textures).  Empty means
     // "the model file's own directory".
     std::string baseDirectory;
+
+    // Name of an IModelLoader to use instead of extension dispatch ("" = dispatch).
+    // A/B-ing two loaders on the same file needs this: assimp and tiny_obj both
+    // read .obj, and dispatch always hands the file to the hand-written one.
+    std::string preferredLoader;
 
     // Print a one-line summary to stdout: which loader ran, what the file
     // contained, and what the post-process chain actually changed.  Cheap
@@ -80,7 +96,14 @@ public:
     // belongs to the returned Model, not to the loader.
     virtual Model load(const std::string &path, const ModelLoadOptions &options) const = 0;
 
-    virtual PostProcessPlan defaultPlan() const { return {}; }
+    // Takes the path because the recommendation can be *format* specific inside
+    // one loader: assimp covers dozens of formats, and their V axis conventions
+    // do not agree.
+    virtual PostProcessPlan defaultPlan(const std::string &path) const
+    {
+        (void)path;
+        return {};
+    }
 };
 
 class ModelLoaderRegistry {
@@ -92,6 +115,7 @@ public:
     void registerLoader(std::unique_ptr<IModelLoader> loader);
 
     const IModelLoader *find(const std::string &path) const;
+    const IModelLoader *findByName(const std::string &name) const;
     bool supports(const std::string &path) const;
     std::vector<std::string> supportedExtensions() const;
 
@@ -110,6 +134,11 @@ Model loadModel(const std::string &path, const ModelLoadOptions &options = {});
 // Each respects the per-primitive index windows: dedup and attribute
 // generation never merge or mix vertices across two primitives.
 namespace model_post {
+
+// Applies each node's world matrix to its primitives' vertices and emits one
+// identity node per mesh instance (orphan meshes are kept, also identity).  Mesh
+// names and the per-primitive material split survive; the hierarchy does not.
+void flattenScene(Model &model);
 
 void deduplicateVertices(Model &model);
 

@@ -1,4 +1,6 @@
 #pragma once
+#include <vector>
+
 #include "CmdOpBase.h"
 #include "CmdOpStencilState.h"
 #include "GraphicsPipeline.h"
@@ -26,6 +28,13 @@ public:
     }
     const std::shared_ptr<CmdOpStencilState> &stencilState() const { return m_stencilState; }
 
+    // Draw several index windows with a single pipeline bind.  A model is one
+    // vertex/index buffer sliced into per-primitive windows, so this is what
+    // keeps a 79-primitive file at one bind instead of 79.  An empty list keeps
+    // the plain "draw everything bound" behaviour.
+    void setDrawRanges(std::vector<DrawRange> ranges) { m_ranges = std::move(ranges); }
+    const std::vector<DrawRange> &drawRanges() const { return m_ranges; }
+
     void OnUpdateRawData(ResourceId id, uint32_t frame, const void *data, size_t size) override
     {
         m_pipeline->asset()->UpdateDescriptorResourceData(ResourceKey::make_key(id, frame), data, size);
@@ -37,10 +46,15 @@ public:
     UpdateFrequency GetFrequency() const override { return UpdateFrequency::eEachFrame; }
     void Record(const vk::CommandBuffer &cmd, uint32_t frame, DescriptorBindingState &state) override
     {
-        m_pipeline->recordDrawCommand(cmd, frame, state);
+        if (m_ranges.empty()) {
+            m_pipeline->recordDrawCommand(cmd, frame, state);
+        } else {
+            m_pipeline->recordDrawCommand(cmd, frame, state, m_ranges);
+        }
     }
 
 private:
     std::shared_ptr<GraphicsPipeline> m_pipeline;
     std::shared_ptr<CmdOpStencilState> m_stencilState;
+    std::vector<DrawRange> m_ranges;
 };

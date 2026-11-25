@@ -423,11 +423,11 @@ void GraphicsPipeline::createPipeline(const std::shared_ptr<IRenderPass> &render
     });
 }
 
-void GraphicsPipeline::recordDrawCommand(const vk::CommandBuffer &cmd, uint32_t frame,
-                                         DescriptorBindingState &bindingState)
+bool GraphicsPipeline::bindForDraw(const vk::CommandBuffer &cmd, uint32_t frame,
+                                   DescriptorBindingState &bindingState)
 {
     if (!m_pipeline) {
-        return;
+        return false;
     }
     const vk::PipelineLayout layout = static_cast<vk::PipelineLayout>(m_pipelineLayout);
     cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, static_cast<vk::Pipeline>(m_pipeline));
@@ -475,6 +475,15 @@ void GraphicsPipeline::recordDrawCommand(const vk::CommandBuffer &cmd, uint32_t 
     if (m_asset) {
         m_asset->bindToPipeline(cmd);
     }
+    return true;
+}
+
+void GraphicsPipeline::recordDrawCommand(const vk::CommandBuffer &cmd, uint32_t frame,
+                                         DescriptorBindingState &bindingState)
+{
+    if (!bindForDraw(cmd, frame, bindingState)) {
+        return;
+    }
 
     const uint32_t instanceCount = m_vertexInput ? m_vertexInput->drawInstanceCount() : 1u;
     if (m_vertexInput && m_vertexInput->hasIndexBuffer()) {
@@ -485,5 +494,37 @@ void GraphicsPipeline::recordDrawCommand(const vk::CommandBuffer &cmd, uint32_t 
         cmd.draw(vertexCount == 0 ? 3 : vertexCount, instanceCount, 0, 0);
     } else {
         cmd.draw(m_vertexInput->vertexCount(), instanceCount, 0, 0);
+    }
+}
+
+void GraphicsPipeline::recordDrawCommand(const vk::CommandBuffer &cmd, uint32_t frame,
+                                         DescriptorBindingState &bindingState,
+                                         const std::vector<DrawRange> &ranges)
+{
+    if (ranges.empty()) {
+        recordDrawCommand(cmd, frame, bindingState);
+        return;
+    }
+    if (!bindForDraw(cmd, frame, bindingState)) {
+        return;
+    }
+
+    const uint32_t instanceCount = m_vertexInput ? m_vertexInput->drawInstanceCount() : 1u;
+    const bool indexed = m_vertexInput && m_vertexInput->hasIndexBuffer();
+    const uint32_t boundIndexCount = m_vertexInput ? m_vertexInput->indexCount() : 0;
+
+    for (const DrawRange &range : ranges) {
+        // A zero indexCount means "the rest of the buffer", which keeps a
+        // caller that only knows firstIndex from having to clamp by hand.
+        const uint32_t count = range.indexCount == 0 ? boundIndexCount - std::min(range.firstIndex, boundIndexCount)
+                                                     : range.indexCount;
+        if (count == 0) {
+            continue;
+        }
+        if (indexed) {
+            cmd.drawIndexed(count, instanceCount, range.firstIndex, range.baseVertex, range.firstInstance);
+        } else {
+            cmd.draw(count, instanceCount, range.firstIndex + range.baseVertex, range.firstInstance);
+        }
     }
 }

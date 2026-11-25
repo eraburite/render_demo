@@ -107,6 +107,7 @@ Material convertMaterial(const tinyobj::material_t &src, const std::string &base
     dst.doubleSided = true;
 
     dst.baseColorTexture = resolveTexture(src.diffuse_texname, baseDirectory, images, cache);
+    dst.specularTexture = resolveTexture(src.specular_texname, baseDirectory, images, cache);
     dst.normalTexture =
         resolveTexture(src.normal_texname.empty() ? src.bump_texname : src.normal_texname, baseDirectory, images,
                        cache);

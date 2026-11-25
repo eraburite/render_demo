@@ -14,7 +14,7 @@ public:
     // glTF primitives are already indexed and carry TANGENT in most PBR
     // assets, so the default plan asks for both fix-ups: they are no-ops when
     // the attribute is present and rescue the file when it is not.
-    PostProcessPlan defaultPlan() const override
+    PostProcessPlan defaultPlan(const std::string &) const override
     {
         PostProcessPlan plan;
         plan.deduplicate = true;

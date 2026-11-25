@@ -14,9 +14,9 @@
 | 图形 API | Vulkan 1.3，使用 `vulkan.hpp`；创建/查询接口统一显式检查 `vk::Result` |
 | 窗口 / 输入 | GLFW（`IUnifiedWindow` 抽象，示例使用 `GLFWwindow`） |
 | 数学库 | GLM |
-| 资源加载 | `stb_image`（纹理）、`tiny_obj_loader`（示例模型，当前未启用） |
+| 资源加载 | `stb_image` 解码；`tinygltf`（glTF/GLB）、`tiny_obj_loader`（OBJ/MTL）、KTX 1.0 解析器、assimp（`.dae/.fbx` 等，运行期动态绑定，可选，见 19.2） |
 | 构建 | CMake ≥ 3.22，需 `glslangValidator` 编译着色器并转成 `*.hpp` 字节码头 |
-| 目标产物 | `myEngine` 静态库 + `simplest` / `multi-lighting` / `offscreen` / `gbuffer` / `particle` / `raw2rgb` 六个可执行示例 |
+| 目标产物 | `myEngine` 静态库 + `example_common` + **21 个**可执行示例（simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb，迁移示例 test7..test21，见 14–19） |
 
 依赖约定（由根 `CMakeLists.txt` 的 `globalConfig` 接口目标统一提供）：`src/`、`examples/common/`、`external/`、`external/glm/include`、`external/glfw/include`、`build_vs/generated`。
 
@@ -40,8 +40,8 @@ render_demo/
 │   ├── textures/                   # 示例贴图
 │   └── images/                     # raw2rgb 输入/输出
 ├── doc/                            # 设计讨论存档（当前为空）
-├── external/                       # glm / glfw / stb_image / tiny_obj_loader / tinygltf（json.hpp + tiny_gltf.h）
-├── data/models/                    # 迁移示例的 glTF 模型（suzanne / deer / sphere / armor / plane / cube / teapot / torusknot / samplebuilding + glass）
+├── external/                       # glm / glfw / stb_image / tiny_obj_loader / tinygltf（json.hpp + tiny_gltf.h） / assimp 头文件（仅头，见 19.2）
+├── data/models/                    # 迁移示例的 glTF 模型（suzanne / deer / sphere / armor / plane / cube / teapot / torusknot / samplebuilding + glass）；backpack/{obj,mtl,diffuse.jpg}（见 19）
 ├── data/textures/                  # 迁移示例的 KTX 纹理（metalplate01 / yokohama cubemap / texturearray / rocks 颜色+法线高度 / colored_glass）
 ├── src/                            # ===== 引擎核心（静态库 myEngine）=====
 │   ├── RenderManager.h/.cpp        # 对外唯一入口：设备、交换链、工厂方法
@@ -99,6 +99,7 @@ render_demo/
 │   │   ├── ModelLoader.h/.cpp          # IModelLoader + 注册表 + 统一后处理链（见 18.2）
 │   │   ├── GltfModelLoader.h/.cpp      # glTF/GLB 加载器（tinygltf + stb_image 的唯一实现 TU）
 │   │   ├── ObjModelLoader.h/.cpp       # OBJ/MTL 加载器（tiny_obj_loader，见 18.4）
+│   │   ├── AssimpModelLoader.h/.cpp    # assimp 加载器（运行期动态绑定 DLL，见 19.2）
 │   │   ├── KtxLoader.h/.cpp            # KTX 1.0 解析（RGBA8/R16，cube/array/3D，见 15.2）
 │   │   └── VertexInputStateConfig.h    # Vertex / VertexInputAtlas
 │   ├── simplest/{test1.cpp,shader/}
@@ -112,7 +113,8 @@ render_demo/
 │   ├── texture / texturecubemap / texturearray / parallaxmapping / texture3d
 │   │                                                       # 纹理家族迁移（test14..test18，见 15）
 │   ├── subpasses/{test19.cpp,shader/}                       # 三 subpass 延迟+透明（见 16）
-│   └── stencil/{test20.cpp,shader/}                         # stencil 描边（见 17）
+│   ├── stencil/{test20.cpp,shader/}                         # stencil 描边（见 17）
+│   └── model_loading/{test21.cpp,shader/}                   # 模型加载 + 自动取景（见 19）
 ├── tools/gltf2obj.py               # glTF -> OBJ 导出，用于生成往返验证资源（见 18.5）
 └── build_vs/                       # Visual Studio 构建目录（含各示例可执行程序）
 ```
@@ -845,6 +847,14 @@ dstAccess = MemoryRead | ColorRead | ColorWrite | DepthStencilAttachmentWrite
 | 新增 | `examples/common/ObjModelLoader.h/.cpp` | OBJ/MTL 加载器，直接复用 `external/tiny_obj_loader.h`；证明新增格式只需一个类 + 一次注册（见 18.4） |
 | 工具 | `tools/gltf2obj.py` | glTF → OBJ 导出（烘焙节点变换、翻转 V、保留 float 精度），用于生成往返验证资源（见 18.5） |
 | 结构 | `examples/common/ModelAsset.*` + `test19` + `test20` | `forEachMeshInstance()` 取代两处手写的节点递归，示例只描述"一个 (节点, primitive) 怎么处理" |
+| 扩展 | `src/GraphicsPipeline.h/.cpp` + `src/CmdOpDrawFrame.h` | **多区间索引绘制**：`DrawRange{firstIndex,indexCount,baseVertex,firstInstance}` + `recordDrawCommand(..., vector<DrawRange>)`，绑定抽成 `bindForDraw()` 与单区间共用；`indexCount==0` 表示到缓冲末尾（见 19.3） |
+| 新增 | `examples/common/AssimpModelLoader.h/.cpp` | assimp 加载器：运行期 `LoadLibraryW` + `GetProcAddress` 绑定，只请求 `Triangulate\|SortByPType`，其余交给共享后处理链（见 19.2） |
+| 结构 | `examples/common/ModelLoader.h/.cpp` | `ModelLoadOptions` 新增 `preferredLoader`（强制指定，用于 A/B）与 `flattenScene`；`defaultPlan(path)` 按路径区分 V 轴约定；新增 `ModelLoaderRegistry::findByName`；新增 `model_post::flattenScene`——把节点世界矩阵烘进顶点，修复「归一化作用在裸顶点空间」的框架缺陷（见 19.4） |
+| 结构 | `examples/common/ModelAsset.h` | `Material` 新增 `specularTexture`（MTL/assimp 的 Phong 高光槽；glTF 无对应） |
+| 新增 | `examples/model_loading/`（test21）+ `shader/model.{vert,frag}` | LearnOpenGL `3.model_loading` 的 Vulkan 迁移：按包围盒自动取景、一条 VBO/IBO 按材质分桶、`--model/--loader/--yaw/--dump/--dump-after/--resize-after`（见 19.1） |
+| 资源 | `data/models/backpack/` | 背包资源入库（obj + mtl + diffuse.jpg），`source_attribution.txt` 记录来源 |
+| 构建 | 顶层 `CMakeLists.txt` + `examples/model_loading/CMakeLists.txt` | `RENDER_DEMO_ASSIMP_DIR` cache 变量（回退 `ASSIMP_DIR` 环境变量与自动探测），`external/assimp/include` 进 include，DLL 路径以 `RENDER_DEMO_ASSIMP_DLL_HINT` 编译期注入，POST_BUILD 拷 DLL 到 exe 目录；找不到时只提示不报错（见 19.2） |
+| 修复 | `examples/model_loading/test21.cpp` | 参考实现硬编码的 `scale(0.25)` 与相机 `(0,3,5)` 都会让模型落在视锥外或比例错误；改为 `normalizeSize` + `frameModel()`，并把取景距离加上 `0.5*size.z` 保证最近面不裁切（见 19.1） |
 
 ---
 
@@ -1006,6 +1016,17 @@ cmake --build build -j
 ./build/examples/stencil/stencil --dump --model data/models/plane.obj    # 两个格式的 dump 应逐字节一致
 python tools/gltf2obj.py data/models/deer.gltf /tmp/deer.obj             # 用官方脚本导出新 OBJ
 
+# 模型加载 + 自动取景（见 19）：按包围盒取景，不依赖某个特定资源的比例
+./build/examples/model_loading/model_loading                            # 默认 data/models/backpack/backpack.obj
+./build/examples/model_loading/model_loading --model data/models/dancing_vampire.dae   # assimp 接管 .dae
+./build/examples/model_loading/model_loading --loader assimp            # 强制 assimp 走 .obj，与 tinyobj A/B
+./build/examples/model_loading/model_loading --yaw 40 --dump            # 绕 Y 轴旋转后抓帧
+./build/examples/model_loading/model_loading --yaw 40 --resize-after 3 --dump-after 6 --dump
+                                                                        # resize 后投影重算 + 取景校验
+# assimp 的 DLL 位置：默认找 exe 目录 / PATH，也可显式指定
+#   cmake -S . -B build_vs -DRENDER_DEMO_ASSIMP_DIR=D:/LearnOpenGL
+#   set RENDER_DEMO_ASSIMP_DLL=D:/somewhere/assimp-vc140-mt.dll
+
 # 调试：数字键切换通道视图，P 存盘；也可脚本化（见 13.6）
 ./build/examples/gbuffer/gbuffer --view 2            # 直接进 normal 视图
 ./build/examples/gbuffer/gbuffer --capture 30        # 跑 30 帧后存盘并退出
@@ -1028,7 +1049,7 @@ stencil 示例还会单独抓一张 `0001_stencil-mask.ppm`：它是 depth-stenc
 
 - `globalConfig`：唯一提供 include 目录与 glfw/Vulkan 链接的接口目标。
 - `myEngine`：`src/*.cpp`（GLOB）静态库，历史实现已从构建中排除。
-- `example_common`：`GLFWwindow.cpp`、`TextureLoader.cpp`、`GltfModelLoader.cpp`（唯一编译 stb/tinygltf 实现的 TU）、`ObjModelLoader.cpp`（唯一编译 tiny_obj_loader 的 TU）、`ModelAsset.cpp`、`ModelLoader.cpp`、`KtxLoader.cpp`（KTX 解析，见 15.2）、`ImageDump.cpp`、`glm.cpp`（只编译一次）。
+- `example_common`：`GLFWwindow.cpp`、`TextureLoader.cpp`、`GltfModelLoader.cpp`（唯一编译 stb/tinygltf 实现的 TU）、`ObjModelLoader.cpp`（唯一编译 tiny_obj_loader 的 TU）、`AssimpModelLoader.cpp`（assimp 走运行期绑定，不产生链接期依赖，见 19.2）、`ModelAsset.cpp`、`ModelLoader.cpp`、`KtxLoader.cpp`（KTX 解析，见 15.2）、`ImageDump.cpp`、`glm.cpp`（只编译一次）。
 - `add_render_example(target source shader_target [generated headers...])`：统一示例可执行配置，生成的 shader 头显式列为依赖，保证干净构建目录也能触起着色器编译。
 - `cmake/vulkan_shader_compiler.cmake`：自定义目标名按输出 `.spv` 的完整路径唯一化（曾因两个示例都编译 `shader/mesh.vert` 而让全新 configure 失败，见 15.5）；`glslangValidator` 编译 `.vert/.frag/.comp/.geom/.tesc/.tese` → `.spv`，再由 `bin_file_to_header.cmake` 转成 `.hpp`。这两步写在**同一条** `add_custom_command` 里（`.spv` 与 `.hpp` 同时是 OUTPUT），因为 CMake 生成器（MSBuild）在同一轮构建里先判定 `CustomBuild` 批次的输出是否最新：拆成两条链式命令时，头文件的新旧判定发生在 `.spv` 被重写之前，于是改完 shader 需要**构建两次**头文件才会更新——第一次只重编 `.spv`，可执行文件里仍是旧 SPIR-V，表现为「改了 shader 但画面完全没变」（本轮排查 offscreen 的灰色立方体、particle 的空画面就是这个坑）。
 
@@ -1071,7 +1092,10 @@ stencil 示例还会单独抓一张 `0001_stencil-mask.ppm`：它是 depth-stenc
 | 交换链图像回读 | ✅ 已实现（见 16.2 / 17）：swapchain 申请了 `eTransferSrc`，`LoopSequence::getImageIndex()` 定位当前帧，`--dump` 可抓合成后的交换链帧；S8 平面回读见 17.4 |
 | 深度通道导出 | G-Buffer 与 offscreen 的深度 `storeOp = DontCare`，内容不留存，因此没有深度 PPM；深度用 position 通道反推（`eLinearDepth`） |
 | 回读阻塞 | `ImageReadback::capture()` 提交后同步等 fence，一次 capture 会停顿一个 copy 的时长（2048² RGBA32F 约 64 MB），仅适合手动/脚本触发的调试 |
-| 模型格式 | 已支持 glTF/GLB 与 OBJ/MTL，新格式只需一个 `IModelLoader` 实现 + 一次注册（见 18）；`Model` 目前**没有蒙皮/形变字段**，骨骼动画类示例（skinning/morph）暂不可迁移 |
+| 模型格式 | 已支持 glTF/GLB 与 OBJ/MTL，新格式只需一个 `IModelLoader` 实现 + 一次注册（见 18）；`.dae/.fbx/.3ds` 等经 assimp 覆盖（见 19）；`Model` 目前**没有蒙皮/形变字段**，骨骼动画类示例（skinning/morph）暂不可迁移 |
+| assimp 依赖 | 运行期动态绑定 `assimp-vc140-mt.dll`，缺失时只有 assimp 格式不可用（异常里报出查找过的路径），其余 20 个示例不受影响；**不随仓库分发** DLL（14 MB），需自备并放到 exe 目录或设 `RENDER_DEMO_ASSIMP_DLL`（见 19.2） |
+| 模型示例着色 | `model_loading` 只做贴图着色，法线/高光贴图虽已解析进 `Material` 但未采样（见 19.6） |
+| 场景图烘焙 | `flattenScene` 一旦开启，节点变换被烘进顶点、层级被塌缩为 identity 根节点；需要逐节点绘制或做节点级动画时必须关掉它（见 19.4） |
 
 ---
 
@@ -2188,4 +2212,123 @@ MTL → `Material` 的映射（MLT 是 Phong 模型，与 PBR 字段没有一一
 | 全量构建 | 20 个示例 + `myEngine` + `example_common`：**0 error / 0 warning** |
 | 运行期校验 | 20 个示例逐个冒烟：**VUID = 0 / Validation Error = 0** |
 | 回归 | 原 19 个示例的渲染输出与重构前一致（改名未触碰渲染路径；`test19`/`test20` 换了遍历写法，dump 结果不变） |
+
+> 本轮之后新增了 `model_loading`（19 章），示例总数为 **21**，最新一次的构建与冒烟结果见 19.7。
+
+---
+
+## 19. 模型加载示例迁移（LearnOpenGL model_loading + assimp 方法吸收）
+
+### 19.1 参考实现里真正需要改的三处
+
+`LearnOpenGL/src/3.model_loading/1.model_loading` 的渲染部分只有十几行，但它的 `model.h` 里写死了三个只在"它自带的那一个背包"上成立的前提：
+
+| 参考实现 | 问题 | 本示例 |
+| --- | --- | --- |
+| `glm::scale(model, vec3(0.25f))` | 背包约 4 单位高，`0.25` 是试出来的；换成 210 单位高的 `.dae`（节点自带 0.01 缩放）或 0.02 单位的模型就全错 | 缩放由加载器 `normalizeSize` 负责：居中 + 最长轴统一到 2 单位 |
+| 相机 `(0, 3, 5)` 平视 -Z | 背包中心在该视轴下方 2.86 单位、距离 5.2，NDC y ≈ **-1.33**，整个模型在视锥外——照抄必然得到纯背景 | `frameModel()` 按包围盒求解：眼位在模型竖直轴上偏移半径的固定比例，距离取"包围球刚好填满竖直 FOV"处，再叠加 `0.5 * size.z` 保证**最近面**也不裁切 |
+| `aiProcess_GenSmoothNormals \| FlipUVs \| CalcTangentSpace` | 与 18.2 的共享后处理链**功能重复**，两边都做会算两遍，而且结果不同（assimp 平滑法线是角度加权，链里是面积加权） | assimp 只请求 `aiProcess_Triangulate \| aiProcess_SortByPType`，属性生成全部交给共享链 |
+
+取景这一步是本轮唯一踩了两次的坑，记下来免得重犯：
+
+* 初版用三维对角线 `0.5 * length(high - low)` 当包围球半径，最多是单边的 `sqrt(3)` 倍，于是物体只占画面 9.8%。
+* 改成 `0.5 * max(size.x, size.y, size.z)` 后覆盖率正常，但深度大的模型仍会上下出框——球拟合只保证**中心**在视锥内。距离上加 `0.5 * size.z` 后才同时保证最近面在框内。
+
+### 19.2 assimp 的接入方式：运行期动态绑定
+
+assimp 的预编译产物是 vc140 的 `assimp.lib` + `assimp-vc140-mt.dll`，当前工具链是 Visual Studio 18 2026。**能不能链**与**该不该链**是两个问题，先在工作区建独立探针工程用 `D:/LearnOpenGL/includes` + `lib/assimp.lib` 编译并跑通 `aiImportFile`（backpack 解析出 79 mesh / 2 material），确认可行之后，第二个问题才是决定项：
+
+`example_common` 会把注册表链进**全部 21 个示例**。若链接期导入，DLL 缺失时受影响的是 21 个 exe 的**启动**——一个可选格式的能力缺失，炸掉了整个仓库的可运行性。改成 `LoadLibraryW` + `GetProcAddress` 后，爆炸半径收敛为"`.dae/.fbx` 打不开，并在异常里说清原因"。
+
+代价是真实的：C++ 侧的 `aiMaterial`/`aiScene` 访问器（`material.inl` 里的 `GetTextureCount` 等）本质是导出 C 函数的 **inline 包装**，没有可解析的符号。所以 `AssimpModelLoader.cpp` 只走 C API（`aiGetMaterialTextureCount` / `aiGetMaterialTexture` / `aiGetMaterialColor` / `aiGetMaterialString` / `aiGetMaterialFloatArray`），并直接读 `aiScene` / `aiMesh` 的公开结构体字段——后者是纯数据，不涉及函数符号。
+
+DLL 的候选顺序（`AssimpModelLoader::runtime()` 只尝试一次，结果与失败原因缓存）：
+
+1. 环境变量 `RENDER_DEMO_ASSIMP_DLL`（绝对路径，便于临时换版本）
+2. 裸名 `"assimp-vc140-mt.dll"`（走 exe 目录 / PATH，**CMake 的 POST_BUILD 拷贝让这一条通常命中**）
+3. `RENDER_DEMO_ASSIMP_DLL_HINT`——CMake 探测到的绝对路径，编译期定义注入
+
+路径必须显式转宽字符再 `LoadLibraryW`：`std::getenv` 给的是 ANSI 串，含中文的模型路径会在这里静默失败。`RENDER_DEMO_ASSIMP_DIR` 是 cache 变量，回退 `ASSIMP_DIR` 环境变量，最后自动探测 `D:/LearnOpenGL` 等常见位置；**找不到只打印提示，不报错**——没有 assimp 的环境仍然要能构建出另外 20 个示例。
+
+头文件 vendored 在 `external/assimp/include`（45 个文件 / 633 KB），只取 `aiScene`/`aiMesh`/`aiMaterial`/`aiTexture` 与 C API 声明，锁定 API 版本，避免依赖开发机上的 assimp 安装。它和 `external/tinygltf` 一样是 `.gitignore` 里 `/external/*` 的**显式例外**——`AssimpModelLoader.cpp` 由 GLOB 无条件编译，头文件不入库的话新克隆会直接构建失败；之所以必须锁定版本，是因为 `aiScene` 这些结构体本身就是 ABI，对着机器上任意一版 assimp 头文件编译，就是"本地能跑、换台机器读到垃圾"的典型来源。
+
+### 19.3 一个模型一条索引缓冲，N 个材质窗口
+
+参考实现每个 mesh 一个 `Draw`（`vao/vbo/ebo` 各一份）。本示例走的是"整模型一条 VBO + 一条 IBO，按材质分桶记录索引窗口"，因为：
+
+* 顶点格式已经统一成 `MeshVertex`（18.1），79 个子 mesh 拆成 79 条缓冲只是把同一种上传重复 79 次；
+* 一次 `vkCmdBindVertexBuffers` / `vkCmdBindIndexBuffer` 之后连续 `vkCmdDrawIndexed` 更接近真实引擎的做法；
+* 材质是唯一需要切管线的东西，天然是分桶键。
+
+为此给 `GraphicsPipeline` 加了 `DrawRange`：
+
+```cpp
+struct DrawRange {
+    uint32_t firstIndex = 0;
+    uint32_t indexCount = 0;   // 0 = runs to the end of the bound index buffer
+    uint32_t baseVertex = 0;
+    uint32_t firstInstance = 0;
+};
+```
+
+`recordDrawCommand(cmd, frame, bindingState, const std::vector<DrawRange> &)` 把原来的"绑定 + 一次 draw"拆成 `bindForDraw()` + N 次 `vkCmdDrawIndexed`，单区间重载复用同一段绑定逻辑，行为不变。`indexCount == 0` 表示"到缓冲末尾"，省掉"总数减起点"这类易错的算术。
+
+`CmdOpDrawFrame` 相应新增 `setDrawRanges()` / `drawRanges()`，`Record()` 按 `m_ranges` 是否为空分派——空则走原来的单区间路径，21 个既有示例零改动。
+
+### 19.4 `flattenScene`：一个必须修在框架层的缺陷
+
+`dancing_vampire.dae` 渲染空白（`coverage = 5.4e-06`）。日志显示 `normalizeSize` 之后 bounds 是规规矩矩的 `-1..1`，但把 `MakeCameraMatrix` 与首顶点相乘得到 `clip w = 3.35`、`z = 3.16`——**几何实际只有 0.02 单位大**。
+
+根因不在示例：`Model::recomputeBounds()` 只看未实例化的顶点缓冲，**忽略节点变换**。`.dae` 的节点带 0.01 缩放，于是"归一化"作用在了错误的坐标空间——按裸顶点算出 210 单位，缩到 2 单位后，再乘上节点矩阵的 0.01，只剩 0.02。
+
+修法是把烘焙提前，而不是给示例加特判。新增 `ModelLoadOptions::flattenScene` 与 `model_post::flattenScene`：按 `forEachMeshInstance` 逐 (节点, primitive) 把世界矩阵烘进顶点，输出"每个 mesh 实例一个 identity 根节点"，保留 `Primitive` 的索引窗口与材质划分，并兜底未被任何节点引用的孤立网格。
+
+后处理顺序因此变成 **flatten → dedup → flipV → normals → tangents → transform**。flatten 必须在最前：一旦去重或属性生成先跑，烘焙矩阵会把这些工作全部作废。归一化（最后一步）此时作用在真正的世界空间上，对 `.obj`（节点本来就是 identity）与 `.dae` 都成立——这也解释了为什么 backpack 的行为没有任何变化。
+
+### 19.5 双通路过招：assimp 与 tinyobj 加载同一个文件
+
+只验证"assimp 能加载"没有意义，要验证两条通路产出同一个东西。`--loader assimp` 可强制对同一个 `.obj` 走 assimp：
+
+| 指标 | tinyobj（默认） | `--loader assimp` | 结论 |
+| --- | --- | --- | --- |
+| 顶点 / 索引 / 三角形 | 49060 / 203721 / 67907 | **49060 / 203721 / 67907** | 完全一致 |
+| 去重前顶点数 | 203721 | 203721 | 两条都是展开流 |
+| 材质数 | 1 | 2（多一个 `DefaultMaterial`） | assimp 为无材质的 mesh 补默认材质 |
+| 节点数 | 79（每 mesh 一个根） | 80 | assimp 保留文件里的真实场景图 |
+| dump 像素对比（1280×720 = 921600 px） | — | **仅 24 个像素差 1/255** | 两套浮点去重的末位差异 |
+
+注册顺序是 `AssimpModelLoader → GltfModelLoader → ObjModelLoader`，而查找是**反向**遍历：后注册者胜出，所以手写的 glTF/OBJ 加载器对各自扩展名仍然权威，assimp 只接管 `.dae/.fbx/.3ds` 等其余格式；`--loader assimp` 则绕过分派，用于这种 A/B。
+
+实测数据：
+
+| 模型 | 加载器 | 规模 | 归一化后 bounds | dump 覆盖率 / 不同色数 |
+| --- | --- | --- | --- | --- |
+| `backpack.obj` | obj（tinyobj） | 49060 v / 203721 i / 79 mesh / 1 mat / 1 tex(4096², 13 mip) | `-0.807,-1,-0.750 .. 0.807,1,0.750` | 0.1194 / 996 |
+| `backpack.obj` | assimp | 同上（拓扑一致） | 同上 | 同上（24 px 差 1/255） |
+| `dancing_vampire.dae` | assimp | 8792 v / 45066 i / 15022 tri / 1 mesh / 67 node / 3 tex | `-1,-0.782,-0.251 .. 1,0.782,0.251` | 0.0547 / 404 |
+
+覆盖率用"背景众数"法而非固定阈值推算：取画面里出现最多的 8-bit 颜色当背景，其余算前景。sRGB 交换链下清屏色 `0.05` 存成 63 而不是 13，写死阈值的做法在这里会直接失效。`uniqueColors` 只统计出现 ≥16 texel 的颜色，用来确认"纹理真的被采样了"——纯色填充的 `uniqueColors` 恒为 1。
+
+### 19.6 差异与限制
+
+| 项 | 现状 | 原因/后续 |
+| --- | --- | --- |
+| 光照 | fragment shader 只有 `texture(diffuseMap, uv)` | 参考实现也是纯贴图着色；接入光照需要材质里已有 PBR 字段（已有）与多张贴图槽的描述符布局 |
+| 高光贴图 | `Material::specularTexture` 已从 MTL/assimp 的 Phong 槽填入，但**示例未消费** | 数据层先如实保留，避免像参考实现那样在解析阶段就丢掉信息 |
+| 法线贴图 | 加载器已按 `NORMALS` → 回退 `HEIGHT` 解析，示例未采样 | 同上；烘焙切线已由共享链生成，通路是现成的 |
+| 材质模型 | `Ns/1000` → roughness 的经验映射，`Pm` 缺省 0 | 同 18.6 |
+| 蒙皮/动画 | `dancing_vampire.dae` 只能渲染 bind pose | `Model` 没有 joint/weight 字段（见 18.6） |
+| 场景图 | 示例固定 `flattenScene = true` | 单物体演示不需要层级；需要逐节点绘制时应关掉它并保留 `ModelNode::transform` |
+| assimp 版本 | 绑定 vc140 的 5.x 产物的 C API，头文件来自 LearnOpenGL 的 vendored 副本 | 更高版本若改了 `aiScene` 布局需要重新对齐头文件 |
+| 资源 | `data/models/backpack/` 只入库 `obj` + `mtl` + `diffuse.jpg`（约 13 MB） | 同目录的 normal/specular/roughness/ao 未复制：示例不采样它们，且体积是主体 |
+
+### 19.7 构建与验证状态
+
+| 项 | 结果 |
+| --- | --- |
+| 全量构建 | **21 个示例** + `myEngine` + `example_common`：**0 error / 0 warning** |
+| 运行期校验 | 21 个示例逐个冒烟：**VUID = 0 / Validation Error = 0**，原 20 个无回归 |
+| 组合路径 | `--yaw 40 --resize-after 3 --dump-after 6`：resize 到 1024×600 后投影按新 aspect 重算，旋转与取景均正确，模型无拉伸、无裁切 |
+| 双通路一致性 | 见 19.5：拓扑完全一致，921600 像素中 24 个差 1/255 |
+| 跨格式 | `.obj`（tinyobj / assimp）与 `.dae`（assimp）三个用例均目视确认纹理与几何正确 |
 

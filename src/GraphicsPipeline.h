@@ -94,6 +94,17 @@ struct GraphicsPipelineConfig {
 
 class IRenderPass;
 
+// One indexed draw inside a shared index buffer.  A loaded model is a single
+// vertex/index buffer cut into per-material primitive windows, so "one pipeline,
+// N windows" is the normal case; baking firstIndex = 0 into the draw would force
+// every caller to flatten the model into a non-indexed stream instead.
+struct DrawRange {
+    uint32_t firstIndex = 0;
+    uint32_t indexCount = 0; // 0 = runs to the end of the bound index buffer
+    uint32_t baseVertex = 0;
+    uint32_t firstInstance = 0;
+};
+
 class GraphicsPipeline {
 public:
     GraphicsPipeline(std::shared_ptr<vk::Device> device, DeviceFeatureProperty feature,
@@ -106,6 +117,11 @@ public:
 
     void builtUp();
     void recordDrawCommand(const vk::CommandBuffer &cmd, uint32_t frame, DescriptorBindingState &bindingState);
+    // Binds the pipeline once, then issues one draw per range.  This is the
+    // multi-primitive path: descriptor sets are bound once for the whole batch,
+    // because the per-layout binding cache only resets when the layout changes.
+    void recordDrawCommand(const vk::CommandBuffer &cmd, uint32_t frame, DescriptorBindingState &bindingState,
+                           const std::vector<DrawRange> &ranges);
 
     // Hook executed immediately after vkCmdBindPipeline, before the draw.
     // CmdOpDrawFrame uses it for dynamic stencil state: recording those
@@ -126,6 +142,11 @@ public:
     void RefreshDescriptors() { writeDescriptors(); }
 
 private:
+    // Binds pipeline, push constants and the descriptor sets the per-layout
+    // cache still misses, then the vertex/index buffers.  Returns false when
+    // the pipeline object does not exist yet.  Shared by both draw overloads so
+    // the batch path binds exactly as often as the single-draw path.
+    bool bindForDraw(const vk::CommandBuffer &cmd, uint32_t frame, DescriptorBindingState &bindingState);
     void createSetLayouts();
     void createDescriptorPool();
     void allocateDescriptorSets();

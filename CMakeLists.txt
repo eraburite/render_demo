@@ -43,6 +43,37 @@ file(GLOB EXAMPLE_COMMON_SRC CONFIGURE_DEPENDS "examples/common/*.cpp")
 add_library(example_common STATIC ${EXAMPLE_COMMON_SRC})
 target_link_libraries(example_common PUBLIC globalConfig)
 
+# ---- assimp runtime for examples/common/AssimpModelLoader.cpp --------------
+# The headers are vendored under external/assimp (so the build never depends on
+# an external checkout), and the importer .dll is bound at run time by the
+# loader.  All this block does is tell the loader where to look for it: a build
+# with no discoverable DLL still compiles, and the loader then reports why it is
+# unavailable instead of failing at process start like a link-time import would.
+set(RENDER_DEMO_ASSIMP_DIR "" CACHE PATH "Directory containing dlls/assimp-vc140-mt.dll")
+if(NOT RENDER_DEMO_ASSIMP_DIR AND DEFINED ENV{ASSIMP_DIR})
+    set(RENDER_DEMO_ASSIMP_DIR "$ENV{ASSIMP_DIR}")
+endif()
+if(NOT RENDER_DEMO_ASSIMP_DIR)
+    # The LearnOpenGL checkout this repo is developed next to ships a prebuilt
+    # SDK; use it when present so a fresh clone builds a working demo here.
+    foreach(candidate "D:/LearnOpenGL" "C:/LearnOpenGL" "$ENV{USERPROFILE}/LearnOpenGL")
+        if(EXISTS "${candidate}/dlls/assimp-vc140-mt.dll")
+            set(RENDER_DEMO_ASSIMP_DIR "${candidate}")
+            break()
+        endif()
+    endforeach()
+endif()
+
+target_include_directories(example_common PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/external/assimp/include)
+if(RENDER_DEMO_ASSIMP_DIR)
+    set(RENDER_DEMO_ASSIMP_DLL "${RENDER_DEMO_ASSIMP_DIR}/dlls/assimp-vc140-mt.dll")
+    target_compile_definitions(example_common PRIVATE RENDER_DEMO_ASSIMP_DLL_HINT="${RENDER_DEMO_ASSIMP_DLL}")
+    message(STATUS "assimp runtime hint: ${RENDER_DEMO_ASSIMP_DLL}")
+else()
+    set(RENDER_DEMO_ASSIMP_DLL "")
+    message(STATUS "assimp runtime hint: none found (set RENDER_DEMO_ASSIMP_DIR to enable .dae/.fbx loading)")
+endif()
+
 # myEngine: the core static library.
 file(GLOB ENGINE_SRC CONFIGURE_DEPENDS "src/*.cpp")
 add_library(myEngine STATIC ${ENGINE_SRC})
