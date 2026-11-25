@@ -44,6 +44,9 @@ public:
 
     void InvalidateDescriptorBindings() { m_bindingState.Reset(); }
     uint32_t getFrameInFlight() const { return m_currentFrame; }
+    // Swapchain image acquired for the current frame.  Exposed so a capture can
+    // pick the image that was just rendered (see IRenderPass / ImageReadback).
+    uint32_t getImageIndex() const { return m_imageIndex; }
 
 private:
     void createCommandPools();

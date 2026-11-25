@@ -32,6 +32,11 @@ public:
     void processInputEvents(float &currentTime);
     void poolEvents();
 
+    // Requests a framebuffer resize.  GLFW then delivers the resize callback,
+    // which is what drives the swapchain/framebuffer rebuild, so this is the
+    // scriptable way to exercise the resize path (--resize-after in subpasses).
+    void resize(uint32_t width, uint32_t height);
+
     // Key query used by the debug views.  key is a GLFW_KEY_* constant.  The
     // caller must have pumped events first (poolEvents()), otherwise this
     // reports the previous frame's cached state.

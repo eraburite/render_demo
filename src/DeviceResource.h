@@ -61,6 +61,7 @@ public:
     virtual void visit(class BufferObject &) {}
     virtual void visit(class TextureImage &) {}
     virtual void visit(class TextureSamplerCombine &) {}
+    virtual void visit(class InputAttachmentView &) {}
 };
 
 // Heterogeneous resource table: std::any-wrapped shared_ptr<T> plus typed find.

@@ -17,7 +17,13 @@ public:
     vk::RenderPass handle() const override { return m_renderPass ? *m_renderPass : vk::RenderPass{}; }
     vk::SampleCountFlagBits sampleCount() const override { return m_blueprint.sampleCount; }
     uint32_t colorAttachmentCount() const override { return m_blueprint.colorAttachmentCount; }
+    uint32_t colorAttachmentCount(uint32_t subpass) const override
+    {
+        return subpass < m_subpassColorCounts.size() ? m_subpassColorCounts[subpass]
+                                                     : m_blueprint.colorAttachmentCount;
+    }
     bool isSwapChainSized() const override { return m_blueprint.swapChainSized; }
+    uint64_t attachmentGeneration() const override { return m_attachmentGeneration; }
 
     void createFramebuffers(const std::vector<vk::ImageView> &swapChainViews, vk::Extent2D swapChainExtent) override;
     uint32_t framebufferCount() const override { return static_cast<uint32_t>(m_framebuffers.size()); }
@@ -65,5 +71,10 @@ private:
     std::vector<vk::Image> m_offscreenImages;
     std::vector<vk::Format> m_offscreenFormats;
     uint32_t m_colorCountPerSet = 0;
+    // Colour attachment count of each subpass, so a pipeline can be created for
+    // a subpass that does not write every attachment the pass owns.
+    std::vector<uint32_t> m_subpassColorCounts;
+    // Incremented every time createAttachments() replaces the images/views.
+    uint64_t m_attachmentGeneration = 0;
     std::vector<VulkanHandle<vk::Framebuffer, std::function<void(vk::Framebuffer)>>> m_framebuffers;
 };

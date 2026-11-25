@@ -41,8 +41,8 @@ render_demo/
 │   └── images/                     # raw2rgb 输入/输出
 ├── doc/                            # 设计讨论存档（当前为空）
 ├── external/                       # glm / glfw / stb_image / tiny_obj_loader / tinygltf（json.hpp + tiny_gltf.h）
-├── data/models/                    # 迁移示例的 glTF 模型（suzanne / deer / sphere / armor / plane / cube / teapot / torusknot）
-├── data/textures/                  # 迁移示例的 KTX 纹理（metalplate01 / yokohama cubemap / texturearray / rocks 颜色+法线高度）
+├── data/models/                    # 迁移示例的 glTF 模型（suzanne / deer / sphere / armor / plane / cube / teapot / torusknot / samplebuilding + glass）
+├── data/textures/                  # 迁移示例的 KTX 纹理（metalplate01 / yokohama cubemap / texturearray / rocks 颜色+法线高度 / colored_glass）
 ├── src/                            # ===== 引擎核心（静态库 myEngine）=====
 │   ├── RenderManager.h/.cpp        # 对外唯一入口：设备、交换链、工厂方法
 │   ├── SequenceBase.h/.cpp         # 序列公共基类：设备/队列/limits/上传模板/时间戳
@@ -70,6 +70,7 @@ render_demo/
 │   ├── BufferObject.h/.cpp         # VBO/IBO/UBO/SSBO 实现
 │   ├── TextureImage.h/.cpp         # 纹理资源（2D/array/cube/3D，含 mip）
 │   ├── TextureSamplerCombine.h/.cpp# combined image sampler
+│   ├── InputAttachmentView.h/.cpp  # subpass 输入附件描述符（不拥有图像，见 16.2）
 │   ├── ImageAttachment.h/.cpp      # 深度 / MSAA 附件
 │   ├── ImageReadback.h/.cpp        # GPU -> 主机一次性回读（调试用，见 13.3）
 │   ├── DeviceResourceUtils.h/.cpp  # createImage / createImageView 等
@@ -87,9 +88,9 @@ render_demo/
 │   │   ├── Geometry.h
 │   │   ├── RenderCommon.h
 │   │   ├── TextureLoader.h/.cpp
-│   │   ├── DescriptorLayoutConfig.h    # set0~set4 组件枚举与配置表
+│   │   ├── DescriptorLayoutConfig.h    # set0~set4 组件枚举与配置表 + subpass 输入附件表（见 16.4）
 │   │   ├── ComputeLayoutConfig.h       # compute set0 组件表 + 单层 layout 模板
-│   │   ├── AttachmentDetailConfig.h    # Simple/GBuffer 附件配置 + DependencyPreset
+│   │   ├── AttachmentDetailConfig.h    # Simple/GBuffer/SubpassDeferred 附件配置 + DependencyPreset
 │   │   ├── DebugViewMode.h             # 调试视图枚举 + push constant + 按键状态（见 13.2）
 │   │   ├── ImageDump.h/.cpp            # 中间结果编码 + PPM 存盘 + --capture/--view 解析（见 13.4）
 │   │   ├── GlTFLoader.h/.cpp           # tinygltf 之上的纯 CPU glTF 解析（见 14.2）
@@ -103,8 +104,9 @@ render_demo/
 │   ├── raw2rgb/{test6.cpp,Raw2RgbLayoutConfig.h,shader/{rawunpack.comp,raw2rgb_v2.comp}}
 │   ├── geometryshader / tessellation / deferred / terraintessellation /
 │   │   gltfloading / gltfscenerendering / multithreading  # 迁移示例（test7..test13，见 14）
-│   └── texture / texturecubemap / texturearray / parallaxmapping / texture3d
-│                                                          # 纹理家族迁移（test14..test18，见 15）
+│   ├── texture / texturecubemap / texturearray / parallaxmapping / texture3d
+│   │                                                       # 纹理家族迁移（test14..test18，见 15）
+│   └── subpasses/{test19.cpp,shader/}                       # 三 subpass 延迟+透明（见 16）
 └── build_vs/                       # Visual Studio 构建目录（含各示例可执行程序）
 ```
 
@@ -791,6 +793,12 @@ dstAccess = MemoryRead | ColorRead | ColorWrite | DepthStencilAttachmentWrite
 | 缺陷 | `cmake/vulkan_shader_compiler.cmake` | 自定义目标名改为按输出完整路径唯一化，修复全新 configure 的 CMP0002 |
 | 示例 | `test14..test18` | 纹理家族 5 个示例：texture / texturecubemap / texturearray / parallaxmapping / texture3d（见 15） |
 | 资源 | `data/textures/` | 5 个 KTX 入库（21 MB），`data/models/` 追加 5 个轻量模型 |
+| 扩展 | `src/IRenderPass.h` + `BasicRenderPass.*` + `GraphicsPipeline.cpp` | `colorAttachmentCount(subpass)`：混合状态按管线所属 subpass 取颜色附件数（修 VUID-06055，见 16.2） |
+| 结构 | `src/IRenderPass.h` + `BasicRenderPass.*` + `GraphicsPipeline.*` | `attachmentGeneration()` + `RefreshDescriptors()`：framebuffer 附件重建（resize）后重写指向它们的描述符（见 16.2） |
+| 结构 | `src/InputAttachmentView.h/.cpp`（新增） | subpass 输入附件描述符资源：`eInputAttachment` + `SHADER_READ_ONLY`，不拥有视图（见 16.2） |
+| 扩展 | `src/IAttachmentDetail.h` | `OffscreenTargetSpec::extraUsage` 改为 `vk::ImageUsageFlags`，可叠加 `eInputAttachment` |
+| 扩展 | `src/SwapChain.*` + `src/LoopSequence.h` | 交换链图像加 `eTransferSrc`，新增 `getImages()` / `getImageIndex()`，使合成后的帧可被 `--dump` 捕获 |
+| 示例 | `test19` + `examples/common/{AttachmentDetailConfig,DescriptorLayoutConfig}.h` | 三 subpass 延迟渲染：`SubpassDeferredAttachmentDetail` + 三套 subpass 描述符表（见 16） |
 | 示例 | 示例 CMake | `example_common` 静态库 + `add_render_example()`，shader 头显式依赖 |
 | 缺陷 | test1/test2/test3 | 1x 采样设备下不再配置非法的 resolve 附件 |
 | 结构 | `src/RenderManager.*` + `IRenderPass.h` + `BasicRenderPass.*` | **P0-#1 多 pass resize**：`reCreateSwapChain()` 去掉 `renderPass` 参数；`RenderManager` 在 `CreateRenderPass` 登记全部 render pass，`reCreateSwapChain` 遍历并仅对尺寸来自交换链的 pass 重建 framebuffer，离屏/G-Buffer 固定尺寸 pass 跳过 |
@@ -954,6 +962,11 @@ cmake --build build -j
 ./build/examples/parallaxmapping/parallaxmapping      # 1/2/3/4 切换四种映射模式，+/- 调高度
 ./build/examples/texture3d/texture3d                  # 64³ 体积光线步进，+/- 调密度增益
 
+# 多 subpass（见 16）：一条通道里 G-Buffer -> 延迟合成 -> 前向透明
+./build/examples/subpasses/subpasses                  # R 键重新随机 64 盏灯
+./build/examples/subpasses/subpasses --dump           # 抓 G-Buffer 三通道 + 合成后的交换链帧
+./build/examples/subpasses/subpasses --resize-after 30  # 第 30 帧改窗口尺寸，验证附件重建 + 描述符刷新
+
 # 调试：数字键切换通道视图，P 存盘；也可脚本化（见 13.6）
 ./build/examples/gbuffer/gbuffer --view 2            # 直接进 normal 视图
 ./build/examples/gbuffer/gbuffer --capture 30        # 跑 30 帧后存盘并退出
@@ -967,7 +980,8 @@ cmake --build build -j
 
 调试产物默认写到**当前工作目录**下的 `dump/`（已加入 `.gitignore`），文件名形如
 `0000_gbuffer-albedo.ppm`、`0001_gbuffer-normal.ppm`；PPM 为二进制 P6，可用任何看图工具
-或 `ffmpeg` / `ImageMagick` 转换。
+或 `ffmpeg` / `ImageMagick` 转换。`--dump` 也能抓交换链图像本身（如
+`0003_subpasses-frame.ppm`），前提是该图像的 usage 含 `eTransferSrc`（引擎已为交换链打开）。
 
 构建结构：
 
@@ -1028,7 +1042,7 @@ cmake --build build -j
 | 设备与窗口 | 6 组 | 实例/设备/队列/swapchain/事件/调试 | `RenderManager`、`SwapChain`、`PhysicalDeviceUtils`、`Event.h`、`IUnifiedWindow`、`GraphicsDebugger` |
 | 命令序列 | 9 组 | 基类/循环/一次性/操作/组合/屏障/绑定缓存/secondary 录制 | `SequenceBase`、`LoopSequence`、`OnceSequence`、`CmdOpBase`、`CmdOpGroup`、`CmdOpComputeBarrier`、`DescriptorBindingState`、`SecondaryCommandBuffer` |
 | 资源与管线 | 9 组 | 资源聚合/两种管线/渲染通道/句柄 | `ShaderAssetGroup`、`GraphicsPipeline`、`ComputePipeline`、`BasicRenderPass`、`VulkanHandle` |
-| 设备资源 | 8 组 | 分配器/缓冲/纹理/附件/工具 | `DeviceMemoryAllocator`、`BufferObject`、`TextureImage`、`TextureSamplerCombine`、`ImageAttachment` |
+| 设备资源 | 9 组 | 分配器/缓冲/纹理/输入附件/附件/工具 | `DeviceMemoryAllocator`、`BufferObject`、`TextureImage`、`TextureSamplerCombine`、`InputAttachmentView`、`ImageAttachment` |
 | 配置接口 | 4 个 | 顶点/附件/描述符/compute 配置抽象 | `IVertexInputStateGroup`、`IAttachmentDetail`、`IDescriptorSetDetail`、`ComputeLayoutConfig.h` |
 | 示例公共 | 18 个 | 窗口/相机/几何/纹理/KTX/配置表/glTF 加载 | `examples/common/*`（含 `GlTFLoader`、`KtxLoader`） |
 
@@ -1149,6 +1163,9 @@ ReadBack() → PrepareReadback(key) → OnReadbackRequested() → 重建 staging
 | `SimpleComponent` | `eColor`/`eDepth`/`eResolve` | Color / DepthStencil / Resolve |
 | `GBufferComponent` | `ePosition`/`eNormal`/`eAlbedo`/`eDepth` | 3× Color + DepthStencil |
 | `DependencyPreset` | `eSwapChain`/`eMultiSubpass`/`eOffscreen` | 单 pass / 0→1 / 0→external 的 subpass 依赖 |
+| `SubpassDeferredAttachmentDetail` | 5 附件 / 3 subpass / 4 条自写依赖 | 输入附件版延迟渲染（见 16.3） |
+
+> 预设只是常用组合；`RenderPassBlueprint::dependencies` 是公开字段，需要精确控制时（例如 subpass 间输入附件读取、layout 转换的写语义）直接填自己的依赖数组，`SubpassDeferredAttachmentDetail` 就是这么做的。
 
 `SimpleAttachmentDetail` 的三种模式：
 
@@ -1736,7 +1753,7 @@ syncOp->OnUpdateRawData(ResourceId(0, 0), 0u, ktx.data);
 | 深度/模板状态的 stencil 字段 | stencilbuffer |
 | 查询池（occlusion / timestamp / pipeline-statistics） | occlusionquery、pipelinestatistics |
 | 管线多视口 | specializationconstants 的三分屏 |
-| input attachment 与 subpass 依赖 | subpasses、inputattachments、deferredmultisampling |
+| ~~input attachment 与 subpass 依赖~~ | ~~subpasses~~（已完成，见 16）；inputattachments、deferredmultisampling 仍待做 |
 | 多 vertex binding（逐实例属性） | instancing |
 
 ### 15.8 构建与验证状态
@@ -1749,3 +1766,110 @@ syncOp->OnUpdateRawData(ResourceId(0, 0), 0u, ktx.data);
 | KTX 数据通路 | texture `512x512, 10 mips, 1398100 bytes`；texturecubemap `512x512, 6 faces, 10 mips, 8388600 bytes`；texturearray `256x256, 7 layers, 1 mip, 1835008 bytes`；parallaxmapping 颜色 `1024x1024, 11 mips` + 法线高度 `1024x1024, 1 mip`；texture3d `64x64x64 rgba8`，116430/262144 体素非空 |
 
 > **构建顺序注意**：`example_common` 是静态库且被所有示例链接，MSBuild 在同一个解决方案里同时重建它与多个可执行文件时会并行读取尚未写完的 `.lib`，报 `LNK1235: 损坏或无效的 COFF 符号表`。先 `--target example_common` 再整体构建即可，或直接串行构建。
+
+---
+
+## 16. 多 subpass 迁移（subpasses）
+
+参考实现 `examples/subpasses` 是这批示例里唯一一个**把 G-Buffer 留在渲染通道内部**的例子：3 个 subpass 依次完成 G-Buffer 填充、延迟合成与前向透明，中间产物以 input attachment 的形式被 `subpassLoad()` 读取，从不落地成可采样纹理。对 tile-based GPU 这是省带宽的关键路径，对本框架则是一次真正的结构补齐——此前 `BasicRenderPass` 已经能描述多个 subpass，却没有任何示例能把它跑起来，因为缺少「逐 subpass 的管线属性」和「input attachment 描述符」这两块。
+
+### 16.1 参考实现里真正值得复用的三点
+
+| 参考实现的做法 | 为什么必须照做 |
+| --- | --- |
+| subpass 0 把 4 个颜色附件（交换链 + position + normal + albedo）全部写一遍 | 一个 subpass 声明的每个颜色附件都必须被写；只写一部分在 tile-based 硬件上读到的是未定义值 |
+| subpass 1/2 用 `pInputAttachments` 引用 1..3，layout 用 `SHADER_READ_ONLY_OPTIMAL` | 描述符的 `imageLayout` 必须与该 subpass 声明的输入附件 layout 一致，否则是 VUID-00344 |
+| 4 条 `VkSubpassDependency`：`EXTERNAL→0`、`0→1`、`1→2`、`2→EXTERNAL` | subpass 之间**没有任何隐式依赖**（只有 `EXTERNAL` 边界有隐式依赖）。另外：附件在 subpass 边界上的 layout 转换发生在依赖的 dst 域，它本身是一次**写**，所以 dstAccess 里必须出现 `COLOR_ATTACHMENT_WRITE`，否则同步校验直接报 WRITE_AFTER_WRITE |
+| 每个 subpass 一套独立的 pipeline layout | 三者的描述符集合完全不同：顶点 UBO / 三个输入附件 + 光源 UBO / UBO + 输入附件 + 采样器 |
+| `VkGraphicsPipelineCreateInfo::subpass` 指定管线所属 subpass | 管线必须与所在 subpass 兼容，且混合状态的附件数必须等于**该 subpass**的颜色附件数 |
+
+### 16.2 引擎扩展
+
+| 扩展 | 位置 | 作用 |
+| --- | --- | --- |
+| `colorAttachmentCount(subpass)` | `IRenderPass` / `BasicRenderPass` / `GraphicsPipeline` | 原来管线创建时统一取 subpass 0 的附件数。subpass 0 写 4 个、subpass 1/2 只写 1 个，混合状态必须按 subpass 取，否则 VUID-06055。零参版本保留，单 subpass 通道不受影响 |
+| `attachmentGeneration()` + `GraphicsPipeline::RefreshDescriptors()` | `IRenderPass` / `BasicRenderPass` / `GraphicsPipeline` | G-Buffer 是**交换链尺寸**通道的附件，窗口 resize 时 `createFramebuffers()` 会销毁并重建这些图像，指向它们的描述符立刻失效。通道在每次重建附件时自增代数，示例检测到变化后重建 `InputAttachmentView` 并重写描述符（前 `waitIdle`，因为正在使用的描述符不能更新） |
+| `InputAttachmentView` | 新增 `src/InputAttachmentView.h/.cpp` | 只持有 `imageView` + `imageLayout`，写出 `eInputAttachment` 描述符（无 sampler）。它不是 `TextureSamplerCombine`：后者写的是 combined image sampler，类型与校验规则都不同。`DeviceResourceVisitor` 增加同名重载 |
+| `OffscreenTargetSpec::extraUsage` 由 `ImageUsageFlagBits` 改为 `vk::ImageUsageFlags` | `IAttachmentDetail.h` | 输入附件需要 `eInputAttachment`，同时保留 `eSampled` 供调试存盘，标志位必须能叠加 |
+| `SwapChain::getImages()`、`LoopSequence::getImageIndex()`、交换链图像增加 `eTransferSrc` | `SwapChain` / `LoopSequence` | 让「合成后的那一帧」可以被 `--dump` 抓到。只抓 G-Buffer 无法验证 subpass 1/2 的实际输出；交换链图像原本只声明了 `eColorAttachment`，任何拷贝都是非法的 |
+
+> 说明：`GBufferSpec` 走到 `eInputAttachment` 绑定上时，引擎的资源工厂会返回空指针（它只物化 UBO/SSBO/纹理），输入附件因此必须由示例显式注入——这正好符合「附件归渲染通道所有」的所有权关系。
+
+### 16.3 附件、subpass 与依赖
+
+| 附件 | 格式 | load / store | finalLayout |
+| --- | --- | --- | --- |
+| 0 交换链颜色 | 交换链格式 | clear / store | `PRESENT_SRC_KHR` |
+| 1 position | `R32G32B32A32_SFLOAT`（a = 线性深度） | clear / store | `SHADER_READ_ONLY_OPTIMAL` |
+| 2 normal | `R16G16B16A16_SFLOAT` | clear / store | `SHADER_READ_ONLY_OPTIMAL` |
+| 3 albedo | `R8G8B8A8_UNORM` | clear / store | `SHADER_READ_ONLY_OPTIMAL` |
+| 4 depth | 引擎默认深度格式 | clear / don't care | `DEPTH_STENCIL_ATTACHMENT_OPTIMAL` |
+
+| subpass | 颜色附件 | 输入附件 | 深度 | 管线 |
+| --- | --- | --- | --- | --- |
+| 0 | 0,1,2,3 | — | 4（测试 + 写） | `gbuffer.vert/frag` |
+| 1 | 0 | 1,2,3 | 4（测试，不写） | `composition.vert/frag`（全屏三角形，64 光源） |
+| 2 | 0 | 1 | 4（测试，不写） | `transparent.vert/frag`（混合） |
+
+参考实现里 G-Buffer 的 store 是 `DONT_CARE`（它假设 tile 内存会保住数据），这在本框架里改成 `STORE`：桌面驱动行为一致，但 DONT_CARE + 后续 subpass 读取在规范上是未定义值。深度用 `DONT_CARE` 是安全的——它只在本次通道内被读。
+
+依赖的四个作用域（`eByRegion`）：
+
+1. `EXTERNAL → 0`：上一帧对 G-Buffer/深度的写（这些图像被所有 framebuffer 共享）必须先于本帧的清屏与写入。
+2. `0 → 1`、`1 → 2`：颜色/深度写 + 到 `SHADER_READ_ONLY` 的 layout 转换先于下一 subpass 的 `subpassLoad`。
+3. `2 → EXTERNAL`：末 subpass 的写与结尾 layout 转换释放给呈现与下一帧。
+
+### 16.4 描述符布局与 stage 规则
+
+三套集合互不复用，各自对应一个 subpass：
+
+| 集合 | 绑定 | 类型 | stage |
+| --- | --- | --- | --- |
+| gbuffer set0 | 0 camera | `eUniformBuffer`（`CameraMatrix`） | vertex |
+| composition set0 | 0/1/2 position/normal/albedo | `eInputAttachment` | fragment |
+| | 3 lights | `eUniformBuffer`（`SubpassLights`，2064 B） | fragment |
+| transparent set0 | 0 camera | `eUniformBuffer` | vertex |
+| | 1 position(depth) | `eInputAttachment` | fragment |
+| | 2 glass | `eCombinedImageSampler` | fragment |
+
+`examples/common/DescriptorLayoutConfig.h` 新增三张表（`SubpassInputComponentTable`、`SubpassCompositionComponentTable`、`SubpassTransparentComponentTable`）与 `SubpassLight`/`SubpassLights`（std140：每盏 32 B，共 64 盏，`static_assert` 固定尺寸）。光源数量通过特化常量传给片元着色器，因此改灯数不需要重编 SPIR-V。
+
+stage 规则照旧：GLSL 里变量只能声明在布局表声明的 stage（相机 UBO 只在 vertex，输入附件与光源 UBO 只在 fragment），否则触发 VUID-07988。
+
+### 16.5 规模、dump 与验证
+
+| 项 | 数据 |
+| --- | --- |
+| 场景 | `samplebuilding.gltf` 12 mesh / 72 node → 展开为 **70164 顶点**；`samplebuilding_glass.gltf` 12 个 node → **624 顶点** |
+| 玻璃贴图 | `colored_glass_rgba.ktx` 512² × 10 mip |
+| 光源 | 64 盏，环形分布在建筑周围（半径 1.8–3.2，高 0.25–2.45） |
+| 子通道 | 3 个，1 条渲染通道，4 条依赖 |
+
+`--dump` 抓四张图，分别验证不同层：
+
+| 文件 | 内容 | 结果 |
+| --- | --- | --- |
+| `0000_subpasses-albedo.ppm` | subpass 0 的 albedo | coverage 0.089，白色墙面 + 金色穹顶 + 灰色地面 |
+| `0001_subpasses-position.ppm` | 世界坐标编码 | coverage 与 albedo 一致，说明 position/normal/albedo 三个目标逐像素对齐 |
+| `0002_subpasses-depth.ppm` | 线性深度编码 | 亮度随距离单调递减，近端面可见（背面剔除方向正确） |
+| `0003_subpasses-frame.ppm` | **交换链图像**（subpass 2 的结果） | 合成后的建筑 + 底部玻璃带，证明 subpass 1 的 `subpassLoad` 与 subpass 2 的混合都生效 |
+
+PPM 直接看比较费劲，仓库里没有图像库依赖，验证时用一段 20 行的 Python（`zlib` 手写 PNG chunk）转成 PNG 目视确认，不引入任何构建依赖。
+
+构建与运行：19 个示例（原 18 + subpasses）全量重编 **0 error / 0 warning**；逐个冒烟运行 **VUID = 0 / Validation Error = 0**。交换链 usage 的改动影响全部示例，因此这一轮是把所有旧示例一起重跑确认无回归后才提交的。
+
+resize 路径单独验证过：`--resize-after 30` 在第 30 帧把窗口改成 1024×600（`GLFWwindow::resize()` 触发 GLFW 的 framebuffer 回调，走的就是用户拖窗口那条重建链），日志出现 `attachments rebuilt, input descriptors refreshed`，此后仍保持 VUID = 0——说明"附件换代 → 重建 `InputAttachmentView` → `RefreshDescriptors()`"这条链路是通的，而不是只在纸面上成立。
+
+### 16.6 差异与限制
+
+| 项 | 参考原版 | 本实现 | 原因 |
+| --- | --- | --- | --- |
+| 几何准备 | `PreTransformVertices` 在加载阶段把顶点烘焙到世界空间 | 示例侧 `mergeModel()` 展开索引 + 应用节点世界矩阵 + 乘材质基色 | 框架不做顶点预变换；材质基色进顶点色替代 `PreMultiplyVertexColors` |
+| 相机 | GL 约定，着色器里 `y = -y` 两次翻转 | 世界空间保持 Y-up，不做翻转 | `MakeCameraMatrix` 已经在投影里翻转 Y |
+| 布光 | UI 按钮随机，半径 1–2 | `R` 键随机，半径 0.3–0.6，环形分布，合成末尾 Reinhard 色调映射 | 64 盏光叠加在小体积里必然过曝；不调的话整个立面被压成纯白，看不出着色 |
+| G-Buffer 归属 | 每个 framebuffer 一套附件 | 所有 framebuffer 共享一套（`swapChainSized` 通道沿用引擎既有策略） | 由 `EXTERNAL→0` 依赖兜住跨帧写-写，代价是两帧不能并行写 G-Buffer；换来 resize 只需刷新描述符，不必重建整套附件绑定 |
+| resize | 重建附件 + framebuffer + 描述符（参考实现把它写在 `prepare()` 里） | `attachmentGeneration()` 变化时重写描述符 | 框架的 resize 走 `SwapChainEvent` 批量重建，示例只需要响应代数 |
+| 顶点绕序 | `VK_CULL_MODE_BACK` + CCW | 同样是 back + CCW | 投影矩阵翻 Y 与 NDC 的 Y 向下互相抵消，glTF 的 CCW 仍然是正面；这条用深度 dump 实测确认，不是照抄 |
+| 未覆盖 | MSAA、subpass 输入的多重采样解析 | 未做 | 与本示例技术点无关，留给 multisampling 系示例 |
+
+附带记录一条**框架级**的知识：`ImageDump` 的 `eLinearDepth` 编码在 far=100 时会把整栋建筑压在亮度 0.93–0.97 之间，几乎无法用于判断"看到的是近面还是远面"；dump 请求可以单独指定 `farPlane`，验证时应改成一个贴近场景的区间。

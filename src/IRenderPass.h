@@ -9,8 +9,22 @@ public:
     virtual ~IRenderPass() = default;
     virtual vk::RenderPass handle() const = 0;
     virtual vk::SampleCountFlagBits sampleCount() const = 0;
+    // Colour outputs of subpass 0.  Kept for the single-subpass callers; a
+    // pipeline built for subpass N must instead use the overload below, because
+    // VkPipelineColorBlendStateCreateInfo::attachmentCount has to equal that
+    // subpass' colour attachment count (VUID-VkGraphicsPipelineCreateInfo-renderPass-06055).
     virtual uint32_t colorAttachmentCount() const = 0;
+    virtual uint32_t colorAttachmentCount(uint32_t subpass) const
+    {
+        (void)subpass;
+        return colorAttachmentCount();
+    }
     virtual bool isSwapChainSized() const = 0;
+
+    // Bumped whenever the attachment images/views are recreated (resize).  Any
+    // descriptor that points at a framebuffer attachment becomes stale at that
+    // moment and has to be rewritten; see GraphicsPipeline::RefreshDescriptors().
+    virtual uint64_t attachmentGeneration() const { return 0; }
 
     virtual void createFramebuffers(const std::vector<vk::ImageView> &swapChainViews, vk::Extent2D swapChainExtent) = 0;
     virtual uint32_t framebufferCount() const = 0;

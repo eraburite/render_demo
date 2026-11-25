@@ -66,7 +66,10 @@ void SwapChain::createSwapChain(int windowWidth, int windowHeight, const QueueFa
     createInfo.imageColorSpace = surfaceFormat.colorSpace;
     createInfo.imageExtent = extent;
     createInfo.imageArrayLayers = 1;
-    createInfo.imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
+    // TRANSFER_SRC keeps the presented frame capturable (ImageDump / --dump in
+    // the examples): a swapchain image is otherwise only usable as a colour
+    // attachment and cannot be copied to a host-readable buffer.
+    createInfo.imageUsage = vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc;
 
     const uint32_t queueFamilies[] = {indices.graphicsFamily.value(), indices.presentFamily.value()};
     if (indices.graphicsFamily != indices.presentFamily) {

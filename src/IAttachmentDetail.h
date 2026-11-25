@@ -20,7 +20,10 @@ struct SubpassBlueprint {
 struct OffscreenTargetSpec {
     uint32_t attachmentIndex = 0;
     vk::Format format = vk::Format::eR8G8B8A8Unorm;
-    vk::ImageUsageFlagBits extraUsage = vk::ImageUsageFlagBits::eSampled;
+    // Additional image usage beyond colour attachment + transfer source.
+    // Subpass inputs need eInputAttachment here, otherwise the image cannot be
+    // read by a later subpass (VUID-VkImageViewCreateInfo-usage-02275).
+    vk::ImageUsageFlags extraUsage = vk::ImageUsageFlagBits::eSampled;
     bool fixedSize = true;
     uint32_t width = 0;
     uint32_t height = 0;

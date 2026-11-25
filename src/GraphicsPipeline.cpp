@@ -335,7 +335,10 @@ void GraphicsPipeline::createPipeline(const std::shared_ptr<IRenderPass> &render
     colorBlendAttachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG
                                           | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
 
-    const uint32_t colorAttachmentCount = renderPass ? renderPass->colorAttachmentCount() : 1;
+    // Attachment count is per subpass: a 3-subpass pass may write 4 colour
+    // targets in subpass 0 and only 1 in the later ones, and Vulkan requires
+    // the blend state to match the pipeline's own subpass.
+    const uint32_t colorAttachmentCount = renderPass ? renderPass->colorAttachmentCount(subpass) : 1;
     std::vector<vk::PipelineColorBlendAttachmentState> colorAttachments(
         colorAttachmentCount == 0 ? 1 : colorAttachmentCount, colorBlendAttachment);
 

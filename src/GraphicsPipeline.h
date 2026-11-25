@@ -84,6 +84,14 @@ public:
     vk::PipelineLayout pipelineLayout() const { return m_pipelineLayout ? *m_pipelineLayout : vk::PipelineLayout{}; }
     const std::shared_ptr<ShaderAssetGroup> &asset() const { return m_asset; }
 
+    // Re-writes every descriptor of every frame from the asset's current
+    // resources.  Needed when a descriptor points at a framebuffer attachment
+    // that was destroyed and recreated by a resize (see
+    // IRenderPass::attachmentGeneration).  The caller must ensure the device is
+    // idle: descriptor sets still referenced by pending submissions must not be
+    // updated.
+    void RefreshDescriptors() { writeDescriptors(); }
+
 private:
     void createSetLayouts();
     void createDescriptorPool();

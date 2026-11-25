@@ -133,6 +133,13 @@ void GLFWwindow::poolEvents()
     glfwPollEvents();
 }
 
+void GLFWwindow::resize(uint32_t width, uint32_t height)
+{
+    if (m_window != nullptr && width > 0 && height > 0) {
+        glfwSetWindowSize(m_window, static_cast<int>(width), static_cast<int>(height));
+    }
+}
+
 bool GLFWwindow::isKeyDown(int key) const
 {
     if (m_window == nullptr) {

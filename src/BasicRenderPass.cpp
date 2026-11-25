@@ -82,6 +82,11 @@ BasicRenderPass::BasicRenderPass(std::shared_ptr<vk::Device> device,
 {
     createRenderPass();
 
+    m_subpassColorCounts.reserve(m_blueprint.subpasses.size());
+    for (const SubpassBlueprint &subpass : m_blueprint.subpasses) {
+        m_subpassColorCounts.push_back(static_cast<uint32_t>(subpass.colorAttachments.size()));
+    }
+
     vk::Extent2D initialExtent{1, 1};
     for (const OffscreenTargetSpec &spec : m_blueprint.offscreenTargets) {
         if (spec.width > 0 && spec.height > 0) {
@@ -140,6 +145,10 @@ void BasicRenderPass::createRenderPass()
 
 void BasicRenderPass::createAttachments(vk::Extent2D extent)
 {
+    // Every attachment image (and therefore every view handed out to a
+    // descriptor) is about to be destroyed, so bump the generation first.
+    ++m_attachmentGeneration;
+
     m_attachmentSets.clear();
     m_offscreenViews.clear();
     m_offscreenImages.clear();

@@ -19,6 +19,23 @@ struct LightSource {
 struct ViewEyePoint {
     alignas(16) glm::vec4 position;
 };
+
+// Light block of the subpass composition pass.  Layout mirrors the reference
+// std140 block exactly: vec4 position + vec3 color + float radius, 32 bytes per
+// element, 64 elements.  A specialization constant tells the shader the count.
+struct SubpassLight {
+    alignas(16) glm::vec4 position;
+    alignas(16) glm::vec3 color;
+    float radius = 1.0f;
+};
+inline constexpr uint32_t kSubpassLightCount = 64;
+struct SubpassLights {
+    alignas(16) glm::vec4 viewPos;
+    SubpassLight lights[kSubpassLightCount];
+};
+static_assert(sizeof(SubpassLight) == 32, "std140 array element must be 32 bytes");
+static_assert(sizeof(SubpassLights) == 16 + kSubpassLightCount * 32, "lights UBO must match std140");
+
 struct MaterialParams {
     uint32_t baseColorTexId = 0;
     uint32_t specularTexId = 1;
@@ -91,8 +108,47 @@ inline constexpr auto InputAttachmentComponentTable = std::make_tuple(
     InputAttachmentConfig{InputAttachmentComponent::eAlbedo, vk::DescriptorType::eCombinedImageSampler, 1,
                           vk::ShaderStageFlagBits::eFragment});
 
-enum class PushConstantComponent { eModelMatrix };
+// ---- subpass inputs: read inside the pass that wrote them -------------------
+// Different from the table above: those entries are *sampled* views of a
+// resolved offscreen image, these are VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT and
+// are read with subpassLoad() by a later subpass of the same render pass.
+enum class SubpassInputComponent { ePosition, eNormal, eAlbedo };
+using SubpassInputConfig = DescriptorComponentSpec<SubpassInputComponent>;
+inline constexpr auto SubpassInputComponentTable = std::make_tuple(
+    SubpassInputConfig{SubpassInputComponent::ePosition, vk::DescriptorType::eInputAttachment, 1,
+                       vk::ShaderStageFlagBits::eFragment},
+    SubpassInputConfig{SubpassInputComponent::eNormal, vk::DescriptorType::eInputAttachment, 1,
+                       vk::ShaderStageFlagBits::eFragment},
+    SubpassInputConfig{SubpassInputComponent::eAlbedo, vk::DescriptorType::eInputAttachment, 1,
+                       vk::ShaderStageFlagBits::eFragment});
 
+// Deferred composition subpass: three input attachments plus the light array.
+// One set may mix descriptor types, which is exactly why this table exists.
+enum class SubpassCompositionComponent { ePosition, eNormal, eAlbedo, eLights };
+using SubpassCompositionConfig = DescriptorComponentSpec<SubpassCompositionComponent>;
+inline constexpr auto SubpassCompositionComponentTable = std::make_tuple(
+    SubpassCompositionConfig{SubpassCompositionComponent::ePosition, vk::DescriptorType::eInputAttachment, 1,
+                             vk::ShaderStageFlagBits::eFragment},
+    SubpassCompositionConfig{SubpassCompositionComponent::eNormal, vk::DescriptorType::eInputAttachment, 1,
+                             vk::ShaderStageFlagBits::eFragment},
+    SubpassCompositionConfig{SubpassCompositionComponent::eAlbedo, vk::DescriptorType::eInputAttachment, 1,
+                             vk::ShaderStageFlagBits::eFragment},
+    SubpassCompositionConfig{SubpassCompositionComponent::eLights, vk::DescriptorType::eUniformBuffer, 1,
+                             vk::ShaderStageFlagBits::eFragment});
+
+// Transparent subpass: camera UBO (vertex), depth input attachment and the
+// glass texture (both fragment).
+enum class SubpassTransparentComponent { eCameraMatrix, ePosition, eGlass };
+using SubpassTransparentConfig = DescriptorComponentSpec<SubpassTransparentComponent>;
+inline constexpr auto SubpassTransparentComponentTable = std::make_tuple(
+    SubpassTransparentConfig{SubpassTransparentComponent::eCameraMatrix, vk::DescriptorType::eUniformBuffer, 1,
+                             vk::ShaderStageFlagBits::eVertex},
+    SubpassTransparentConfig{SubpassTransparentComponent::ePosition, vk::DescriptorType::eInputAttachment, 1,
+                             vk::ShaderStageFlagBits::eFragment},
+    SubpassTransparentConfig{SubpassTransparentComponent::eGlass, vk::DescriptorType::eCombinedImageSampler, 1,
+                             vk::ShaderStageFlagBits::eFragment});
+
+enum class PushConstantComponent { eModelMatrix };
 // Concrete atlas used by graphics examples.  Combines all six set tables under
 // one IDescriptorSetLayoutGroup via a type-erasing wrapper.
 class DescriptorLayoutAtlas : public IDescriptorSetLayoutGroup {

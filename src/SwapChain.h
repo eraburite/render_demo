@@ -16,6 +16,9 @@ public:
 
     const std::shared_ptr<vk::Extent2D> &getExtent2D() const { return m_swapChainExtent; }
     const std::vector<std::shared_ptr<vk::ImageView>> &getImageViews() const { return m_swapChainImageViews; }
+    // Underlying images, index for index with getImageViews(); used to capture
+    // the presented frame (the images are created with eTransferSrc).
+    const std::vector<vk::Image> &getImages() const { return m_swapChainImages; }
     const std::shared_ptr<vk::Format> &getImageFormat() const { return m_swapChainImageFormat; }
     std::shared_ptr<vk::Framebuffer> getFramebuffer(uint32_t imageIndex) const
     {
