@@ -85,29 +85,40 @@ std::filesystem::path makePath(const std::filesystem::path &directory, uint32_t 
 
 // PPM (P6) allows '#' comments between the magic number and the dimensions,
 // so the file can describe itself: a bare PPM has nowhere else to put the
-// encoding rule.
-void writePpm(const DumpResult &result, const std::vector<uint8_t> &rgb, const DumpRequest &request)
+// encoding rule.  Shared with raw2rgb, which records its own provenance.
+void writePpm(const std::filesystem::path &path, uint32_t width, uint32_t height,
+              const std::vector<uint8_t> &rgb, const std::vector<std::string> &comments)
 {
-    std::ofstream file(result.path, std::ios::binary);
+    const size_t expected = static_cast<size_t>(width) * static_cast<size_t>(height) * 3u;
+    if (rgb.size() != expected) {
+        throw std::runtime_error("ImageDump: ppm buffer is " + std::to_string(rgb.size()) + " bytes, expected " +
+                                 std::to_string(expected) + " for " + std::to_string(width) + "x" +
+                                 std::to_string(height));
+    }
+
+    std::ofstream file(path, std::ios::binary);
     if (!file) {
-        throw std::runtime_error("ImageDump: cannot open " + result.path.string() + " for writing");
+        throw std::runtime_error("ImageDump: cannot open " + path.string() + " for writing");
     }
     file << "P6\n";
-    file << "# render_demo debug capture\n";
-    file << "# channel: " << request.label << "\n";
-    file << "# encoding: " << DumpEncodingName(request.encoding) << "\n";
-    file << "# source: " << vk::to_string(request.format) << "\n";
-    file << "# background: alpha < 0.5 written as black\n";
-    file << "# row order: image row 0 first (no vertical flip)\n";
-    file << result.extent.width << ' ' << result.extent.height << "\n";
+    for (const std::string &comment : comments) {
+        file << "# " << comment << "\n";
+    }
+    file << width << ' ' << height << "\n";
     file << "255\n";
     file.write(reinterpret_cast<const char *>(rgb.data()), static_cast<std::streamsize>(rgb.size()));
     if (!file) {
-        throw std::runtime_error("ImageDump: failed while writing " + result.path.string());
+        throw std::runtime_error("ImageDump: failed while writing " + path.string());
     }
 }
 
 } // namespace
+
+void WritePpmRgb8(const std::filesystem::path &path, uint32_t width, uint32_t height,
+                  const std::vector<uint8_t> &rgb, const std::vector<std::string> &comments)
+{
+    writePpm(path, width, height, rgb, comments);
+}
 
 std::vector<DumpResult> DumpImages(ImageReadback &readback, const std::vector<DumpRequest> &requests,
                                    const std::filesystem::path &directory, uint32_t firstIndex)
@@ -177,7 +188,15 @@ std::vector<DumpResult> DumpImages(ImageReadback &readback, const std::vector<Du
             result.meanNormalLength = static_cast<float>(normalLengthSum / covered);
         }
 
-        writePpm(result, rgb, request);
+        const std::vector<std::string> comments = {
+            "render_demo debug capture",
+            "channel: " + request.label,
+            std::string("encoding: ") + DumpEncodingName(request.encoding),
+            "source: " + vk::to_string(request.format),
+            "background: alpha < 0.5 written as black",
+            "row order: image row 0 first (no vertical flip)",
+        };
+        writePpm(result.path, result.extent.width, result.extent.height, rgb, comments);
         results.push_back(std::move(result));
         ++index;
     }

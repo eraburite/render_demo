@@ -34,19 +34,28 @@ ShaderModuleHandle createShaderModule(const std::shared_ptr<vk::Device> &device,
 }
 
 // Shared (static) layers only ever use the frame-0 set; every other set is
-// double/triple buffered per frame-in-flight.
+// double/triple buffered per frame-in-flight.  `setIndex` is the position in the
+// pipeline layout (m_descriptorSets is [frameSlot][setIndex]); the logical
+// SetLayoutDetail::setId is only used to look up the shared flag -- indexing by
+// setId would pick the wrong set as soon as ids are not 0..N-1 in order.
 vk::DescriptorSet descriptorSetFor(const std::vector<std::vector<vk::DescriptorSet>> &sets,
                                    const std::shared_ptr<const IDescriptorSetLayoutGroup> &layout, uint32_t frame,
-                                   uint32_t setId)
+                                   uint32_t setIndex)
 {
     if (sets.empty()) {
         return {};
     }
-    const uint32_t activeFrame = (layout && layout->isSetShared(setId)) ? 0u : frame;
-    if (activeFrame >= sets.size() || setId >= sets[activeFrame].size()) {
+    uint32_t activeFrame = frame;
+    if (layout) {
+        const std::vector<SetLayoutDetail> &details = layout->setDetails();
+        if (setIndex < details.size() && (details[setIndex].shared || layout->isSetShared(details[setIndex].setId))) {
+            activeFrame = 0;
+        }
+    }
+    if (activeFrame >= sets.size() || setIndex >= sets[activeFrame].size()) {
         return {};
     }
-    return sets[activeFrame][setId];
+    return sets[activeFrame][setIndex];
 }
 
 const std::unordered_map<std::string, std::vector<uint32_t>> &emptyShaderCodes()
@@ -359,14 +368,27 @@ void GraphicsPipeline::recordDrawCommand(const vk::CommandBuffer &cmd, uint32_t 
     if (firstSet < setCount) {
         std::vector<vk::DescriptorSet> sets;
         sets.reserve(setCount - firstSet);
-        const std::vector<SetLayoutDetail> &details = m_descriptorLayout->setDetails();
+        bool allBound = true;
         for (uint32_t index = firstSet; index < setCount; ++index) {
-            const uint32_t setId = index < details.size() ? details[index].setId : index;
-            sets.push_back(descriptorSetFor(m_descriptorSets, m_descriptorLayout, frame, setId));
+            const vk::DescriptorSet set = descriptorSetFor(m_descriptorSets, m_descriptorLayout, frame, index);
+            allBound = allBound && static_cast<bool>(set);
+            sets.push_back(set);
         }
-        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, layout, firstSet,
-                               static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
-        bindingState.MarkBoundRange(firstSet, setCount - firstSet);
+        if (allBound) {
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, layout, firstSet,
+                                   static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
+            bindingState.MarkBoundRange(firstSet, setCount - firstSet);
+        } else {
+            // Skip an empty set instead of poisoning the whole bind range.
+            for (uint32_t index = firstSet; index < setCount; ++index) {
+                const vk::DescriptorSet set = sets[index - firstSet];
+                if (!set) {
+                    continue;
+                }
+                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, layout, index, 1, &set, 0, nullptr);
+                bindingState.MarkBoundRange(index, 1);
+            }
+        }
     }
 
     if (m_asset) {

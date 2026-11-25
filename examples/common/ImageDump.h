@@ -73,6 +73,13 @@ struct DumpResult {
     float meanNormalLength = 0.0f;
 };
 
+// Writes an 8-bit RGB buffer (3 bytes per texel, row 0 = top) as a binary PPM
+// (P6).  `comments` become '#' lines in the header, which is the only metadata
+// slot a bare PPM has: the debug capture uses it for channel / encoding / source
+// format, and raw2rgb uses it to record how the image was produced.
+void WritePpmRgb8(const std::filesystem::path &path, uint32_t width, uint32_t height,
+                  const std::vector<uint8_t> &rgb, const std::vector<std::string> &comments);
+
 // Captures every request and writes one binary PPM (P6) per request into
 // `directory` (created when missing), named "<index>_<label>.ppm" with the index
 // starting at `firstIndex`.  Returns one result per request, in order.

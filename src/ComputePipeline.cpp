@@ -1,6 +1,7 @@
 #include "ComputePipeline.h"
 
 #include <functional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -30,42 +31,66 @@ ShaderModuleHandle createShaderModule(const std::shared_ptr<vk::Device> &device,
                               [device](vk::ShaderModule module) { device->destroyShaderModule(module); });
 }
 
-vk::DescriptorSet descriptorSetFor(const std::vector<std::vector<vk::DescriptorSet>> &sets,
-                                   const std::shared_ptr<const IDescriptorSetLayoutGroup> &layout, uint32_t frame,
-                                   uint32_t setId)
-{
-    if (sets.empty()) {
-        return {};
-    }
-    const uint32_t activeFrame = (layout && layout->isSetShared(setId)) ? 0u : frame;
-    if (activeFrame >= sets.size() || setId >= sets[activeFrame].size()) {
-        return {};
-    }
-    return sets[activeFrame][setId];
-}
-
 const std::unordered_map<std::string, std::vector<uint32_t>> &emptyShaderCodes()
 {
     static const std::unordered_map<std::string, std::vector<uint32_t>> codes;
     return codes;
 }
 
+std::string groupCountsToString(const DispatchSize &size)
+{
+    std::ostringstream out;
+    out << '(' << size.groupCountX << ", " << size.groupCountY << ", " << size.groupCountZ << ')';
+    return out.str();
+}
+
 } // namespace
 
 ComputePipeline::ComputePipeline(std::shared_ptr<vk::Device> device,
                                  std::shared_ptr<const IDescriptorSetLayoutGroup> descriptorLayout,
-                                 std::shared_ptr<ShaderAssetGroup> asset, const std::string &spirvEntry) :
+                                 std::shared_ptr<ShaderAssetGroup> asset, const std::string &spirvEntry,
+                                 const vk::PhysicalDeviceLimits &limits, ComputePipelineOptions options) :
     m_device(std::move(device)), m_descriptorLayout(std::move(descriptorLayout)), m_asset(std::move(asset)),
-    m_spirvEntry(spirvEntry)
+    m_spirvEntry(spirvEntry), m_options(std::move(options))
 {
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+        m_maxWorkGroupCount[axis] = limits.maxComputeWorkGroupCount[axis];
+    }
 }
 
 void ComputePipeline::builtUp()
 {
+    if (m_built) {
+        return;
+    }
     createSetLayouts();
     createDescriptorPool();
     allocateAndWriteSets();
     createPipeline();
+    m_built = true;
+}
+
+void ComputePipeline::addSpecializationConstant(uint32_t constantId, const void *data, size_t size)
+{
+    if (m_built) {
+        throw std::runtime_error("ComputePipeline: cannot add specialization constant " +
+                                 std::to_string(constantId) + " after builtUp()");
+    }
+    if (data == nullptr || (size != 4 && size != 8)) {
+        throw std::runtime_error("ComputePipeline: specialization constant " + std::to_string(constantId) +
+                                 " must be 4 or 8 bytes");
+    }
+    for (const SpecializationConstant &existing : m_options.specializationConstants) {
+        if (existing.constantId == constantId) {
+            throw std::runtime_error("ComputePipeline: specialization constant " + std::to_string(constantId) +
+                                     " already set");
+        }
+    }
+    SpecializationConstant constant;
+    constant.constantId = constantId;
+    const auto *bytes = static_cast<const std::byte *>(data);
+    constant.data.assign(bytes, bytes + size);
+    m_options.specializationConstants.push_back(std::move(constant));
 }
 
 void ComputePipeline::createSetLayouts()
@@ -201,10 +226,31 @@ void ComputePipeline::createPipeline()
 
     ShaderModuleHandle computeModule = createShaderModule(m_device, *computeCode);
 
+    // Specialization constants travel as one contiguous blob; the map entries
+    // carry (offset, size) into it, so the blob must stay alive until the
+    // pipeline is created - both live in this scope.
+    std::vector<vk::SpecializationMapEntry> specEntries;
+    std::vector<std::byte> specData;
+    if (!m_options.specializationConstants.empty()) {
+        specEntries.reserve(m_options.specializationConstants.size());
+        for (const SpecializationConstant &constant : m_options.specializationConstants) {
+            specEntries.emplace_back(constant.constantId, static_cast<uint32_t>(specData.size()),
+                                     constant.data.size());
+            specData.insert(specData.end(), constant.data.begin(), constant.data.end());
+        }
+    }
+
+    vk::SpecializationInfo specInfo{};
+    specInfo.mapEntryCount = static_cast<uint32_t>(specEntries.size());
+    specInfo.pMapEntries = specEntries.empty() ? nullptr : specEntries.data();
+    specInfo.dataSize = specData.size();
+    specInfo.pData = specData.empty() ? nullptr : specData.data();
+
     vk::PipelineShaderStageCreateInfo computeStage{};
     computeStage.stage = vk::ShaderStageFlagBits::eCompute;
     computeStage.module = static_cast<vk::ShaderModule>(computeModule);
     computeStage.pName = "main";
+    computeStage.pSpecializationInfo = specEntries.empty() ? nullptr : &specInfo;
 
     std::vector<vk::DescriptorSetLayout> setLayouts;
     setLayouts.reserve(m_setLayouts.size());
@@ -234,20 +280,66 @@ void ComputePipeline::createPipeline()
     pipelineInfo.basePipelineHandle = vk::Pipeline{};
     pipelineInfo.basePipelineIndex = -1;
 
+    // The C-style overload reports a per-pipeline result: a driver may fail to
+    // compile this one pipeline while the call itself "succeeds", so the result
+    // is checked and the handle is verified before it is wrapped.
     vk::Pipeline pipeline{};
-    check(m_device->createComputePipelines(nullptr, 1, &pipelineInfo, nullptr, &pipeline),
-          "vkCreateComputePipelines");
+    const vk::Result result = m_device->createComputePipelines(m_options.pipelineCache, 1, &pipelineInfo, nullptr,
+                                                               &pipeline);
+    if (result != vk::Result::eSuccess) {
+        throw std::runtime_error("ComputePipeline: vkCreateComputePipelines failed for entry \"" + m_spirvEntry +
+                                 "\": " + vk::to_string(result));
+    }
+    if (!pipeline) {
+        throw std::runtime_error("ComputePipeline: vkCreateComputePipelines returned a null pipeline for entry \"" +
+                                 m_spirvEntry + "\"");
+    }
     m_pipeline = decltype(m_pipeline)(pipeline, [device = m_device](vk::Pipeline handle) {
         device->destroyPipeline(handle);
     });
 }
 
-void ComputePipeline::recordDispatchCommand(const vk::CommandBuffer &cmd, uint32_t frame, const DispatchSize &size,
-                                            DescriptorBindingState &bindingState)
+vk::DescriptorSet ComputePipeline::descriptorSetFor(uint32_t frame, uint32_t setIndex) const
 {
-    if (!m_pipeline) {
+    if (m_descriptorSets.empty()) {
+        return {};
+    }
+    // m_descriptorSets is laid out [frameSlot][setIndex]; a shared set is only
+    // written for frame 0, so every frame binds that copy.
+    uint32_t activeFrame = frame;
+    if (m_descriptorLayout) {
+        const std::vector<SetLayoutDetail> &details = m_descriptorLayout->setDetails();
+        if (setIndex < details.size() &&
+            (details[setIndex].shared || m_descriptorLayout->isSetShared(details[setIndex].setId))) {
+            activeFrame = 0;
+        }
+    }
+    if (activeFrame >= m_descriptorSets.size() || setIndex >= m_descriptorSets[activeFrame].size()) {
+        return {};
+    }
+    return m_descriptorSets[activeFrame][setIndex];
+}
+
+void ComputePipeline::validateDispatchSize(const DispatchSize &size) const
+{
+    if (m_maxWorkGroupCount[0] == 0) {
         return;
     }
+    const uint32_t requested[3] = {size.groupCountX, size.groupCountY, size.groupCountZ};
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+        if (requested[axis] > m_maxWorkGroupCount[axis]) {
+            throw std::runtime_error("ComputePipeline(" + m_spirvEntry + "): dispatch size " +
+                                     groupCountsToString(size) + " exceeds maxComputeWorkGroupCount (" +
+                                     std::to_string(m_maxWorkGroupCount[0]) + ", " +
+                                     std::to_string(m_maxWorkGroupCount[1]) + ", " +
+                                     std::to_string(m_maxWorkGroupCount[2]) + ")");
+        }
+    }
+}
+
+void ComputePipeline::bindResources(const vk::CommandBuffer &cmd, uint32_t frame,
+                                    DescriptorBindingState &bindingState)
+{
     const vk::PipelineLayout layout = static_cast<vk::PipelineLayout>(m_pipelineLayout);
     cmd.bindPipeline(vk::PipelineBindPoint::eCompute, static_cast<vk::Pipeline>(m_pipeline));
 
@@ -261,18 +353,64 @@ void ComputePipeline::recordDispatchCommand(const vk::CommandBuffer &cmd, uint32
     bindingState.OnPipelineLayoutBound(layout);
     const uint32_t setCount = m_descriptorLayout ? m_descriptorLayout->setCount() : 0;
     const uint32_t firstSet = bindingState.FirstUnboundSet(setCount);
-    if (firstSet < setCount) {
-        std::vector<vk::DescriptorSet> sets;
-        sets.reserve(setCount - firstSet);
-        const std::vector<SetLayoutDetail> &details = m_descriptorLayout->setDetails();
-        for (uint32_t index = firstSet; index < setCount; ++index) {
-            const uint32_t setId = index < details.size() ? details[index].setId : index;
-            sets.push_back(descriptorSetFor(m_descriptorSets, m_descriptorLayout, frame, setId));
-        }
+    if (firstSet >= setCount) {
+        return;
+    }
+
+    std::vector<vk::DescriptorSet> sets;
+    sets.reserve(setCount - firstSet);
+    bool allBound = true;
+    for (uint32_t index = firstSet; index < setCount; ++index) {
+        const vk::DescriptorSet set = descriptorSetFor(frame, index);
+        allBound = allBound && static_cast<bool>(set);
+        sets.push_back(set);
+    }
+
+    if (allBound) {
         cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, layout, firstSet,
                                static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
         bindingState.MarkBoundRange(firstSet, setCount - firstSet);
+        return;
     }
 
+    // A set without resources cannot be bound; bind the others one by one so the
+    // missing one is skipped instead of poisoning the whole range.
+    for (uint32_t index = firstSet; index < setCount; ++index) {
+        const vk::DescriptorSet set = sets[index - firstSet];
+        if (!set) {
+            continue;
+        }
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, layout, index, 1, &set, 0, nullptr);
+        bindingState.MarkBoundRange(index, 1);
+    }
+}
+
+void ComputePipeline::recordDispatchCommand(const vk::CommandBuffer &cmd, uint32_t frame, const DispatchSize &size,
+                                            DescriptorBindingState &bindingState)
+{
+    if (!m_pipeline) {
+        return;
+    }
+    // Zero groups is a legal no-op, but recording the dispatch anyway costs a
+    // command and hides "the CPU computed an empty workload" from the caller.
+    if (size.groupCountX == 0 || size.groupCountY == 0 || size.groupCountZ == 0) {
+        return;
+    }
+    validateDispatchSize(size);
+    bindResources(cmd, frame, bindingState);
     cmd.dispatch(size.groupCountX, size.groupCountY, size.groupCountZ);
+}
+
+void ComputePipeline::recordDispatchCommand(const vk::CommandBuffer &cmd, uint32_t frame,
+                                            const IndirectDispatch &indirect, DescriptorBindingState &bindingState)
+{
+    if (!m_pipeline) {
+        return;
+    }
+    if (!indirect.valid()) {
+        throw std::runtime_error("ComputePipeline(" + m_spirvEntry +
+                                 "): indirect dispatch needs a buffer holding VkDispatchIndirectCommand");
+    }
+    bindResources(cmd, frame, bindingState);
+    cmd.dispatchIndirect(indirect.buffer, indirect.offset);
 }

@@ -1,14 +1,17 @@
 #pragma once
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
 #include <vulkan/vulkan.hpp>
+#include "ComputePipeline.h"
 #include "DeviceMemoryAllocator.h"
 #include "IDescriptorSetDetail.h"
 #include "IRenderPass.h"
 #include "SwapChain.h"
 #include "IVertexInputStateGroup.h"
+#include "VulkanHandle.h"
 #include "typedefs.h"
 
 class IUnifiedWindow;
@@ -19,7 +22,6 @@ class OnceSequence;
 class LoopSequence;
 class ShaderAssetGroup;
 class GraphicsPipeline;
-class ComputePipeline;
 class IAttachmentDetail;
 
 // The single public entry point.  Two-phase construction: the constructor only
@@ -46,7 +48,7 @@ public:
                                                     const std::shared_ptr<IRenderPass> &renderPass, uint32_t subpass);
     std::shared_ptr<ComputePipeline> CreateComputePipeline(
         std::shared_ptr<const IDescriptorSetLayoutGroup> descriptorLayout, std::shared_ptr<ShaderAssetGroup> asset,
-        const std::string &spirvEntry = "comp");
+        const std::string &spirvEntry = "comp", ComputePipelineOptions options = {});
 
     std::shared_ptr<OnceSequence> UploadSequence();
     std::shared_ptr<LoopSequence> DrawFrameSequence();
@@ -67,6 +69,9 @@ public:
     vk::Format DefaultDepthFormat() const { return m_depthFormat; }
     vk::SampleCountFlagBits getMaxUsableSampleCount() const { return m_msaaSamples; }
     uint32_t maxFramesInFlight() const { return m_maxFramesInFlight; }
+    // Shared PSO cache: compute pipelines created through this manager reuse it,
+    // so re-specialising a shader does not pay for a cold compile every time.
+    vk::PipelineCache pipelineCache() const { return m_pipelineCache ? *m_pipelineCache : vk::PipelineCache{}; }
     const vk::PhysicalDeviceProperties &deviceProperties() const { return m_physicalDeviceProperties; }
     const vk::PhysicalDeviceMemoryProperties &memoryProperties() const { return m_physicalDeviceMemoryProperties; }
 
@@ -95,6 +100,8 @@ private:
     std::shared_ptr<vk::SurfaceKHR> m_surface;
     std::shared_ptr<vk::PhysicalDevice> m_physicalDevice;
     std::shared_ptr<vk::Device> m_device;
+    // Declared after m_device so it is destroyed before the device handle.
+    VulkanHandle<vk::PipelineCache, std::function<void(vk::PipelineCache)>> m_pipelineCache;
     std::shared_ptr<DeviceMemoryAllocator> m_allocator;
 
     vk::Format m_depthFormat = vk::Format::eD24UnormS8Uint;

@@ -158,6 +158,17 @@ void RenderManager::initVulkan()
 
     createDevice(requirement);
 
+    // One cache for every compute pipeline this manager creates.  It starts empty
+    // (this run compiles from scratch) and is only reused within the process; the
+    // VK_KHR_pipeline_binary / getPipelineCacheData path for on-disk caching is
+    // deliberately not wired up (see DESIGN.md 4.11).
+    vk::PipelineCacheCreateInfo cacheInfo{};
+    vk::PipelineCache cache{};
+    check(m_device->createPipelineCache(&cacheInfo, nullptr, &cache), "vkCreatePipelineCache");
+    m_pipelineCache = decltype(m_pipelineCache)(cache, [device = m_device](vk::PipelineCache handle) {
+        device->destroyPipelineCache(handle);
+    });
+
     m_allocator = std::make_shared<DeviceMemoryAllocator>(deviceView(), m_physicalDeviceMemoryProperties);
 
     const SwapChainSupportDetails swapChainSupport =
@@ -498,11 +509,18 @@ RenderManager::CreatePipeline(std::shared_ptr<const IVertexInputStateGroup> vert
 
 std::shared_ptr<ComputePipeline>
 RenderManager::CreateComputePipeline(std::shared_ptr<const IDescriptorSetLayoutGroup> descriptorLayout,
-                                     std::shared_ptr<ShaderAssetGroup> asset, const std::string &spirvEntry)
+                                     std::shared_ptr<ShaderAssetGroup> asset, const std::string &spirvEntry,
+                                     ComputePipelineOptions options)
 {
     const std::shared_ptr<const IDescriptorSetLayoutGroup> layoutClone =
         descriptorLayout ? descriptorLayout->sharedClone() : nullptr;
-    auto pipeline = std::make_shared<ComputePipeline>(getLogicalDevice(), layoutClone, asset, spirvEntry);
+    // The manager cache is the default; an explicit cache in `options` wins so a
+    // caller can isolate (or share) compiles on purpose.
+    if (!options.pipelineCache) {
+        options.pipelineCache = pipelineCache();
+    }
+    auto pipeline = std::make_shared<ComputePipeline>(getLogicalDevice(), layoutClone, asset, spirvEntry,
+                                                      m_physicalDeviceProperties.limits, std::move(options));
     pipeline->builtUp();
     return pipeline;
 }

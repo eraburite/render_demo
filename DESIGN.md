@@ -50,9 +50,11 @@ render_demo/
 │   ├── CmdOpDrawFrame.h            # 绘制操作
 │   ├── CmdSyncDevice.h             # staging -> device 同步操作
 │   ├── CmdOpComputeDispatch.h      # compute 命令操作
+│   ├── CmdOpGroup.h                # 把多个 CmdOp 合成一次提交（多 stage 计算链）
+│   ├── CmdOpComputeBarrier.h       # compute -> 下一阶段的显式内存依赖
 │   ├── ShaderAssetGroup.h/.cpp     # VBO/UBO/SSBO/纹理/PushConstant 的聚合与更新
 │   ├── GraphicsPipeline.h/.cpp     # SetLayout/Pool/Sets/PipelineLayout/Pipeline
-│   ├── ComputePipeline.h/.cpp      # 计算管线 + DispatchSize + 增量绑定 dispatch
+│   ├── ComputePipeline.h/.cpp      # 计算管线（spec 常量 / 间接派发 / 限额校验 / 增量绑定）
 │   ├── DescriptorBindingState.h    # 增量绑定缓存（Bind Once）
 │   ├── VulkanHandle.h              # Vulkan 句柄 RAII 包装
 │   ├── IRenderPass.h               # 渲染通道抽象
@@ -123,7 +125,7 @@ graph TD
         SB["SequenceBase<br/>设备与队列/上传模板/时间戳"]
         OS["OnceSequence<br/>一次性上传"]
         LS["LoopSequence<br/>每帧录制/提交/呈现"]
-        OP["CmdOpBase<br/>CmdOpDrawFrame / CmdOpComputeDispatch / CmdSyncDevice"]
+        OP["CmdOpBase<br/>CmdOpDrawFrame / CmdOpComputeDispatch / CmdSyncDevice<br/>CmdOpGroup / CmdOpComputeBarrier"]
     end
     subgraph Res["资源与管线层"]
         SAG["ShaderAssetGroup<br/>VBO/UBO/SSBO/纹理/PushConstant"]
@@ -560,6 +562,32 @@ compute 优先选 **compute-only** 族以支持异步计算，找不到则回退
 
 **GPU → CPU 回读**：`IDeviceResource::MappedData()/MappedByteSize()` 映射 device-local 资源；`DefaultBufferTransfer::recordCopyFromDeviceToStaging` 落地（含 `shaderWrite→transferRead`、`transferWrite→hostRead` 屏障）；`OnceSequence::ReadBack()` 完成提交 + fence 等待 + 拷贝。`OnceSequence::OnUpdateRawData` 也补齐了 push constant 分支（对所有 frame 槽位写入），这样一次性任务可以在上传阶段把 `width/height` 之类的参数写好。
 
+**管线能力**（`ComputePipeline.h`）
+
+| 能力 | 接口 | 说明 |
+| --- | --- | --- |
+| SPIR-V 入口选择 | 构造参数 `spirvEntry` | 一个 asset 可放多段 compute，按入口名各建一条管线 |
+| 特化常量 | `ComputePipelineOptions::specializationConstants` / `addSpecializationConstant()` / `makeSpecializationConstant<T>(id, value)` | 值以 4/8 字节原始数据传入（GLSL 侧 `layout(constant_id = N) const ...`），未覆盖的常量用 shader 里的默认值；粒子示例用它把工作组宽度做成运行时可调 |
+| 间接派发 | `recordDispatchCommand(cmd, frame, IndirectDispatch{buffer, offset}, state)` | 三个组数从 `VkDispatchIndirectCommand`（3×uint32）读取，用于「工作量由 GPU 决定」的场景 |
+| 组数校验 | 构造时传入 `vk::PhysicalDeviceLimits`（`RenderManager` 自动传 `m_physicalDeviceProperties.limits`） | 超过 `maxComputeWorkGroupCount` 时抛异常并打印三轴上限；任一轴为 0 则跳过录制（空工作量是合法 no-op，不必占一条命令） |
+| PSO 缓存 | `RenderManager::pipelineCache()` | 进程内共享，`CreateComputePipeline` 默认注入；仅内存复用，未做落盘序列化 |
+| 幂等构建 | `builtUp()` / `built()` | 允许「先设置特化常量再构建」，重复调用是 no-op |
+| 创建结果校验 | 内部 | `vkCreateComputePipelines` 返回逐管线结果时会检查该结果与句柄非空，报错信息带入口名 |
+
+**描述符集索引必须用 setIndex**：`m_descriptorSets` 按 `[frameSlot][setIndex]` 布局（见 `allocateAndWriteSets`），而 `SetLayoutDetail::setId` 是逻辑编号。两者在单集合时同为 0，一旦集合重排或编号不连续就会取错集合，所以 `descriptorSetFor(frame, setIndex)` 一律用**下标**索引，并用 `details[setIndex].shared` 决定是否落到 frame 0。某个集合为空时按单个集合逐个绑定，避免把空句柄塞进连续绑定范围。
+
+**多 stage 链式提交**（`CmdOpGroup` / `CmdOpComputeBarrier`）
+
+```cpp
+auto chain = std::make_shared<CmdOpGroup>();
+chain->add(std::make_shared<CmdOpComputeDispatch>(unpackPipeline, sizeA));
+chain->add(std::make_shared<CmdOpComputeBarrier>());          // compute -> compute
+chain->add(std::make_shared<CmdOpComputeDispatch>(rgbPipeline, sizeB));
+once->submit(chain, asset);                                   // 一次提交、一个 fence
+```
+
+提交顺序只保证**执行**顺序，不保证**内存可见性**：上一 stage 写入的 SSBO/纹理必须经过 `CmdOpComputeBarrier`（`eShaderWrite → eShaderRead|eShaderWrite`）才对下一 stage 可见。`LoopSequence::recordComputeBarrier()` 是帧内版本的同一件事。
+
 ### 4.12 句柄暴露与生命周期约定
 
 `RenderManager` 用 `VulkanHandle` 拥有 `vk::Instance`/`vk::Device`，对外提供两组访问器：
@@ -842,26 +870,30 @@ dstAccess = MemoryRead | ColorRead | ColorWrite | DepthStencilAttachmentWrite
 由 Sascha Willems 的粒子样例重构而来（原始样例文件已移除）。
 
 - **管线**：`ComputePipeline`（`particle.comp`）+ `GraphicsPipeline`（`particle.vert/frag`），两者共用同一个 `ShaderAssetGroup` 与同一套描述符布局。
-- **描述符（set0）**：`binding0` deltaTime UBO、`binding1` 粒子 SSBO（输入）、`binding2` 粒子 SSBO（输出，额外声明 vertex stage 供顶点着色器读取）。
-- **数据**：8192 个粒子（位置/速度/颜色），`local_size_x=256` → `DispatchSize::FromInvocationCount(8192,256)` = 32 个工作组。
+- **描述符（set0）**：`binding0` 参数 UBO（`{float deltaTime; uint particleCount; uint pad0; uint pad1;}`，16 B）、`binding1` 粒子 SSBO（输入）、`binding2` 粒子 SSBO（输出，额外声明 vertex stage 供顶点着色器读取）。
+- **数据**：8192 个粒子（位置/速度/颜色）。工作组宽度由 `--local-size`（默认 256）经**特化常量 0** 传入，派发组数由 `DispatchSize::FromInvocationCount(8192, localSize)` 算出（256 → 32 组、96 → 86 组、1024 → 8 组）。
+- **越界保护**：`particle.comp` 先判 `gl_GlobalInvocationID.x >= params.particleCount` 直接 return，因此任何工作组宽度（包括不能整除 8192 的 96）都不会读写越界——这是本地工作组宽度可特化的前提。
 - **ping-pong**：`AliasDescriptorResource` 把 `input[frame]` 指向 `output[(frame+N-1)%N]`。
 - **图形绘制**：空顶点输入 + `PARTICLE_COUNT*6` 个顶点，顶点着色器按 `gl_VertexIndex` 取出粒子并展开成四边形。
 - **push constant（128 B）**：`{ mat4 view; mat4 proj; }`。billboard 需要相机基向量，单传 `view*proj` 无法还原；`particle.vert` 用视图矩阵的第 0/1 行（glm 列主序下写作 `view[0][0],view[1][0],view[2][0]`）作为世界空间 right/up，把 quad 角点摆到 `pos + (right*cx + up*cy)*size`。早期用 `vec3(corner*0.02, 0)` 只在世界 XY 平面展开，相机一转就变成纸片。128 B 正好是规范保证的 `maxPushConstantsSize` 下限。
 - **模拟**：`particle.comp` 用真实帧间隔（clamp 到 0.1 s）积分，重力 −1.8；落到 y < −1.2 时用整数哈希就地重生到顶部，形成持续喷泉。重生点是一根**窄柱**（x∈±0.25、z∈±0.4、y∈[1.0,1.25]，初始向上速度 0.6~1.2），水平速度与重生横向偏移成正比（`vx = rx*0.5`），于是粒子一边下落一边向外扩散成锥形，`test5.cpp` 的 `makeParticles()` 用同一分布播种，启动第一帧就是喷泉形状。早期是「弹跳 + 速度衰减 0.6」，所有粒子几秒内收敛成一条细带并掉到画面外，最终几乎没有可见粒子；重生范围若是整个视锥（x∈±1.1），画面会被均匀铺满成「彩色墙纸」，没有任何形状。
 - **粒子尺寸**：`particle.vert` 的 `PARTICLE_HALF_SIZE = 0.015`（世界单位半边长）。z≈0 处可见半高约 `3·tan22.5° ≈ 1.24`，600 px 高的窗口下 1 世界单位 ≈ 242 px，所以一个粒子直径约 7 px；半边长 0.025 时是 12 px，8192 个叠在一起会糊成一片。
-- **参数 UBO**：把 `vec4(deltaTime,0,0,0)` 整体上传（spec 为 4 个 float），padding 不会是未初始化内存。
+- **参数 UBO**：按 16 B 结构体一次上传（`float deltaTime` + `uint particleCount` + 2 个 pad），padding 不会是未初始化内存。
+- **交互与脚本化**：`Space` 暂停（`deltaTime = 0`，仍照常派发以保持 ping-pong 一致）；`--frames <n>` 跑完 n 帧退出；`--verify` 在最后一帧后回读 binding2 的 SSBO，统计「从未被写过」的粒子数（与播种数据逐字节比较）、y 的取值范围与均值。工作组宽度若被驱动忽略，尾部粒子会停在播种位置，`untouched` 立刻非 0——这是特化常量真正生效的直接证据（实测 256/96/1024 三种宽度均为 `untouched 0 / 8192`）。
 - **同步**：`computeFinished` 信号量 + `submitFrame()` 中的 `VertexInput` 等待阶段；compute 命令缓冲末尾追加 shader write → vertex input read 的 release 屏障（目标阶段 `eBottomOfPipe`，见 4.14）。**同时始终等待 `imageAvailable`**，否则 acquire 信号量一直处于 signaled 状态。
-- **与原始样例的差异**：① compute 走独立的 compute 队列；② 不做 SSBO→顶点缓冲的绑定，改为顶点着色器直接读 SSBO；③ 补齐 compute 与后续提交之间的屏障与双信号量同步。
+- **与原始样例的差异**：① compute 走独立的 compute 队列；② 不做 SSBO→顶点缓冲的绑定，改为顶点着色器直接读 SSBO；③ 补齐 compute 与后续提交之间的屏障与双信号量同步；④ 用 billboard 四边形代替 `gl_PointSize` 点精灵（点大小是驱动相关量，且 `gl_PointCoord` 在部分实现上对 MSAA/裁剪行为不一致），并把工作组宽度做成特化常量。
 
 ### 6.7 raw2rgb（test6）
 
-离线图像处理：RAW12 原始数据经 `rawunpack` 解包、再经 `raw2rgb_v2` 去马赛克，结果回读到主机并存盘。
+离线图像处理：RAW12 原始数据经 `rawunpack` 解包、再经 `raw2rgb_v2` 去马赛克，结果回读到主机、与 CPU 参考实现逐值比对后存盘。
 
-- **输入**：程序生成的 64×64 RAW12（`makeRaw12()`，6144 B，`IMAGE_WIDTH/HEIGHT=64`），无需外部文件。
-- **输出**：`assets/images/output_unpack_raw16_64x64.raw`（8192 B）与 `assets/images/output_rgb_64x64.ppm`（P6，`P6 / 64 64 / 255`）。
-- **同步**：两段 compute 各用一次 `OnceSequence::submit()`（各自命令缓冲 + `vkQueueSubmit` + fence 等待），unpack 的 fence 先等到、再提交 rgb，形成主机侧串行依赖。`recordComputeBarrier()`/`endComputeRecording()` 属于 `LoopSequence`，只有粒子示例（test5）使用——离线图像处理不需要逐帧序列。
-- **回读与存盘**：unpack 输出为 raw16（两个 12-bit 像素打包在一个 uint32）；RGB 输出为 P6 二进制 PPM。
-- **缓冲大小约束**：RGB 输出采用 3 个 float/像素（约 49 KB）而不是 RGBA，因为 `maxStorageBufferRange` 最低保证 128 MB；原始 3648×2736 版本需 119 MB（RGB）而非 152 MB（RGBA）。
+- **输入**：默认程序生成的 64×64 合成 RGGB 图案（`makeSyntheticRaw12()`，6144 B 紧凑 RAW12）；`--input <file>` 可指定真实 RAW12 转储，`--width/--height` 可按需放大（两者必须为偶数且 ≥ 4）。
+- **输出**：`<out>/output_unpack_raw16_<W>x<H>.raw` 与 `<out>/output_rgb_<W>x<H>.ppm`（P6，头部 `#` 注释记录来源、布局、最大误差）；合成输入还会另存 `input_raw12_<W>x<H>.raw`，可再用 `--input` 灌回验证往返一致。
+- **同步**：两段 compute 用 `CmdOpGroup` 合成**一次提交**，中间夹 `CmdOpComputeBarrier`。之前的实现是两次 `OnceSequence::submit()` + 两次 fence 等待：既多一次往返，又只靠提交顺序提供执行顺序，SSBO 的内存可见性其实没有保证。一次提交 + 显式屏障两者都解决。
+- **回读与存盘**：unpack 输出为 raw16（两个 16-bit 样本打包在一个 uint32，左对齐）；RGB 输出为 3 个 float/像素。PPM 走 `WritePpmRgb8()`（与第 13 章调试存盘同一个写入器），所以头部注释格式一致。
+- **自校验**：`unpackReference()` 与 `demosaicReference()` 逐运算复刻两个 shader（同样的 4-tap 绿通道估计、同样的 RGGB 相位、同样的 `word` 拆包），比较后打印
+  `unpack: N / M words differ`、`demosaic: max |gpu-cpu| = ..., rms = ...`。实测 unpack 逐字相同、去马赛克最大误差 ≈ 6e-8（float 舍入）。unpack 有任何不一致、或去马赛克误差 > 1e-3 时程序以非零码退出，CI 里不必看图就能判定。
+- **缓冲大小约束**：RGB 输出采用 3 个 float/像素（64×64 约 49 KB）而不是 RGBA，因为 `maxStorageBufferRange` 最低保证 128 MB；原始 3648×2736 版本需 119 MB（RGB）而非 152 MB（RGBA）。
 - **窗口**：`RenderManager` 需要一个窗口/交换链，因此仍创建窗口并录制一个空 render pass（只清屏）用于 present。
 
 ---
@@ -883,6 +915,12 @@ cmake --build build -j
 # 调试：数字键切换通道视图，P 存盘；也可脚本化（见 13.6）
 ./build/examples/gbuffer/gbuffer --view 2            # 直接进 normal 视图
 ./build/examples/gbuffer/gbuffer --capture 30        # 跑 30 帧后存盘并退出
+
+# compute 示例的开关
+./build/examples/particle/particle --frames 30 --verify          # 30 帧后回读并检查覆盖
+./build/examples/particle/particle --local-size 128              # 特化工作组宽度
+./build/examples/raw2rgb/raw2rgb --width 128 --height 96         # 换尺寸并自校验
+./build/examples/raw2rgb/raw2rgb --input assets/images/input_raw12_64x64.raw
 ```
 
 调试产物默认写到**当前工作目录**下的 `dump/`（已加入 `.gitignore`），文件名形如
@@ -920,9 +958,11 @@ cmake --build build -j
 | 历史实现 | `MyRenderPass`/`GBufferRenderPass`/`OffscreenRenderPass`/`PostProcessRenderPass` 已由 `BasicRenderPass + IAttachmentDetail` 取代，旧源码已删除（可从 git `Initial commit` 追溯） |
 | 时间戳 | 仅统计「一帧总耗时」；`e64 \| eWithAvailability`、stride 16，未就绪时跳过。分 pass 统计需扩展 QueryPool |
 | compute 队列 | 优先 compute-only 族，无专用族时回退 graphics；跨族 buffer 用 `eConcurrent`，不需要 ownership transfer。异步 compute 与 graphics 争抢同一 buffer 时仍靠信号量/屏障保证顺序，真正并行收益取决于负载划分 |
-| compute 工作组 | 局部尺寸写在 shader 里（`local_size_x=256`），示例用同名常量保持一致；未引入 specialization constants |
+| compute 工作组 | 工作组宽度已可特化（`layout(local_size_x_id = 0)` + `ComputePipelineOptions`），默认仍为 256；示例用 `--local-size` 选择，shader 内的 `particleCount` 越界保护是任意宽度可用的前提 |
 | compute 描述符 | compute 的 UBO/SSBO 仍按「建管线时写一次」；若需要每帧替换缓冲对象，需重新 `updateDescriptorSets` 或使用 dynamic offset |
-| 间接 dispatch | 未实现 `vkCmdDispatchIndirect`；如需 GPU 端决定工作组数可扩展 `ComputePipeline::recordDispatchCommand` |
+| 间接 dispatch | ✅ 已实现（`IndirectDispatch{buffer, offset}` → `vkCmdDispatchIndirect`）；尚无示例使用，GPU 决定工作量的场景需自行保证 `VkDispatchIndirectCommand` 的可见性（写它的 pass 之后要有屏障） |
+| PSO 缓存 | 进程内共享（`RenderManager::pipelineCache()`），未落盘；跨进程复用需读取 `vkGetPipelineCacheData` 并在下次启动时传给 `vkCreatePipelineCache` |
+| 组数超限 | 仅在 host 知道组数时报错（`maxComputeWorkGroupCount` 校验）；间接派发的组数由 GPU 决定，host 侧无法预检，越界仍是未定义行为 |
 | 大缓冲 | 单个 SSBO 不得超过 `maxStorageBufferRange`（最低保证 128 MB）；更大图像需要分块处理 |
 | 回读开销 | `OnceSequence::ReadBack` 是同步阻塞的（提交 + 等 fence + 全量拷贝），只适合离线/测试；实时回读应改为环形 staging + 多帧延迟读取 |
 | 图像跨族 | 纹理/图像仍为 `eExclusive`，仅 graphics 使用；compute 若需写图像，要按 buffer 方式给 `createImage` 加 concurrent 共享 |
@@ -944,7 +984,7 @@ cmake --build build -j
 | 层 | 文件 | 主要职责 | 关键文件 |
 | --- | --- | --- | --- |
 | 设备与窗口 | 6 组 | 实例/设备/队列/swapchain/事件/调试 | `RenderManager`、`SwapChain`、`PhysicalDeviceUtils`、`Event.h`、`IUnifiedWindow`、`GraphicsDebugger` |
-| 命令序列 | 6 组 | 基类/循环/一次性/操作/绑定缓存 | `SequenceBase`、`LoopSequence`、`OnceSequence`、`CmdOpBase`、`DescriptorBindingState` |
+| 命令序列 | 8 组 | 基类/循环/一次性/操作/组合/屏障/绑定缓存 | `SequenceBase`、`LoopSequence`、`OnceSequence`、`CmdOpBase`、`CmdOpGroup`、`CmdOpComputeBarrier`、`DescriptorBindingState` |
 | 资源与管线 | 9 组 | 资源聚合/两种管线/渲染通道/句柄 | `ShaderAssetGroup`、`GraphicsPipeline`、`ComputePipeline`、`BasicRenderPass`、`VulkanHandle` |
 | 设备资源 | 8 组 | 分配器/缓冲/纹理/附件/工具 | `DeviceMemoryAllocator`、`BufferObject`、`TextureImage2D`、`TextureSamplerCombine`、`ImageAttachment` |
 | 配置接口 | 4 个 | 顶点/附件/描述符/compute 配置抽象 | `IVertexInputStateGroup`、`IAttachmentDetail`、`IDescriptorSetDetail`、`ComputeLayoutConfig.h` |
@@ -958,7 +998,7 @@ cmake --build build -j
 | 描述符 | 频率分层（static/environment/per-frame/per-instance）+ 共享层单份；增量绑定（Bind Once）只发未绑定的尾部 set | `DescriptorLayoutConfig`、`DescriptorBindingState` |
 | 资源 | 脏标记上传（`NeedsUpload()` 跳过未变化资源）；纹理 mipmap 生成；UBO 走 host-visible 映射；16MB sub-allocation | `DeviceResource`、`ShaderAssetGroup`、`TextureImage2D`、`DeviceMemoryAllocator` |
 | 命令 | 命令池复用（`resetCommandPool` 而非重建）；`recordPass` 作用域化避免未闭合 | `LoopSequence` |
-| 计算 | 图形/计算共用 `ShaderAssetGroup` 与描述符层；一个 asset 多段 SPIR-V（`spirvEntry`）；跨队列族 buffer 用 `eConcurrent`；专用 compute 队列（缺失回退 graphics） | `ComputePipeline`、`BufferObject`、`PhysicalDeviceUtils` |
+| 计算 | 图形/计算共用 `ShaderAssetGroup` 与描述符层；一个 asset 多段 SPIR-V（`spirvEntry`）；跨队列族 buffer 用 `eConcurrent`；专用 compute 队列（缺失回退 graphics）；特化常量、间接派发、组数上限校验、进程内 PSO 缓存；多 stage 链用 `CmdOpGroup` + `CmdOpComputeBarrier` 合成一次提交 | `ComputePipeline`、`CmdOpGroup`、`CmdOpComputeBarrier`、`BufferObject`、`PhysicalDeviceUtils` |
 | 生命周期 | 两阶段构造（`RenderManager::Create`）避免 `bad_weak_ptr`；非拥有视图消除自引用环；关机前 `waitIdle`；surface 由 manager 独占 | `RenderManager`、`LoopSequence`、`GLFWwindow` |
 | 构建期 | 着色器编译期转 `*.hpp`；配置对象 `SharedClone()` 解耦生命周期；`VulkanHandle` RAII 统一句柄管理 | `cmake/`、`GraphicsPipeline`、`VulkanHandle` |
 
@@ -1289,12 +1329,16 @@ P6
 # render_demo debug capture
 # channel: gbuffer-normal
 # encoding: normal (n*0.5+0.5)
-# source: VK_FORMAT_R32G32B32A32_SFLOAT
+# source: R32G32B32A32Sfloat
 # background: alpha < 0.5 written as black
 # row order: image row 0 first (no vertical flip)
 2048 2048
 255
 ```
+
+写入器 `WritePpmRgb8(path, w, h, rgb8, comments)` 是公开的：调试存盘与 raw2rgb 共用它，
+所以两处的头部格式、行序约定一致（`# source:` 里是 `vk::to_string` 的格式名，不带
+`VK_FORMAT_` 前缀）。
 
 **三个容易踩的点**：
 

@@ -1,12 +1,19 @@
 #version 450
-layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+// Workgroup width is a specialization constant (id 0) instead of a literal: the
+// host can trade register pressure for fewer dispatches at runtime, and the
+// default below keeps a pipeline that never overrides it working unchanged.
+// The guard against gl_GlobalInvocationID.x is what makes a non-divisor width
+// safe -- without it the tail workgroup would read/write past the SSBO.
+layout(constant_id = 0) const uint LOCAL_SIZE_X = 256u;
+layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
 struct Particle {
     vec4 position;
     vec4 velocity;
     vec4 color;
 };
-layout(set = 0, binding = 0) uniform Params { float deltaTime; float padding[3]; } params;
+// deltaTime in seconds, particleCount so a partial tail workgroup exits early.
+layout(set = 0, binding = 0) uniform Params { float deltaTime; uint particleCount; uint pad0; uint pad1; } params;
 layout(std430, set = 0, binding = 1) readonly buffer InputParticles { Particle inParticles[]; };
 layout(std430, set = 0, binding = 2) writeonly buffer OutputParticles { Particle outParticles[]; };
 
@@ -23,6 +30,9 @@ float hash01(uint x) {
 
 void main() {
     uint i = gl_GlobalInvocationID.x;
+    if (i >= params.particleCount) {
+        return;
+    }
     Particle p = inParticles[i];
     p.velocity.y -= 1.8 * params.deltaTime;
     p.position += p.velocity * params.deltaTime;
