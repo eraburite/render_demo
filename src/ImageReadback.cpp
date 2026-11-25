@@ -42,7 +42,8 @@ vk::ImageAspectFlags aspectOf(vk::Format format)
 // scope: correctness first, and the stall is irrelevant for a manual capture.
 // When the image is currently UNDEFINED its contents are undefined by
 // definition, so no write scope may be declared (VUID-vkImageMemoryBarrier-oldLayout).
-vk::ImageMemoryBarrier makeTransferSrcBarrier(vk::Image image, vk::Format format, vk::ImageLayout oldLayout)
+vk::ImageMemoryBarrier makeTransferSrcBarrier(vk::Image image, vk::ImageAspectFlags aspect,
+                                              vk::ImageLayout oldLayout)
 {
     const bool undefinedSource = oldLayout == vk::ImageLayout::eUndefined;
 
@@ -52,7 +53,7 @@ vk::ImageMemoryBarrier makeTransferSrcBarrier(vk::Image image, vk::Format format
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = image;
-    barrier.subresourceRange.aspectMask = aspectOf(format);
+    barrier.subresourceRange.aspectMask = aspect;
     barrier.subresourceRange.baseMipLevel = 0;
     barrier.subresourceRange.levelCount = 1;
     barrier.subresourceRange.baseArrayLayer = 0;
@@ -62,7 +63,7 @@ vk::ImageMemoryBarrier makeTransferSrcBarrier(vk::Image image, vk::Format format
     return barrier;
 }
 
-vk::ImageMemoryBarrier makeRestoreBarrier(vk::Image image, vk::Format format, vk::ImageLayout newLayout)
+vk::ImageMemoryBarrier makeRestoreBarrier(vk::Image image, vk::ImageAspectFlags aspect, vk::ImageLayout newLayout)
 {
     vk::ImageMemoryBarrier barrier{};
     barrier.oldLayout = vk::ImageLayout::eTransferSrcOptimal;
@@ -70,7 +71,7 @@ vk::ImageMemoryBarrier makeRestoreBarrier(vk::Image image, vk::Format format, vk
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = image;
-    barrier.subresourceRange.aspectMask = aspectOf(format);
+    barrier.subresourceRange.aspectMask = aspect;
     barrier.subresourceRange.baseMipLevel = 0;
     barrier.subresourceRange.levelCount = 1;
     barrier.subresourceRange.baseArrayLayer = 0;
@@ -92,6 +93,7 @@ uint32_t ImageReadback::texelSize(vk::Format format)
         case vk::Format::eR32Sfloat:
         case vk::Format::eD32Sfloat: return 4;
         case vk::Format::eR32G32B32A32Sfloat: return 16;
+        case vk::Format::eS8Uint: return 1; // single stencil byte
         default: break;
     }
     throw std::runtime_error("ImageReadback: unsupported format " + vk::to_string(format));
@@ -176,7 +178,8 @@ void ImageReadback::ensureStaging(vk::DeviceSize size)
 }
 
 ImageReadback::Capture ImageReadback::capture(vk::Image image, vk::Format format, vk::Extent2D extent,
-                                              vk::ImageLayout layout)
+                                              vk::ImageLayout layout, vk::ImageAspectFlags aspect,
+                                              vk::ImageAspectFlags barrierAspect)
 {
     if (!image) {
         throw std::runtime_error("ImageReadback::capture called with a null image");
@@ -184,6 +187,20 @@ ImageReadback::Capture ImageReadback::capture(vk::Image image, vk::Format format
     if (extent.width == 0 || extent.height == 0) {
         throw std::runtime_error("ImageReadback::capture called with an empty extent");
     }
+
+    // A copy of a depth-stencil image must name exactly one aspect.  The old
+    // aspectOf(format) returned DEPTH|STENCIL for D24S8, which is legal for a
+    // barrier but not for VkBufferImageCopy::imageSubresource (VUID 00188).
+    const vk::ImageAspectFlags resolvedAspect =
+        static_cast<VkImageAspectFlags>(aspect) == 0 ? aspectOf(format) : aspect;
+    const VkImageAspectFlags bits = static_cast<VkImageAspectFlags>(resolvedAspect);
+    const bool hasDepth = (bits & VK_IMAGE_ASPECT_DEPTH_BIT) != 0;
+    const bool hasStencil = (bits & VK_IMAGE_ASPECT_STENCIL_BIT) != 0;
+    if (hasDepth && hasStencil) {
+        throw std::runtime_error("ImageReadback: copy one depth-stencil aspect at a time (pass eStencil)");
+    }
+    const vk::ImageAspectFlags transitionAspect =
+        static_cast<VkImageAspectFlags>(barrierAspect) == 0 ? resolvedAspect : barrierAspect;
 
     Capture result;
     result.extent = extent;
@@ -199,7 +216,7 @@ ImageReadback::Capture ImageReadback::capture(vk::Image image, vk::Format format
     const vk::CommandBuffer &cmd = *m_commandBuffer;
     cmd.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
 
-    const vk::ImageMemoryBarrier toTransfer = makeTransferSrcBarrier(image, format, layout);
+    const vk::ImageMemoryBarrier toTransfer = makeTransferSrcBarrier(image, transitionAspect, layout);
     const vk::PipelineStageFlags sourceStage = (layout == vk::ImageLayout::eUndefined)
                                                    ? vk::PipelineStageFlagBits::eTopOfPipe
                                                    : vk::PipelineStageFlagBits::eAllCommands;
@@ -210,7 +227,7 @@ ImageReadback::Capture ImageReadback::capture(vk::Image image, vk::Format format
     region.bufferOffset = 0;
     region.bufferRowLength = 0;   // tightly packed rows
     region.bufferImageHeight = 0;
-    region.imageSubresource.aspectMask = aspectOf(format);
+    region.imageSubresource.aspectMask = resolvedAspect;
     region.imageSubresource.mipLevel = 0;
     region.imageSubresource.baseArrayLayer = 0;
     region.imageSubresource.layerCount = 1;
@@ -221,7 +238,7 @@ ImageReadback::Capture ImageReadback::capture(vk::Image image, vk::Format format
     // Restoring UNDEFINED makes no sense: the caller declared the contents
     // undefined, and the next render pass discards them anyway.
     if (layout != vk::ImageLayout::eUndefined) {
-        const vk::ImageMemoryBarrier restore = makeRestoreBarrier(image, format, layout);
+        const vk::ImageMemoryBarrier restore = makeRestoreBarrier(image, transitionAspect, layout);
         cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands,
                             vk::DependencyFlags{}, 0, nullptr, 0, nullptr, 1, &restore);
     }

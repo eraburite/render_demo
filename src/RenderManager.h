@@ -70,6 +70,8 @@ public:
     std::vector<uint32_t> sharedQueueFamilies() const;
 
     vk::Format DefaultDepthFormat() const { return m_depthFormat; }
+    // Depth format guaranteed to carry an S8 aspect (for stencil passes).
+    vk::Format DepthStencilFormat() const { return m_depthStencilFormat; }
     vk::SampleCountFlagBits getMaxUsableSampleCount() const { return m_msaaSamples; }
     uint32_t maxFramesInFlight() const { return m_maxFramesInFlight; }
     // Shared PSO cache: compute pipelines created through this manager reuse it,
@@ -109,6 +111,7 @@ private:
     std::shared_ptr<DeviceMemoryAllocator> m_allocator;
 
     vk::Format m_depthFormat = vk::Format::eD24UnormS8Uint;
+    vk::Format m_depthStencilFormat = vk::Format::eD24UnormS8Uint;
     vk::SampleCountFlagBits m_msaaSamples = vk::SampleCountFlagBits::e1;
     vk::PhysicalDeviceMemoryProperties m_physicalDeviceMemoryProperties{};
     vk::PhysicalDeviceProperties m_physicalDeviceProperties{};

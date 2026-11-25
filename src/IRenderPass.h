@@ -26,6 +26,20 @@ public:
     // moment and has to be rewritten; see GraphicsPipeline::RefreshDescriptors().
     virtual uint64_t attachmentGeneration() const { return 0; }
 
+    // True when the pass declares a depth-stencil attachment with an S8 aspect.
+    // GraphicsPipeline refuses a stencil test against a pass without one, so a
+    // wrong format is reported at pipeline creation instead of as a validation
+    // error (or, worse, as a silently invisible outline).
+    virtual bool hasStencil() const { return false; }
+    // Depth-stencil image of attachment set `set`; used for debug readback of
+    // the S8 aspect.  Default keeps older render passes source-compatible.
+    virtual vk::Image depthStencilImage(uint32_t set = 0) const
+    {
+        (void)set;
+        return vk::Image{};
+    }
+    virtual vk::Format depthStencilFormat() const { return vk::Format::eUndefined; }
+
     virtual void createFramebuffers(const std::vector<vk::ImageView> &swapChainViews, vk::Extent2D swapChainExtent) = 0;
     virtual uint32_t framebufferCount() const = 0;
     virtual vk::Framebuffer framebuffer(uint32_t index) const = 0;

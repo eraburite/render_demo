@@ -16,7 +16,7 @@ add_subdirectory(geometryshader)
 # conditional guard keeps an incomplete checkout configurable while the example
 # directories are being populated; add the directory once its CMakeLists exists.
 foreach(example tessellation deferred terraintessellation gltfloading gltfscenerendering multithreading
-                texture texturecubemap texturearray parallaxmapping texture3d subpasses)
+                texture texturecubemap texturearray parallaxmapping texture3d subpasses stencil)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${example}/CMakeLists.txt")
         add_subdirectory(${example})
     endif()

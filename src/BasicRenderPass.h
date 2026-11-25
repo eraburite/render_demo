@@ -24,6 +24,14 @@ public:
     }
     bool isSwapChainSized() const override { return m_blueprint.swapChainSized; }
     uint64_t attachmentGeneration() const override { return m_attachmentGeneration; }
+    bool hasStencil() const override { return m_blueprint.stencil.has_value(); }
+    // Depth-stencil image of one attachment set (set 0 for swapchain-sized
+    // passes).  Debug captures read its S8 aspect to prove the stencil writes.
+    vk::Image depthStencilImage(uint32_t set = 0) const override
+    {
+        return set < m_depthStencilImages.size() ? m_depthStencilImages[set] : vk::Image{};
+    }
+    vk::Format depthStencilFormat() const override { return m_depthStencilFormat; }
 
     void createFramebuffers(const std::vector<vk::ImageView> &swapChainViews, vk::Extent2D swapChainExtent) override;
     uint32_t framebufferCount() const override { return static_cast<uint32_t>(m_framebuffers.size()); }
@@ -48,6 +56,10 @@ public:
     }
 
 private:
+    // Applies RenderPassBlueprint::stencil to the attachment description and
+    // clear values *before* createRenderPass() consumes them.  Also rejects a
+    // depth-only format, which would otherwise make stencil writes a no-op.
+    void applyStencilSpec();
     void createRenderPass();
     void createAttachments(vk::Extent2D extent);
 
@@ -70,6 +82,9 @@ private:
     // per-slot formats; used by the debug image dump.
     std::vector<vk::Image> m_offscreenImages;
     std::vector<vk::Format> m_offscreenFormats;
+    // Depth-stencil attachment of each set, kept for the stencil debug capture.
+    std::vector<vk::Image> m_depthStencilImages;
+    vk::Format m_depthStencilFormat = vk::Format::eUndefined;
     uint32_t m_colorCountPerSet = 0;
     // Colour attachment count of each subpass, so a pipeline can be created for
     // a subpass that does not write every attachment the pass owns.

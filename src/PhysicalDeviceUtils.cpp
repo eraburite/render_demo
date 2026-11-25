@@ -207,6 +207,14 @@ vk::Format PhysicalDeviceUtils::findDepthFormat(const std::shared_ptr<vk::Physic
                                vk::ImageTiling::eOptimal, vk::FormatFeatureFlagBits::eDepthStencilAttachment);
 }
 
+vk::Format PhysicalDeviceUtils::findDepthStencilFormat(const std::shared_ptr<vk::PhysicalDevice> &physicalDevice)
+{
+    return findSupportedFormat(physicalDevice,
+                               {vk::Format::eD24UnormS8Uint, vk::Format::eD32SfloatS8Uint,
+                                vk::Format::eD16UnormS8Uint},
+                               vk::ImageTiling::eOptimal, vk::FormatFeatureFlagBits::eDepthStencilAttachment);
+}
+
 bool PhysicalDeviceUtils::hasStencilComponent(vk::Format format)
 {
     return format == vk::Format::eD32SfloatS8Uint || format == vk::Format::eD24UnormS8Uint;

@@ -7,6 +7,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -197,6 +198,7 @@ std::vector<DumpResult> DumpImages(ImageReadback &readback, const std::vector<Du
             "row order: image row 0 first (no vertical flip)",
         };
         writePpm(result.path, result.extent.width, result.extent.height, rgb, comments);
+        result.rgb8 = std::move(rgb);
         results.push_back(std::move(result));
         ++index;
     }

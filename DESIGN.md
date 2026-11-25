@@ -49,7 +49,9 @@ render_demo/
 │   ├── LoopSequence.h/.cpp         # 每帧命令序列（录制/提交/呈现）
 │   ├── OnceSequence.h/.cpp         # 一次性上传命令序列
 │   ├── CmdOpBase.h                 # 命令操作抽象
-│   ├── CmdOpDrawFrame.h            # 绘制操作
+│   ├── CmdOpDrawFrame.h            # 绘制操作（可挂动态 stencil 状态，见 17.3）
+│   ├── CmdOpStencilState.h         # 录制 setStencilReference / CompareMask / WriteMask（见 17.3）
+│   ├── CmdOpClearStencil.h         # render pass 内 vkCmdClearAttachments 清 S8 平面（见 17.3）
 │   ├── CmdSyncDevice.h             # staging -> device 同步操作
 │   ├── CmdOpComputeDispatch.h      # compute 命令操作
 │   ├── CmdOpGroup.h                # 把多个 CmdOp 合成一次提交（多 stage 计算链）
@@ -72,7 +74,7 @@ render_demo/
 │   ├── TextureSamplerCombine.h/.cpp# combined image sampler
 │   ├── InputAttachmentView.h/.cpp  # subpass 输入附件描述符（不拥有图像，见 16.2）
 │   ├── ImageAttachment.h/.cpp      # 深度 / MSAA 附件
-│   ├── ImageReadback.h/.cpp        # GPU -> 主机一次性回读（调试用，见 13.3）
+│   ├── ImageReadback.h/.cpp        # GPU -> 主机一次性回读（调试用；可按单 aspect 拷 S8，见 17.4）
 │   ├── DeviceResourceUtils.h/.cpp  # createImage / createImageView 等
 │   ├── SwapChain.h/.cpp            # swapchain + image views + acquire/present
 │   ├── Event.h                     # EventManager / WindowEvent / SwapChainEvent
@@ -90,7 +92,7 @@ render_demo/
 │   │   ├── TextureLoader.h/.cpp
 │   │   ├── DescriptorLayoutConfig.h    # set0~set4 组件枚举与配置表 + subpass 输入附件表（见 16.4）
 │   │   ├── ComputeLayoutConfig.h       # compute set0 组件表 + 单层 layout 模板
-│   │   ├── AttachmentDetailConfig.h    # Simple/GBuffer/SubpassDeferred 附件配置 + DependencyPreset
+│   │   ├── AttachmentDetailConfig.h    # Simple/GBuffer/SubpassDeferred 附件配置 + DependencyPreset + StencilAttachmentSpec
 │   │   ├── DebugViewMode.h             # 调试视图枚举 + push constant + 按键状态（见 13.2）
 │   │   ├── ImageDump.h/.cpp            # 中间结果编码 + PPM 存盘 + --capture/--view 解析（见 13.4）
 │   │   ├── GlTFLoader.h/.cpp           # tinygltf 之上的纯 CPU glTF 解析（见 14.2）
@@ -106,7 +108,8 @@ render_demo/
 │   │   gltfloading / gltfscenerendering / multithreading  # 迁移示例（test7..test13，见 14）
 │   ├── texture / texturecubemap / texturearray / parallaxmapping / texture3d
 │   │                                                       # 纹理家族迁移（test14..test18，见 15）
-│   └── subpasses/{test19.cpp,shader/}                       # 三 subpass 延迟+透明（见 16）
+│   ├── subpasses/{test19.cpp,shader/}                       # 三 subpass 延迟+透明（见 16）
+│   └── stencil/{test20.cpp,shader/}                         # stencil 描边（见 17）
 └── build_vs/                       # Visual Studio 构建目录（含各示例可执行程序）
 ```
 
@@ -823,6 +826,15 @@ dstAccess = MemoryRead | ColorRead | ColorWrite | DepthStencilAttachmentWrite
 | 修复 | `examples/offscreen/test3.cpp` + `shader/phong.*` | 相机 aspect 用显示尺寸；phong 顶点着色器改用世界空间法线与正确向量，frag 对插值法线重新归一化 |
 | 构建 | `configuration/root_directory.h.in` | 恢复 `@PROJECT_ROOT_PATH@` 占位符，修复 raw2rgb 输出路径 |
 | 结构 | `src/GraphicsDebugger.cpp` | 只启用 synchronization validation，关闭 GPU-assisted / best-practices |
+| 扩展 | `src/IAttachmentDetail.h` | `StencilAttachmentSpec` + `RenderPassBlueprint::stencil` + `hasStencilAspect()`；`makeDependencies(preset, withStencil)` 精确补 `DEPTH_STENCIL_ATTACHMENT_READ`（见 17.2） |
+| 扩展 | `src/BasicRenderPass.*` + `IRenderPass.h` | `hasStencil()` / `depthStencilImage(set)` / `depthStencilFormat()`；构造前校验附件格式带 S8，并把 stencil load/store、清值、依赖掩码一次性落进 blueprint（见 17.2） |
+| 扩展 | `src/PhysicalDeviceUtils.*` + `RenderManager.*` | `findDepthStencilFormat()` + `DepthStencilFormat()`：默认 `findDepthFormat()` 首选 D32Sfloat（**无 stencil**），必须单独挑带 S8 的格式 |
+| 结构 | `examples/common/AttachmentDetailConfig.h` | `SimpleAttachmentDetail` 新增可选 `StencilAttachmentSpec` 构造参数，旧调用零改动（见 17.2） |
+| 扩展 | `src/GraphicsPipeline.h/.cpp` | `GraphicsPipelineConfig` 增加 stencilTestEnable / front / back + 三个 dynamic stencil 开关；`stencilTestEnable` 但通道无 S8 时在**建管线期**抛错（见 17.3） |
+| 结构 | `src/CmdOpStencilState.h`（新增） + `CmdOpClearStencil.h`（新增） + `CmdOpDrawFrame.h` + `GraphicsPipeline::AfterBindHook` | 运行期 stencil 状态：三个 setStencil* 命令 + pass 内清 S8；状态挂在 draw 上，保证录在 `vkCmdBindPipeline` 之后（见 17.3） |
+| 缺陷 | `src/ImageReadback.cpp` | 回读组合深度模板图像时 barrier 的 `aspectMask` 必须含 DEPTH\|STENCIL（VUID 03320），而 copy region 只能含一个 aspect（VUID 00188）；两者拆成独立参数 |
+| 扩展 | `examples/common/ImageDump.h/.cpp` | `DumpResult::rgb8` 暴露写进 PPM 的字节，示例可直接做像素级断言 |
+| 示例 | `test20` + `examples/stencil/shader/` | stencil 描边：两条管线共享一个 asset（四组 stage key），`--dump` 同时抓交换链帧与 S8 平面（见 17） |
 
 ---
 
@@ -967,6 +979,14 @@ cmake --build build -j
 ./build/examples/subpasses/subpasses --dump           # 抓 G-Buffer 三通道 + 合成后的交换链帧
 ./build/examples/subpasses/subpasses --resize-after 30  # 第 30 帧改窗口尺寸，验证附件重建 + 描述符刷新
 
+# stencil 描边（见 17）：--dump 同时输出 0000_stencil-frame.ppm 与 0001_stencil-mask.ppm
+./build/examples/stencil/stencil                        # F/C/R/+/- 键切换动态 stencil 状态与轮廓宽度
+./build/examples/stencil/stencil --dump                # 打印 marked texels / outline pixels 并退出
+./build/examples/stencil/stencil --dump --no-fill      # 运行期把 fill 的 writeMask 设 0，轮廓变成整个放大壳
+./build/examples/stencil/stencil --dump --clear-mid    # 两次 draw 之间清 S8，效果同 --no-fill
+./build/examples/stencil/stencil --dump --ref 2        # 改 dynamic reference，NOT_EQUAL 全部通过
+./build/examples/stencil/stencil --dump --resize-after 20 --dump-after 45  # resize 后再抓，验证附件重建
+
 # 调试：数字键切换通道视图，P 存盘；也可脚本化（见 13.6）
 ./build/examples/gbuffer/gbuffer --view 2            # 直接进 normal 视图
 ./build/examples/gbuffer/gbuffer --capture 30        # 跑 30 帧后存盘并退出
@@ -982,6 +1002,8 @@ cmake --build build -j
 `0000_gbuffer-albedo.ppm`、`0001_gbuffer-normal.ppm`；PPM 为二进制 P6，可用任何看图工具
 或 `ffmpeg` / `ImageMagick` 转换。`--dump` 也能抓交换链图像本身（如
 `0003_subpasses-frame.ppm`），前提是该图像的 usage 含 `eTransferSrc`（引擎已为交换链打开）。
+stencil 示例还会单独抓一张 `0001_stencil-mask.ppm`：它是 depth-stencil 附件的 S8 平面，
+按单 aspect 回读（barrier 用 DEPTH\|STENCIL、copy region 只用 STENCIL，见 17.4）。
 
 构建结构：
 
@@ -1027,7 +1049,7 @@ cmake --build build -j
 | 代码卫生清理 | 已删除 `src/legacy/`（37 个历史文件）、engine 侧 `GLFWwindow.cpp`/`GLFWwindowUtils.h`（`window_utils` 从未被调用）、根目录旧 shader 副本（`shader/{lighting,mrt,deferred}.*`）；示例遗留的 `triangle`/`texture_triangle`/`mirror` shader 本就不存在。全部可从 git `Initial commit` 追溯 |
 | Validation 状态 | VUID 与 `WRITE_AFTER_WRITE`/`READ_AFTER_WRITE` hazard 全部为 0；offscreen/GBuffer 每帧独立附件组，`eSwapChain` 依赖已覆盖 depth 写入，见 4.14 |
 | 调试视图覆盖 | 仅 gbuffer / offscreen 接入 `DebugViewState`；其余示例可在各自 fragment shader 里按 13.2 的约定加分支 |
-| 交换链图像回读 | 未实现：swapchain 未申请 `eTransferSrc`，且 copy 必须录在 present 之前的帧命令缓冲里，故只能回读离屏/G-Buffer 目标，见 13.7 |
+| 交换链图像回读 | ✅ 已实现（见 16.2 / 17）：swapchain 申请了 `eTransferSrc`，`LoopSequence::getImageIndex()` 定位当前帧，`--dump` 可抓合成后的交换链帧；S8 平面回读见 17.4 |
 | 深度通道导出 | G-Buffer 与 offscreen 的深度 `storeOp = DontCare`，内容不留存，因此没有深度 PPM；深度用 position 通道反推（`eLinearDepth`） |
 | 回读阻塞 | `ImageReadback::capture()` 提交后同步等 fence，一次 capture 会停顿一个 copy 的时长（2048² RGBA32F 约 64 MB），仅适合手动/脚本触发的调试 |
 
@@ -1040,7 +1062,7 @@ cmake --build build -j
 | 层 | 文件 | 主要职责 | 关键文件 |
 | --- | --- | --- | --- |
 | 设备与窗口 | 6 组 | 实例/设备/队列/swapchain/事件/调试 | `RenderManager`、`SwapChain`、`PhysicalDeviceUtils`、`Event.h`、`IUnifiedWindow`、`GraphicsDebugger` |
-| 命令序列 | 9 组 | 基类/循环/一次性/操作/组合/屏障/绑定缓存/secondary 录制 | `SequenceBase`、`LoopSequence`、`OnceSequence`、`CmdOpBase`、`CmdOpGroup`、`CmdOpComputeBarrier`、`DescriptorBindingState`、`SecondaryCommandBuffer` |
+| 命令序列 | 11 组 | 基类/循环/一次性/绘制/上传/组合/屏障/动态 stencil/绑定缓存/secondary 录制 | `SequenceBase`、`LoopSequence`、`OnceSequence`、`CmdOpBase`、`CmdOpDrawFrame`、`CmdOpGroup`、`CmdOpComputeBarrier`、`CmdOpStencilState`、`CmdOpClearStencil`、`DescriptorBindingState`、`SecondaryCommandBuffer` |
 | 资源与管线 | 9 组 | 资源聚合/两种管线/渲染通道/句柄 | `ShaderAssetGroup`、`GraphicsPipeline`、`ComputePipeline`、`BasicRenderPass`、`VulkanHandle` |
 | 设备资源 | 9 组 | 分配器/缓冲/纹理/输入附件/附件/工具 | `DeviceMemoryAllocator`、`BufferObject`、`TextureImage`、`TextureSamplerCombine`、`InputAttachmentView`、`ImageAttachment` |
 | 配置接口 | 4 个 | 顶点/附件/描述符/compute 配置抽象 | `IVertexInputStateGroup`、`IAttachmentDetail`、`IDescriptorSetDetail`、`ComputeLayoutConfig.h` |
@@ -1164,8 +1186,9 @@ ReadBack() → PrepareReadback(key) → OnReadbackRequested() → 重建 staging
 | `GBufferComponent` | `ePosition`/`eNormal`/`eAlbedo`/`eDepth` | 3× Color + DepthStencil |
 | `DependencyPreset` | `eSwapChain`/`eMultiSubpass`/`eOffscreen` | 单 pass / 0→1 / 0→external 的 subpass 依赖 |
 | `SubpassDeferredAttachmentDetail` | 5 附件 / 3 subpass / 4 条自写依赖 | 输入附件版延迟渲染（见 16.3） |
+| `StencilAttachmentSpec` | `attachmentIndex`/`loadOp`/`storeOp`/`clearValue`/`finalLayout`/`hostReadable` | 声明式 stencil 附件（见 17.2），挂在 `RenderPassBlueprint::stencil` 上 |
 
-> 预设只是常用组合；`RenderPassBlueprint::dependencies` 是公开字段，需要精确控制时（例如 subpass 间输入附件读取、layout 转换的写语义）直接填自己的依赖数组，`SubpassDeferredAttachmentDetail` 就是这么做的。
+> 预设只是常用组合；`makeDependencies(preset, withStencil=true)` 只给**含 early/late fragment tests 阶段**的依赖补 `DEPTH_STENCIL_ATTACHMENT_READ`（stencil test 发生在这两个阶段）。给 `BOTTOM_OF_PIPE` / `FRAGMENT_SHADER` 的作用域补这个 access 会触发 VUID-VkSubpassDependency-dstAccessMask-00869。`RenderPassBlueprint::dependencies` 是公开字段，需要精确控制时（例如 subpass 间输入附件读取、layout 转换的写语义）直接填自己的依赖数组，`SubpassDeferredAttachmentDetail` 就是这么做的。
 
 `SimpleAttachmentDetail` 的三种模式：
 
@@ -1174,6 +1197,13 @@ ReadBack() → PrepareReadback(key) → OnReadbackRequested() → 重建 staging
 | `eDirect` | 单颜色 → PresentSrc | 可选 | 是 | simplest 之外的普通 pass |
 | `eMSAA` | MSAA 颜色 + resolve | MSAA 深度 | 是 | simplest / multi-lighting |
 | `eOffscreen` | 单颜色 → ShaderReadOnly | 深度 | 否 | offscreen 的 Pass A |
+
+`SimpleAttachmentDetail` 的构造函数末尾还有一个可选参数
+`std::optional<StencilAttachmentSpec> stencil`。传入后：第 1 号附件（depth）被声明为
+带 S8 的 depth-stencil 附件，依赖掩码补 stencil READ，`BasicRenderPass` 在建 render pass
+之前校验格式、写入 `stencilLoadOp`/`stencilStoreOp` 与清值。调用方必须传
+`RenderManager::DepthStencilFormat()`（`D24UnormS8Uint` / `D32SfloatS8Uint`），
+传默认 `DefaultDepthFormat()`（`D32Sfloat`）会被拒绝（见 17.2）。
 
 ### 10.4 compute 描述符层
 
@@ -1750,7 +1780,7 @@ syncOp->OnUpdateRawData(ResourceId(0, 0), 0u, ktx.data);
 | 缺失能力 | 阻塞的示例 |
 | --- | --- |
 | 独立 `eSampler` 描述符（`SAMPLED_IMAGE` + `SAMPLER` 分离） | texturemipmapgen |
-| 深度/模板状态的 stencil 字段 | stencilbuffer |
+| ~~深度/模板状态的 stencil 字段~~ | ~~stencilbuffer~~（已完成，见 17） |
 | 查询池（occlusion / timestamp / pipeline-statistics） | occlusionquery、pipelinestatistics |
 | 管线多视口 | specializationconstants 的三分屏 |
 | ~~input attachment 与 subpass 依赖~~ | ~~subpasses~~（已完成，见 16）；inputattachments、deferredmultisampling 仍待做 |
@@ -1873,3 +1903,125 @@ resize 路径单独验证过：`--resize-after 30` 在第 30 帧把窗口改成 
 | 未覆盖 | MSAA、subpass 输入的多重采样解析 | 未做 | 与本示例技术点无关，留给 multisampling 系示例 |
 
 附带记录一条**框架级**的知识：`ImageDump` 的 `eLinearDepth` 编码在 far=100 时会把整栋建筑压在亮度 0.93–0.97 之间，几乎无法用于判断"看到的是近面还是远面"；dump 请求可以单独指定 `farPlane`，验证时应改成一个贴近场景的区间。
+
+---
+
+## 17. stencil 描边（两层联动：声明期 + 录制期）
+
+参考 `D:/Vulkan-samples/examples/stencilbuffer/stencilbuffer.cpp`（274 行）。它在一个 render pass 里画两遍同一个模型：
+
+1. **toon pass** 画物体本体，同时用 `compareOp = ALWAYS / passOp = REPLACE / reference = 1` 把覆盖到的 texel 的 stencil 写成 1；
+2. **outline pass** 把同一网格沿法线挤出 `outlineWidth`，关掉深度测试，用 `compareOp = NOT_EQUAL` 拒绝掉 stencil 已标记的 texel —— 只剩物体外圈那道壳，就是描边。
+
+这一轮用户明确要求「`IAttachmentDetail` 和 `CmdOp` 一起改」，正好对应这项技术在框架里的天然分界：**「有没有 S8 附件、怎么清、怎么留」是声明**，「reference / compareMask / writeMask 是多少、要不要中途清」是**录制**。参考实现把 reference 写死在 `VkPipelineDepthStencilStateCreateInfo` 里，本实现则把它做成动态状态，于是同一条管线不需要重建就能切换描边行为。
+
+### 17.1 迁移前缺的三块
+
+| 缺口 | 为什么致命 |
+| --- | --- |
+| `findDepthFormat()` 的候选表以 `eD32Sfloat` 打头 | 几乎所有设备都支持它，于是 `DefaultDepthFormat()` 返回**不含 stencil** 的格式。拿它建 stencil 管线，stencil 写是未定义/无效的，而且校验层可能到运行期才报 |
+| `GraphicsPipelineConfig` 完全没有 stencil 字段 | `createPipeline()` 里 `stencilTestEnable` 硬编码 `VK_FALSE`，front/back 全默认，无法表达 `NOT_EQUAL` / `REPLACE` |
+| 附件描述里 `stencilLoadOp = eDontCare` | 所有既有 config 都这么写（对纯深度附件是对的）。stencil 内容若从 UNDEFINED 起步，后续 `NOT_EQUAL` 的比较基准就是垃圾值 |
+
+另有一处隐性缺陷：`eSwapChain` 依赖的 dst/src access 只有 `DEPTH_STENCIL_ATTACHMENT_WRITE`，没有 READ —— stencil test 会读 S8 平面。
+
+### 17.2 声明层：`IAttachmentDetail` → `BasicRenderPass`
+
+```cpp
+// IAttachmentDetail.h
+struct StencilAttachmentSpec {
+    uint32_t attachmentIndex = 1;
+    vk::AttachmentLoadOp loadOp = vk::AttachmentLoadOp::eClear;
+    vk::AttachmentStoreOp storeOp = vk::AttachmentStoreOp::eStore;
+    uint32_t clearValue = 0;
+    vk::ImageLayout finalLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+    bool hostReadable = false;
+};
+// RenderPassBlueprint 增加：std::optional<StencilAttachmentSpec> stencil;
+```
+
+| 位置 | 改动 |
+| --- | --- |
+| `IAttachmentDetail.h` | `StencilAttachmentSpec`、`hasStencilAspect(format)`；`makeDependencies(preset, withStencil=false)` |
+| `IRenderPass.h` | `hasStencil()` / `depthStencilImage(set)` / `depthStencilFormat()`，全部带默认实现，旧代码零改动 |
+| `BasicRenderPass.cpp::applyStencilSpec()` | 在 `createRenderPass()` **之前**校验附件格式确实带 S8（否则抛异常）、写 `stencilLoadOp`/`stencilStoreOp`/`finalLayout`、把 `clearValues[index]` 换成 `ClearDepthStencilValue(1.0, clearValue)`；`hostReadable` 强制 `eStore` |
+| `BasicRenderPass::createAttachments()` | 记录每套附件的 depth-stencil image（resize 后自动指向新 image）；`aspectOf()` 对 S8 格式自动返回 `DEPTH\|STENCIL` |
+| `PhysicalDeviceUtils` / `RenderManager` | 新增 `findDepthStencilFormat()`（候选 `D24UnormS8Uint` / `D32SfloatS8Uint` / `D16UnormS8Uint`）与 `DepthStencilFormat()` |
+| `examples/common/AttachmentDetailConfig.h` | `SimpleAttachmentDetail` 构造函数末尾加可选 `std::optional<StencilAttachmentSpec>`；把 spec 的 `attachmentIndex` 归一为 1（该 config 的 depth 附件下标） |
+
+依赖掩码的处理有个容易踩的坑：**不能无脑给每条依赖都补 `DEPTH_STENCIL_ATTACHMENT_READ`**。
+`makeDependencies` 只把 READ 加进「stage 里含 `EARLY_FRAGMENT_TESTS` 或 `LATE_FRAGMENT_TESTS`」的作用域；给 `BOTTOM_OF_PIPE` / `FRAGMENT_SHADER` 作用域补这个 access 会触发
+`VUID-VkSubpassDependency-dstAccessMask-00869`。默认参数 `false` 保证 19 个旧示例的位模式逐位不变。
+
+声明层与管线层的交叉校验放在 `GraphicsPipeline::createPipeline()` 开头：
+`stencilTestEnable == true` 但 `renderPass->hasStencil() == false` 时直接抛异常。把「格式写错」从一条运行期 validation error（甚至静默失败）提前成**建管线期**的可读错误。
+
+### 17.3 录制层：`CmdOp` → `GraphicsPipeline`
+
+| 位置 | 改动 |
+| --- | --- |
+| `GraphicsPipelineConfig` | `stencilTestEnable` / `stencilFront` / `stencilBack` / `dynamicStencilReference` / `dynamicStencilCompareMask` / `dynamicStencilWriteMask`；`setStencil()` + `setDynamicStencil()` 链式 setter。默认全关，旧管线状态不变 |
+| `GraphicsPipeline::createPipeline()` | dynamic states 从 `std::array<...,2>` 改为 `std::vector`，按开关追加 `eStencilReference`（1.0）/ `eStencilCompareMask`、`eStencilWriteMask`（1.3） |
+| `CmdOpStencilState.h`（新） | 录制 `setStencilReference` / `setStencilCompareMask` / `setStencilWriteMask`，三个值各自可选、互不覆盖；`apply(cmd)` 可直接调用 |
+| `CmdOpClearStencil.h`（新） | `vkCmdClearAttachments` 只清 `eStencil` aspect，`setExtent()` 每帧跟随交换链尺寸 |
+| `GraphicsPipeline::AfterBindHook` | `bindPipeline()` 之后、`draw()` 之前的钩子 |
+| `CmdOpDrawFrame::setStencilState()` | 把动态 stencil 状态挂到 draw 上，走 after-bind hook |
+
+**为什么要有 after-bind hook**：动态状态在 `vkCmdBindPipeline` 之后才保证对该次 draw 生效。若把 `CmdOpStencilState` 当成一个独立 op 放进 `CmdOpGroup`，一旦有人在它和 draw 之间插了另一个 `record()`（或后续维护时调整顺序），状态就落到了错误的 pipeline 上。挂在 draw 上则顺序由 `recordDrawCommand()` 内部保证，无法被重排。
+
+两个 pass 的静态 stencil 配置（动态值由 CmdOp 覆盖）：
+
+| | compareOp | failOp | passOp | depthFailOp | depthTest | writeMask（动态） |
+| --- | --- | --- | --- | --- | --- | --- |
+| toon | `eAlways` | `eKeep` | `eReplace` | `eKeep` | on / `eLessOrEqual` | `0xff`（`--no-fill` 时 0） |
+| outline | `eNotEqual` | `eKeep` | `eKeep` | `eKeep` | **off** | `0`（始终） |
+
+`depthFailOp = eKeep`（而非参考实现的 `eReplace`）让只有真正通过深度测试的前表面标记 stencil；outline 的 `writeMask = 0` 保证 S8 平面在 dump 时**只反映 toon pass 写了什么**，这正是验证能成立的前提。
+
+### 17.4 三个真实踩过的坑
+
+1. **VUID-VkImageMemoryBarrier-image-03320**：回读 S8 时，barrier 的 `subresourceRange.aspectMask` 只填了 `STENCIL`，但对 `D24UnormS8Uint` 这类同时含 depth+stencil 的图像，在未启用 `separateDepthStencilLayouts` 时必须同时含 `DEPTH|STENCIL`。
+2. **VUID 00188**：`vkCmdCopyImageToBuffer` 的 `imageSubresource.aspectMask` 反过来**只能有一个** aspect。原有 `ImageReadback` 用 `aspectOf(format)` 同时填两处，对带 stencil 的格式必然违规（此前没有示例回读过这种附件，缺陷一直没暴露）。修复：`capture()` 增加 `aspect`（copy 用）与 `barrierAspect`（transition 用）两个独立参数，并拒绝同时含 depth+stencil 的 copy aspect。`texelSize(eS8Uint) = 1`。
+3. **sRGB 交换链改写颜色**：`outline.frag` 输出线性品红 `(1.0, 0.12, 0.72)`，sRGB swapchain 把它编码成约 `(255, 97, 222)`。最初用 `g < 90` 统计描边像素，结果恒为 0 —— 不是没画出来，是阈值写死在 UNORM 假设上。改成「红、蓝都比绿高 60 以上且红 > 150」，在 sRGB 与 UNORM 下都成立，且能排除 toon 蓝（绿占优）与深色背景。
+
+顺带：`DumpResult::rgb8` 暴露写进 PPM 的原始 RGB 字节，示例不必把自己刚写的文件再解析一遍。
+
+### 17.5 示例与验证
+
+`examples/stencil/test20.cpp`：模型用已入库的 `suzanne.gltf`（47232 个展开顶点），归一化到高 2.0。
+**两条管线共享同一个 `ShaderAssetGroup`**，asset 里注册 4 组 SPIR-V（`toon_vert/frag`、`outline_vert/frag`），各用 `GraphicsPipelineConfig::addStage()` 取自己的 key —— 顶点缓冲因此只上传一次，UBO 也只更新一次。UBO 是 224 B 的 std140 块（3×mat4 + 2×vec4），两个 vert shader 都完整声明整块（只有 `params.x` 被 outline 用到），否则布局会错位。
+
+`--dump` 一次抓两张：`0000_stencil-frame.ppm`（交换链帧）与 `0001_stencil-mask.ppm`（S8 平面，白 = 非 0），并打印两个统计量。五组对照全部由**运行期 CmdOp** 改变，管线未重建：
+
+| 运行 | stencil marked | outline pixels | 说明 |
+| --- | --- | --- | --- |
+| 默认 | 77038 / 921600（8.36%） | 11273（1.22%） | 只有轮廓环 |
+| `--no-fill` | 0 | 88311（9.58%） | fill 的 writeMask 设 0，`NOT_EQUAL(1,0)` 全通过 → 整个放大壳 |
+| `--clear-mid` | 0 | 88311 | 两次 draw 之间 `vkCmdClearAttachments` 清 S8 |
+| `--ref 2` | 77038 | 88311 | 改 outline 的 dynamic reference，`NOT_EQUAL(2,·)` 全通过 |
+| `--fill-ref 2` | 77038 | 88311 | 改 fill 的 dynamic reference，写 2 后 `NOT_EQUAL(1,2)` 全通过 |
+
+`--ref 2` 那一行 marked 仍是 77038，正好反证 outline 的 `writeMask = 0` 生效、没有污染 S8 平面。
+`--dump --resize-after 20 --dump-after 45` 在窗口改成 1024×600 之后再抓：日志出现
+`attachments rebuilt; depth-stencil extent 1024x600`，marked 53501 / 614400（8.71%）、
+outline 7838（1.28%），VUID 仍为 0 —— 声明层的附件重建链是通的。
+
+| 项 | 结果 |
+| --- | --- |
+| 全新改动后 configure + 全量构建 | 20 个示例 + `myEngine` + `example_common`：**0 error / 0 warning** |
+| 运行期校验 | 20 个示例逐个冒烟：**VUID = 0 / Validation Error = 0**（原 19 个无回归） |
+| 格式 | 本机 `D24UnormS8Uint`；`DefaultDepthFormat()` 仍是 `D32Sfloat`（无 S8） |
+| 目视 | 青蓝 toon 猴头 + 亮品红外轮廓，S8 平面为实心剪影（无轮廓） |
+
+### 17.6 差异与限制
+
+| 项 | 参考原版 | 本实现 | 原因 |
+| --- | --- | --- | --- |
+| stencil reference | 编译进 pipeline 的 `back.reference = 1` | `eStencilReference` 动态状态，由 `CmdOpStencilState` 每次 draw 前设置 | 一次建管线即可做 `--no-fill` / `--ref` / `--clear-mid` 三组对照 |
+| 模型 | `venus.gltf`（681 MB 资产包内） | `suzanne.gltf`（375 KB，已入库） | 沿用「不引入大资产」策略；猴头轮廓更利于验证 |
+| 描边宽度 | UI 的 `inputFloat` 直接改 UBO | `+`/`-` 键与 `--width` 改同一个 UBO 字段 | 等价 |
+| 着色 | 独立 `toon.vert/frag` + `outline.vert/frag` | 同 | 但两个 pipeline 共享一个 asset，避免重复上传顶点 |
+| MSAA stencil | 未涉及 | 未做 | 多采样附件的 `eTransferSrc` 会被 `createAttachments()` 移除，S8 回读只支持单采样 |
+| `separateDepthStencilLayouts` | 未启用 | 未启用 | 因此 barrier 必须同时含 DEPTH\|STENCIL；若将来启用该特性，17.4 的两条约束可以合并 |
+
+仍待覆盖的能力见 15.7：独立 sampler、查询池、多视口、多 vertex binding。

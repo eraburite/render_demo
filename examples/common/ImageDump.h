@@ -71,6 +71,10 @@ struct DumpResult {
     // request is not an eNormal capture.  A value far from 1.0 means the
     // G-Buffer normal was written non-normalised (or is garbage).
     float meanNormalLength = 0.0f;
+    // The exact 8-bit RGB bytes written to the PPM.  Examples use it for
+    // pixel-level assertions (e.g. counting outline-coloured texels) without
+    // having to parse the file they just wrote.
+    std::vector<uint8_t> rgb8;
 };
 
 // Writes an 8-bit RGB buffer (3 bytes per texel, row 0 = top) as a binary PPM

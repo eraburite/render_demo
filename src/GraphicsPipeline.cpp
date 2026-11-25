@@ -211,6 +211,14 @@ void GraphicsPipeline::writeDescriptors()
 void GraphicsPipeline::createPipeline(const std::shared_ptr<IRenderPass> &renderPass, uint32_t subpass,
                                       vk::SampleCountFlagBits msaa)
 {
+    // A stencil test against a depth-only attachment is silently ignored (or
+    // reported much later as a validation error).  The declaration lives on the
+    // render pass, so this is the one place the two halves can be cross-checked.
+    if (m_config.stencilTestEnable && renderPass && !renderPass->hasStencil()) {
+        throw std::runtime_error(
+            "GraphicsPipeline: stencil test enabled but the render pass declares no stencil attachment");
+    }
+
     const auto &codes = m_asset ? m_asset->shaderCodes() : emptyShaderCodes();
     const auto findCode = [&codes](const char *primary, const char *fallback) -> const std::vector<uint32_t> * {
         for (const char *key : {primary, fallback}) {
@@ -322,7 +330,11 @@ void GraphicsPipeline::createPipeline(const std::shared_ptr<IRenderPass> &render
     depthStencil.depthWriteEnable = m_config.depthWriteEnable ? VK_TRUE : VK_FALSE;
     depthStencil.depthCompareOp = m_config.depthCompareOp;
     depthStencil.depthBoundsTestEnable = VK_FALSE;
-    depthStencil.stencilTestEnable = VK_FALSE;
+    depthStencil.stencilTestEnable = m_config.stencilTestEnable ? VK_TRUE : VK_FALSE;
+    if (m_config.stencilTestEnable) {
+        depthStencil.front = m_config.stencilFront;
+        depthStencil.back = m_config.stencilBack;
+    }
 
     vk::PipelineColorBlendAttachmentState colorBlendAttachment{};
     colorBlendAttachment.blendEnable = m_config.blendEnable ? VK_TRUE : VK_FALSE;
@@ -349,7 +361,16 @@ void GraphicsPipeline::createPipeline(const std::shared_ptr<IRenderPass> &render
     colorBlending.pAttachments = colorAttachments.data();
     colorBlending.blendConstants = {{0.0f, 0.0f, 0.0f, 0.0f}};
 
-    const std::array<vk::DynamicState, 2> dynamicStates{vk::DynamicState::eViewport, vk::DynamicState::eScissor};
+    std::vector<vk::DynamicState> dynamicStates{vk::DynamicState::eViewport, vk::DynamicState::eScissor};
+    if (m_config.dynamicStencilReference) {
+        dynamicStates.push_back(vk::DynamicState::eStencilReference);
+    }
+    if (m_config.dynamicStencilCompareMask) {
+        dynamicStates.push_back(vk::DynamicState::eStencilCompareMask);
+    }
+    if (m_config.dynamicStencilWriteMask) {
+        dynamicStates.push_back(vk::DynamicState::eStencilWriteMask);
+    }
     vk::PipelineDynamicStateCreateInfo dynamicState{};
     dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
     dynamicState.pDynamicStates = dynamicStates.data();
@@ -410,6 +431,9 @@ void GraphicsPipeline::recordDrawCommand(const vk::CommandBuffer &cmd, uint32_t 
     }
     const vk::PipelineLayout layout = static_cast<vk::PipelineLayout>(m_pipelineLayout);
     cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, static_cast<vk::Pipeline>(m_pipeline));
+    if (m_afterBindHook) {
+        m_afterBindHook(cmd);
+    }
 
     const std::vector<vk::PushConstantRange> emptyRanges;
     const std::vector<vk::PushConstantRange> &ranges =

@@ -16,6 +16,39 @@ struct SubpassBlueprint {
     std::vector<uint32_t> preserveAttachments;
 };
 
+// Declares that one of the pass' depth attachments also carries a stencil
+// aspect and how that aspect behaves at the render pass boundaries.  This is
+// the *declaration* half of stencil support: BasicRenderPass turns it into the
+// attachment description / image view / clear value, while GraphicsPipeline
+// checks IRenderPass::hasStencil() before enabling a stencil test.
+//
+// The format must contain an S8 component.  A D32Sfloat depth-only attachment
+// silently makes every stencil write a no-op (or triggers VUID-...), so the
+// engine rejects a mismatched spec instead of producing a blank outline.
+struct StencilAttachmentSpec {
+    uint32_t attachmentIndex = 1; // index of the depth-stencil attachment in RenderPassBlueprint::attachments
+    vk::AttachmentLoadOp loadOp = vk::AttachmentLoadOp::eClear;
+    vk::AttachmentStoreOp storeOp = vk::AttachmentStoreOp::eStore;
+    uint32_t clearValue = 0;
+    vk::ImageLayout finalLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+    // Keep the stencil contents readable by the host (ImageReadback copies the
+    // S8 aspect).  Implies eStore even if storeOp was eDontCare.
+    bool hostReadable = false;
+};
+
+// Formats carrying a stencil aspect.  Shared by BasicRenderPass (image view
+// aspect), ImageReadback (copy aspect) and the example-side config validation.
+inline bool hasStencilAspect(vk::Format format)
+{
+    switch (format) {
+        case vk::Format::eS8Uint:
+        case vk::Format::eD16UnormS8Uint:
+        case vk::Format::eD24UnormS8Uint:
+        case vk::Format::eD32SfloatS8Uint: return true;
+        default: return false;
+    }
+}
+
 // An offscreen color attachment that the engine must allocate an image for.
 struct OffscreenTargetSpec {
     uint32_t attachmentIndex = 0;
@@ -35,6 +68,8 @@ struct RenderPassBlueprint {
     std::vector<vk::SubpassDependency> dependencies;
     std::vector<vk::ClearValue> clearValues;
     std::vector<OffscreenTargetSpec> offscreenTargets;
+    // Optional: one of the depth attachments also owns a stencil aspect.
+    std::optional<StencilAttachmentSpec> stencil;
 
     uint32_t colorAttachmentCount = 1; // color outputs of subpass 0 (drives blend state / clear values)
     vk::SampleCountFlagBits sampleCount = vk::SampleCountFlagBits::e1;
@@ -65,7 +100,12 @@ struct AttachmentComponentSpec {
 // Dependency presets shared by the example configs.
 enum class DependencyPreset { eSwapChain, eMultiSubpass, eOffscreen };
 
-inline std::vector<vk::SubpassDependency> makeDependencies(DependencyPreset preset)
+// `withStencil` adds DEPTH_STENCIL_ATTACHMENT_READ to the scopes that can
+// actually perform a stencil test (early/late fragment tests).  Adding it to a
+// BOTTOM_OF_PIPE / FRAGMENT_SHADER-only scope would violate
+// VUID-VkSubpassDependency-dstAccessMask-00869.  Defaults to false so every
+// existing preset keeps its exact old bit pattern.
+inline std::vector<vk::SubpassDependency> makeDependencies(DependencyPreset preset, bool withStencil = false)
 {
     std::vector<vk::SubpassDependency> deps;
     switch (preset) {
@@ -159,6 +199,20 @@ inline std::vector<vk::SubpassDependency> makeDependencies(DependencyPreset pres
                 vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eShaderRead,
                 vk::DependencyFlagBits::eByRegion));
             break;
+    }
+
+    if (withStencil) {
+        const vk::PipelineStageFlags fragmentTests = vk::PipelineStageFlagBits::eEarlyFragmentTests
+                                                     | vk::PipelineStageFlagBits::eLateFragmentTests;
+        const vk::AccessFlags stencilRead = vk::AccessFlagBits::eDepthStencilAttachmentRead;
+        for (vk::SubpassDependency &dep : deps) {
+            if ((dep.srcStageMask & fragmentTests) != vk::PipelineStageFlags{}) {
+                dep.srcAccessMask = dep.srcAccessMask | stencilRead;
+            }
+            if ((dep.dstStageMask & fragmentTests) != vk::PipelineStageFlags{}) {
+                dep.dstAccessMask = dep.dstAccessMask | stencilRead;
+            }
+        }
     }
     return deps;
 }

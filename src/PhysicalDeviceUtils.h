@@ -19,6 +19,9 @@ public:
                                           vk::FormatFeatureFlags features);
 
     static vk::Format findDepthFormat(const std::shared_ptr<vk::PhysicalDevice> &physicalDevice);
+    // Like findDepthFormat, but restricted to formats carrying an S8 aspect.
+    // findDepthFormat() prefers D32Sfloat, which has no stencil at all.
+    static vk::Format findDepthStencilFormat(const std::shared_ptr<vk::PhysicalDevice> &physicalDevice);
 
     static bool hasStencilComponent(vk::Format format);
 

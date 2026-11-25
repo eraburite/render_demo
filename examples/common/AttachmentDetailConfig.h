@@ -1,5 +1,7 @@
 #pragma once
 #include <algorithm>
+#include <optional>
+#include <utility>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 #include "IAttachmentDetail.h"
@@ -9,11 +11,16 @@ class SimpleAttachmentDetail : public IAttachmentDetail {
 public:
     enum class Mode { eDirect, eMSAA, eOffscreen };
 
+    // `stencil` turns the depth attachment into a depth+stencil one.  The
+    // caller must pass a format with an S8 aspect (RenderManager::
+    // DepthStencilFormat()); BasicRenderPass validates that and owns the
+    // stencil load/store ops, clear value and dependency READ masks.
     SimpleAttachmentDetail(Mode mode, vk::Format colorFormat, vk::Format depthFormat,
                            vk::ImageLayout finalColorLayout = vk::ImageLayout::ePresentSrcKHR,
-                           DependencyPreset preset = DependencyPreset::eSwapChain) :
+                           DependencyPreset preset = DependencyPreset::eSwapChain,
+                           std::optional<StencilAttachmentSpec> stencil = std::nullopt) :
         m_mode(mode), m_colorFormat(colorFormat), m_depthFormat(depthFormat),
-        m_finalColorLayout(finalColorLayout), m_preset(preset)
+        m_finalColorLayout(finalColorLayout), m_preset(preset), m_stencil(std::move(stencil))
     {
     }
 
@@ -98,7 +105,15 @@ public:
             }
             bp.subpasses.push_back(second);
         }
-        bp.dependencies = makeDependencies(m_preset);
+        if (m_stencil) {
+            // Attachment 1 is the depth target in this config (attachment 2 is
+            // the optional resolve target).  Normalise the index so callers only
+            // have to describe stencil behaviour, not the attachment layout.
+            StencilAttachmentSpec spec = *m_stencil;
+            spec.attachmentIndex = 1;
+            bp.stencil = spec;
+        }
+        bp.dependencies = makeDependencies(m_preset, m_stencil.has_value());
 
         bp.clearValues.push_back(vk::ClearValue(vk::ClearColorValue(std::array<float, 4>{0.05f, 0.06f, 0.09f, 1.0f})));
         if (m_depthFormat != vk::Format::eUndefined) {
@@ -130,6 +145,7 @@ private:
     vk::Format m_depthFormat;
     vk::ImageLayout m_finalColorLayout;
     DependencyPreset m_preset;
+    std::optional<StencilAttachmentSpec> m_stencil;
 };
 
 // G-Buffer: position + normal + albedo (MRT) + depth, all sampled afterwards.

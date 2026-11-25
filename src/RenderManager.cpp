@@ -155,6 +155,7 @@ void RenderManager::initVulkan()
     m_physicalDevice->getProperties(&m_physicalDeviceProperties);
     m_msaaSamples = maxUsableSampleCount(m_physicalDeviceProperties);
     m_depthFormat = PhysicalDeviceUtils::findDepthFormat(m_physicalDevice);
+    m_depthStencilFormat = PhysicalDeviceUtils::findDepthStencilFormat(m_physicalDevice);
 
     createDevice(m_requirement);
 

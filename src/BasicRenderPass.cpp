@@ -35,26 +35,13 @@ bool isDepthFormat(vk::Format format)
     }
 }
 
-bool hasStencil(vk::Format format)
-{
-    switch (format) {
-        case vk::Format::eS8Uint:
-        case vk::Format::eD16UnormS8Uint:
-        case vk::Format::eD24UnormS8Uint:
-        case vk::Format::eD32SfloatS8Uint:
-            return true;
-        default:
-            return false;
-    }
-}
-
 vk::ImageAspectFlags aspectOf(vk::Format format)
 {
     if (!isDepthFormat(format)) {
         return vk::ImageAspectFlagBits::eColor;
     }
-    return hasStencil(format) ? (vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil)
-                              : vk::ImageAspectFlagBits::eDepth;
+    return hasStencilAspect(format) ? (vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil)
+                                    : vk::ImageAspectFlagBits::eDepth;
 }
 
 const OffscreenTargetSpec *findOffscreenSpec(const RenderPassBlueprint &blueprint, uint32_t attachmentIndex)
@@ -80,6 +67,7 @@ BasicRenderPass::BasicRenderPass(std::shared_ptr<vk::Device> device,
                                  const RenderPassBlueprint &blueprint) :
     m_device(std::move(device)), m_memProps(memProps), m_allocator(std::move(allocator)), m_blueprint(blueprint)
 {
+    applyStencilSpec();
     createRenderPass();
 
     m_subpassColorCounts.reserve(m_blueprint.subpasses.size());
@@ -95,6 +83,39 @@ BasicRenderPass::BasicRenderPass(std::shared_ptr<vk::Device> device,
         }
     }
     createAttachments(initialExtent);
+}
+
+void BasicRenderPass::applyStencilSpec()
+{
+    if (!m_blueprint.stencil) {
+        return;
+    }
+    const StencilAttachmentSpec &spec = *m_blueprint.stencil;
+    if (spec.attachmentIndex >= m_blueprint.attachments.size()) {
+        throw std::runtime_error("BasicRenderPass: stencil attachment index out of range");
+    }
+
+    vk::AttachmentDescription &attachment = m_blueprint.attachments[spec.attachmentIndex];
+    if (!hasStencilAspect(attachment.format)) {
+        throw std::runtime_error("BasicRenderPass: stencil declared on depth-only format " +
+                                 vk::to_string(attachment.format) + " (use D24UnormS8Uint / D32SfloatS8Uint)");
+    }
+
+    attachment.stencilLoadOp = spec.loadOp;
+    // A host-side stencil readback needs the contents to survive the pass.
+    attachment.stencilStoreOp = spec.hostReadable ? vk::AttachmentStoreOp::eStore : spec.storeOp;
+    attachment.finalLayout = spec.finalLayout;
+
+    if (m_blueprint.clearValues.size() <= spec.attachmentIndex) {
+        m_blueprint.clearValues.resize(static_cast<size_t>(spec.attachmentIndex) + 1);
+    }
+    // Depth 1.0 keeps the normal depth test behaviour; only the stencil byte is
+    // configured by the spec.  Vulkan requires a defined stencil clear value
+    // whenever stencilLoadOp is eClear.
+    m_blueprint.clearValues[spec.attachmentIndex] =
+        vk::ClearValue(vk::ClearDepthStencilValue(1.0f, spec.clearValue));
+
+    m_depthStencilFormat = attachment.format;
 }
 
 void BasicRenderPass::createRenderPass()
@@ -153,6 +174,7 @@ void BasicRenderPass::createAttachments(vk::Extent2D extent)
     m_offscreenViews.clear();
     m_offscreenImages.clear();
     m_offscreenFormats.clear();
+    m_depthStencilImages.clear();
     m_colorCountPerSet = 0;
     m_extent = extent;
 
@@ -165,6 +187,7 @@ void BasicRenderPass::createAttachments(vk::Extent2D extent)
                                   ? 1
                                   : (m_blueprint.framebufferCount == 0 ? 1 : m_blueprint.framebufferCount);
     m_attachmentSets.resize(setCount);
+    m_depthStencilImages.resize(setCount);
 
     // Iterate set-major so m_offscreenViews comes out frame-major:
     // [setIndex * colorCountPerSet + colorSlot].
@@ -205,6 +228,9 @@ void BasicRenderPass::createAttachments(vk::Extent2D extent)
 
             auto attachment = std::make_shared<ImageAttachment>(m_device, m_memProps, m_allocator, extent, format,
                                                                 samples, usage, aspectOf(format));
+            if (m_blueprint.stencil && index == m_blueprint.stencil->attachmentIndex && depthTarget) {
+                m_depthStencilImages[set] = attachment->image();
+            }
             const vk::ImageView view = attachment->imageView();
             if (view && samples == vk::SampleCountFlagBits::e1 && !depthTarget) {
                 if (set == 0) {

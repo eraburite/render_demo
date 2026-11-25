@@ -32,8 +32,18 @@ public:
     ImageReadback &operator=(const ImageReadback &) = delete;
 
     // layout is the layout the image is in right now; it is restored before
-    // capture() returns.
-    Capture capture(vk::Image image, vk::Format format, vk::Extent2D extent, vk::ImageLayout layout);
+    // capture() returns.  `aspect` selects a single image aspect explicitly:
+    // the S8 plane of a depth-stencil attachment is copied with
+    // format = eS8Uint + aspect = eStencil.  An empty value derives the aspect
+    // from the format (colour / depth / depth+stencil).
+    //
+    // `barrierAspect` is the aspect used by the layout-transition barriers.
+    // Without the separateDepthStencilLayouts feature a barrier on a combined
+    // depth-stencil image must name DEPTH|STENCIL (VUID 03320), while the copy
+    // region must name exactly one aspect (VUID 00188) -- so the two differ.
+    // Empty means "same as aspect".
+    Capture capture(vk::Image image, vk::Format format, vk::Extent2D extent, vk::ImageLayout layout,
+                    vk::ImageAspectFlags aspect = {}, vk::ImageAspectFlags barrierAspect = {});
 
     // Bytes per texel for the formats this path understands; throws otherwise.
     // Shared with the PPM writer so both agree on the memory layout.
