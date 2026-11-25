@@ -27,7 +27,7 @@
 
 #include "Camera.h"
 #include "GLFWwindow.h"
-#include "GlTFLoader.h"
+#include "ModelLoader.h"
 #include "KtxLoader.h"
 #include "RenderCommon.h"
 
@@ -69,48 +69,41 @@ struct SceneMesh {
 // (the building carries no COLOR_0 attribute, so without this every surface
 // would be white) and expands the index list into a plain triangle stream, which
 // is what the framework's well-tested non-indexed draw path expects.
-SceneMesh mergeModel(const GlTFModel &model)
+SceneMesh mergeModel(const Model &model)
 {
     SceneMesh mesh;
-    const std::vector<glm::mat4> world = computeNodeWorldMatrices(model);
 
     glm::vec3 minBounds(std::numeric_limits<float>::max());
     glm::vec3 maxBounds(std::numeric_limits<float>::lowest());
 
-    for (size_t nodeIndex = 0; nodeIndex < model.nodes.size(); ++nodeIndex) {
-        const GlTFNode &node = model.nodes[nodeIndex];
-        if (node.meshIndex < 0 || node.meshIndex >= static_cast<int>(model.meshes.size())
-            || nodeIndex >= world.size()) {
-            continue;
-        }
-        const glm::mat4 &transform = world[nodeIndex];
+    // forEachMeshInstance walks the node hierarchy, so this only has to say
+    // what to do with one (node, primitive) pair.
+    forEachMeshInstance(model, [&](const glm::mat4 &transform, int, const Mesh &, const Primitive &primitive) {
         const glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(transform)));
 
-        for (const GlTFPrimitive &primitive : model.meshes[node.meshIndex].primitives) {
-            glm::vec3 tint(1.0f);
-            if (primitive.materialIndex >= 0
-                && primitive.materialIndex < static_cast<int>(model.materials.size())) {
-                tint = glm::vec3(model.materials[primitive.materialIndex].baseColorFactor);
-            }
-            for (uint32_t i = primitive.firstIndex;
-                 i < primitive.firstIndex + primitive.indexCount && i < model.indices.size(); ++i) {
-                const uint32_t vertexIndex = model.indices[i];
-                if (vertexIndex >= model.vertices.size()) {
-                    continue;
-                }
-                const GlTFVertex &src = model.vertices[vertexIndex];
-                Vertex vertex;
-                vertex.position = glm::vec3(transform * glm::vec4(src.position, 1.0f));
-                vertex.normal = glm::normalize(normalMatrix * src.normal);
-                vertex.texCoord = src.texCoord;
-                vertex.tangent = src.tangent;
-                vertex.color = src.color * tint;
-                minBounds = glm::min(minBounds, vertex.position);
-                maxBounds = glm::max(maxBounds, vertex.position);
-                mesh.vertices.push_back(vertex);
-            }
+        glm::vec3 tint(1.0f);
+        if (primitive.materialIndex >= 0 && primitive.materialIndex < static_cast<int>(model.materials.size())) {
+            tint = glm::vec3(model.materials[primitive.materialIndex].baseColorFactor);
         }
-    }
+        for (uint32_t i = primitive.firstIndex;
+             i < primitive.firstIndex + primitive.indexCount && i < model.indices.size(); ++i) {
+            const uint32_t vertexIndex = model.indices[i];
+            if (vertexIndex >= model.vertices.size()) {
+                continue;
+            }
+            const MeshVertex &src = model.vertices[vertexIndex];
+            Vertex vertex;
+            vertex.position = glm::vec3(transform * glm::vec4(src.position, 1.0f));
+            vertex.normal = glm::normalize(normalMatrix * src.normal);
+            vertex.texCoord = src.texCoord;
+            vertex.tangent = src.tangent;
+            vertex.color = src.color * tint;
+            minBounds = glm::min(minBounds, vertex.position);
+            maxBounds = glm::max(maxBounds, vertex.position);
+            mesh.vertices.push_back(vertex);
+        }
+    });
+
     mesh.minBounds = minBounds;
     mesh.maxBounds = maxBounds;
     return mesh;
@@ -185,8 +178,8 @@ void test(int argc, char **argv)
     // ---- geometry ---------------------------------------------------------
     // samplebuilding has 12 meshes spread over 72 nodes; samplebuilding_glass
     // adds the transparent panes in the same world space.
-    SceneMesh building = mergeModel(loadGlTF(PROJECT_ROOT_PATH "/data/models/samplebuilding.gltf"));
-    SceneMesh glass = mergeModel(loadGlTF(PROJECT_ROOT_PATH "/data/models/samplebuilding_glass.gltf"));
+    SceneMesh building = mergeModel(loadModel(PROJECT_ROOT_PATH "/data/models/samplebuilding.gltf"));
+    SceneMesh glass = mergeModel(loadModel(PROJECT_ROOT_PATH "/data/models/samplebuilding_glass.gltf"));
     if (building.vertices.empty()) {
         throw std::runtime_error("subpasses: samplebuilding.gltf produced no geometry");
     }

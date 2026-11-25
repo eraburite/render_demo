@@ -12,7 +12,7 @@
 #include "Camera.h"
 #include "GLFWwindow.h"
 #include "Geometry.h"
-#include "GlTFLoader.h"
+#include "ModelLoader.h"
 #include "RenderCommon.h"
 
 #include "AttachmentDetailConfig.h"
@@ -69,17 +69,17 @@ std::shared_ptr<vk::Sampler> makeSampler(const std::shared_ptr<vk::Device> &devi
 // Apply each mesh node's world transform (armor.gltf rotates/scale its meshes),
 // then center and uniformly scale into a ~2-unit box and give the surface a
 // steel-tinted albedo so the six coloured lights have something to play on.
-std::vector<Vertex> toEngineVertices(const GlTFModel &model)
+std::vector<Vertex> toEngineVertices(const Model &model)
 {
     const std::vector<glm::mat4> world = computeNodeWorldMatrices(model);
     std::vector<glm::mat4> transforms(model.vertices.size(), glm::mat4(1.0f));
     for (size_t nodeIndex = 0; nodeIndex < model.nodes.size(); ++nodeIndex) {
-        const GlTFNode &node = model.nodes[nodeIndex];
+        const ModelNode &node = model.nodes[nodeIndex];
         if (node.meshIndex < 0 || node.meshIndex >= static_cast<int>(model.meshes.size())
             || nodeIndex >= world.size()) {
             continue;
         }
-        for (const GlTFPrimitive &prim : model.meshes[node.meshIndex].primitives) {
+        for (const Primitive &prim : model.meshes[node.meshIndex].primitives) {
             for (uint32_t i = prim.firstIndex; i < prim.firstIndex + prim.indexCount && i < model.indices.size();
                  ++i) {
                 const uint32_t vertexIndex = model.indices[i];
@@ -150,7 +150,7 @@ void test(int argc, char **argv)
     std::vector<glm::mat4> models;
 
     try {
-        GlTFModel gltf = loadGlTF(PROJECT_ROOT_PATH "/data/models/armor/armor.gltf");
+        Model gltf = loadModel(PROJECT_ROOT_PATH "/data/models/armor/armor.gltf");
         if (gltf.valid()) {
             vertices = toEngineVertices(gltf);
             // The framework's index-buffer binding infers the index type from the

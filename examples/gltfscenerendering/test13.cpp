@@ -17,7 +17,7 @@
 
 #include "Camera.h"
 #include "GLFWwindow.h"
-#include "GlTFLoader.h"
+#include "ModelLoader.h"
 #include "RenderCommon.h"
 
 #include "AttachmentDetailConfig.h"
@@ -82,7 +82,7 @@ Options parseOptions(int argc, char **argv)
 // engine's indexed-draw path cannot infer an index type from its buffer spec,
 // so the index list is expanded into a plain vertex stream (draw, not
 // drawIndexed); geometry and node matrices are unchanged.
-std::vector<Vertex> toEngineVertices(const GlTFModel &model)
+std::vector<Vertex> toEngineVertices(const Model &model)
 {
     const glm::vec3 extent = model.maxBounds - model.minBounds;
     const float maxExtent = std::max({extent.x, extent.y, extent.z, 0.0001f});
@@ -91,7 +91,7 @@ std::vector<Vertex> toEngineVertices(const GlTFModel &model)
 
     std::vector<Vertex> source;
     source.reserve(model.vertices.size());
-    for (const GlTFVertex &src : model.vertices) {
+    for (const MeshVertex &src : model.vertices) {
         Vertex dst;
         dst.position = (src.position - center) * scale;
         dst.normal = src.normal;
@@ -200,7 +200,7 @@ void test(int argc, char **argv)
     auto mgr = RenderManager::Create(window, MAX_FRAMES_IN_FLIGHT);
 
     // ----- Load glTF mesh and glTF node hierarchy -------------------------
-    const GlTFModel gltf = loadGlTF(options.model);
+    const Model gltf = loadModel(options.model);
     if (!gltf.valid()) {
         throw std::runtime_error("gltfscenerendering: failed to load " + options.model);
     }

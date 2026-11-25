@@ -1,7 +1,6 @@
-// Single translation unit that compiles the stb_image implementation for the
-// whole example_common library (TextureLoader.cpp only includes the header).
-// tinygltf includes stb_image.h for declarations only -- it does not compile
-// the implementation itself -- so there is exactly one set of stb symbols.
+// Single translation unit that compiles the tinygltf and stb_image
+// implementations for the whole example_common library (TextureLoader.cpp only
+// includes the stb header for declarations).
 // stb_image v2.21 puts its implementation OUTSIDE the include guard, so the
 // same TU must include stb_image.h exactly once.  tiny_gltf.h includes it
 // internally; we rely on that single include for both the declarations used
@@ -9,22 +8,25 @@
 #define TINYGLTF_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
 #define TINYGLTF_NO_STB_IMAGE_WRITE
-#include "GlTFLoader.h"
+#include "GltfModelLoader.h"
 
 #include <tinygltf/tiny_gltf.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
 #include <algorithm>
-#include <cstring>
 #include <cmath>
-#include <functional>
+#include <cstring>
+#include <filesystem>
 #include <limits>
 #include <stdexcept>
 
 namespace {
 
-using tinygltf::Model;
+// `Model` and `Primitive` are now the loader-neutral names in ModelAsset.h, so
+// the tinygltf counterparts must be spelled out (or aliased) rather than
+// pulled in with a using-declaration.
+using TinyModel = tinygltf::Model;
 using tinygltf::Accessor;
 using tinygltf::BufferView;
 
@@ -42,7 +44,7 @@ size_t componentCount(int type)
 
 // Reads the whole attribute array into `out`, filling each vertex with the
 // fallback where the attribute is absent.
-void readAttributeArray(const Model &model, int accessorIndex, glm::vec4 fallback, size_t count,
+void readAttributeArray(const TinyModel &model, int accessorIndex, glm::vec4 fallback, size_t count,
                         std::vector<glm::vec4> &out)
 {
     out.assign(count, fallback);
@@ -63,6 +65,7 @@ void readAttributeArray(const Model &model, int accessorIndex, glm::vec4 fallbac
     const size_t elementSize = components * sizeof(float);
     const size_t stride = view.byteStride > 0 ? static_cast<size_t>(view.byteStride) : elementSize;
     const size_t base = static_cast<size_t>(accessor.byteOffset) + static_cast<size_t>(view.byteOffset);
+    if (base >= bytes.size()) return;
     const unsigned char *ptr = bytes.data() + base;
 
     if (accessor.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT) {
@@ -114,9 +117,9 @@ void readAttributeArray(const Model &model, int accessorIndex, glm::vec4 fallbac
     }
 }
 
-GlTFMaterial convertMaterial(const tinygltf::Material &src, const std::vector<std::string> &imageMap)
+Material convertMaterial(const tinygltf::Material &src, const std::vector<int> &textureToImage)
 {
-    GlTFMaterial dst;
+    Material dst;
     dst.name = src.name;
     const tinygltf::PbrMetallicRoughness &pbr = src.pbrMetallicRoughness;
     dst.baseColorFactor = glm::vec4(pbr.baseColorFactor[0], pbr.baseColorFactor[1],
@@ -129,15 +132,14 @@ GlTFMaterial convertMaterial(const tinygltf::Material &src, const std::vector<st
     }
     dst.alphaCutoff = static_cast<float>(src.alphaCutoff);
     dst.doubleSided = src.doubleSided;
-    if (src.alphaMode == "MASK") dst.alphaMode = 1;
-    else if (src.alphaMode == "BLEND") dst.alphaMode = 2;
+    if (src.alphaMode == "MASK") dst.alphaMode = AlphaMode::eMask;
+    else if (src.alphaMode == "BLEND") dst.alphaMode = AlphaMode::eBlend;
 
+    // A texture points at a source image; materials index images directly so
+    // examples can upload Model::images without a second indirection.
     auto lookup = [&](int textureIndex) -> int {
-        if (textureIndex < 0 || textureIndex >= static_cast<int>(imageMap.size())) return -1;
-        const std::string &key = imageMap[textureIndex];
-        if (key.empty()) return -1;
-        // imageMap stores the image index as a decimal string.
-        try { return std::stoi(key); } catch (...) { return -1; }
+        if (textureIndex < 0 || textureIndex >= static_cast<int>(textureToImage.size())) return -1;
+        return textureToImage[textureIndex];
     };
     dst.baseColorTexture = lookup(pbr.baseColorTexture.index);
     dst.normalTexture = lookup(src.normalTexture.index);
@@ -177,9 +179,38 @@ glm::mat4 nodeTransform(const tinygltf::Node &node)
     return translation * rotation * scale;
 }
 
+// Resolves a side-car URI against the model's directory.  Previously the
+// loader handed the raw URI to stb_image, which resolved it against the
+// process working directory -- correct only when the sample happened to be run
+// from data/models.
+std::string resolveUri(const std::string &baseDirectory, const std::string &uri)
+{
+    if (uri.empty()) return {};
+    if (uri.rfind("data:", 0) == 0) return {}; // tinygltf decodes these itself
+    const std::filesystem::path candidate(uri);
+    if (candidate.is_absolute() || baseDirectory.empty()) return uri;
+    return (std::filesystem::path(baseDirectory) / candidate).string();
+}
+
+void decodeImage(const std::string &uri, TextureImage &out)
+{
+    if (uri.empty()) return;
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    unsigned char *pixels = stbi_load(uri.c_str(), &width, &height, &channels, 4);
+    if (!pixels) return;
+    out.width = width;
+    out.height = height;
+    out.pixels.assign(pixels, pixels + static_cast<size_t>(width) * height * 4);
+    stbi_image_free(pixels);
+    out.mipLevels =
+        static_cast<uint32_t>(std::log2(static_cast<float>(std::max(width, height)))) + 1;
+}
+
 } // namespace
 
-GlTFModel loadGlTF(const std::string &path)
+Model GltfModelLoader::load(const std::string &path, const ModelLoadOptions &options) const
 {
     tinygltf::Model input;
     tinygltf::TinyGLTF loader;
@@ -187,22 +218,28 @@ GlTFModel loadGlTF(const std::string &path)
     std::string warnings;
 
     // This vendored tinygltf has separate ASCII/binary entry points.
-    const bool isBinary = path.size() >= 4 && path.substr(path.size() - 4) == ".glb";
+    const bool isBinary = path.size() >= 4 && path.compare(path.size() - 4, 4, ".glb") == 0;
     const bool loaded = isBinary ? loader.LoadBinaryFromFile(&input, &errors, &warnings, path)
                                  : loader.LoadASCIIFromFile(&input, &errors, &warnings, path);
     if (!loaded) {
-        throw std::runtime_error("GlTFLoader: failed to load '" + path + "': " + errors);
+        throw std::runtime_error("gltf: failed to load '" + path + "': " + errors);
     }
 
-    GlTFModel model;
+    std::string baseDirectory = options.baseDirectory;
+    if (baseDirectory.empty()) {
+        baseDirectory = std::filesystem::path(path).parent_path().string();
+    }
+
+    Model model;
 
     // ----- Images: decode every image referenced by the model -------------
     model.images.resize(input.images.size());
     for (size_t i = 0; i < input.images.size(); ++i) {
         const tinygltf::Image &image = input.images[i];
-        GlTFImage &out = model.images[i];
+        TextureImage &out = model.images[i];
+        out.name = image.name;
         if (image.width > 0 && image.height > 0 && !image.image.empty()) {
-            // tinygltf already decoded it (embedded data URI).
+            // tinygltf already decoded it (embedded data URI or .glb buffer).
             out.width = image.width;
             out.height = image.height;
             out.pixels = image.image;
@@ -217,15 +254,8 @@ GlTFModel loadGlTF(const std::string &path)
                 }
                 out.pixels = std::move(rgba);
             }
-        } else if (!image.uri.empty()) {
-            int width = 0, height = 0, channels = 0;
-            unsigned char *pixels = stbi_load(image.uri.c_str(), &width, &height, &channels, 4);
-            if (pixels) {
-                out.width = width;
-                out.height = height;
-                out.pixels.assign(pixels, pixels + static_cast<size_t>(width) * height * 4);
-                stbi_image_free(pixels);
-            }
+        } else {
+            decodeImage(resolveUri(baseDirectory, image.uri), out);
         }
         if (out.width > 0 && out.height > 0) {
             out.mipLevels = static_cast<uint32_t>(std::log2(static_cast<float>(std::max(out.width, out.height)))) + 1;
@@ -233,9 +263,12 @@ GlTFModel loadGlTF(const std::string &path)
     }
 
     // Texture -> image index map (one texture has one source image).
-    std::vector<std::string> textureToImage(input.textures.size());
+    std::vector<int> textureToImage(input.textures.size(), -1);
     for (size_t i = 0; i < input.textures.size(); ++i) {
-        textureToImage[i] = std::to_string(input.textures[i].source);
+        const int source = input.textures[i].source;
+        if (source >= 0 && source < static_cast<int>(input.images.size())) {
+            textureToImage[i] = source;
+        }
     }
 
     // ----- Materials -------------------------------------------------------
@@ -246,12 +279,10 @@ GlTFModel loadGlTF(const std::string &path)
 
     // ----- Meshes, vertices and indices ------------------------------------
     model.meshes.resize(input.meshes.size());
-    glm::vec3 minBounds(std::numeric_limits<float>::max());
-    glm::vec3 maxBounds(std::numeric_limits<float>::lowest());
 
     for (size_t meshIndex = 0; meshIndex < input.meshes.size(); ++meshIndex) {
         const tinygltf::Mesh &srcMesh = input.meshes[meshIndex];
-        GlTFMesh &dstMesh = model.meshes[meshIndex];
+        Mesh &dstMesh = model.meshes[meshIndex];
         dstMesh.name = srcMesh.name;
 
         for (const tinygltf::Primitive &primitive : srcMesh.primitives) {
@@ -273,24 +304,26 @@ GlTFModel loadGlTF(const std::string &path)
             std::vector<glm::vec4> positions, normals, uvs, tangents, colors;
             readAttributeArray(input, posIt->second, glm::vec4(0.0f), vertexCount, positions);
             readAttributeArray(input, normIt == primitive.attributes.end() ? -1 : normIt->second,
-                              glm::vec4(0.0f, 0.0f, 1.0f, 0.0f), vertexCount, normals);
+                               glm::vec4(0.0f, 0.0f, 1.0f, 0.0f), vertexCount, normals);
             readAttributeArray(input, uvIt == primitive.attributes.end() ? -1 : uvIt->second,
-                              glm::vec4(0.0f), vertexCount, uvs);
+                               glm::vec4(0.0f), vertexCount, uvs);
             readAttributeArray(input, tangentIt == primitive.attributes.end() ? -1 : tangentIt->second,
-                              glm::vec4(1.0f, 0.0f, 0.0f, 1.0f), vertexCount, tangents);
+                               glm::vec4(1.0f, 0.0f, 0.0f, 1.0f), vertexCount, tangents);
             readAttributeArray(input, colorIt == primitive.attributes.end() ? -1 : colorIt->second,
-                              glm::vec4(1.0f), vertexCount, colors);
+                               glm::vec4(1.0f), vertexCount, colors);
 
             for (size_t v = 0; v < vertexCount; ++v) {
-                GlTFVertex vertex;
+                MeshVertex vertex;
                 vertex.position = glm::vec3(positions[v]);
-                vertex.normal = glm::normalize(glm::vec3(normals[v]));
+                // A zero-length normal would poison every lighting term and
+                // the tangent basis; fall back to +Z instead.
+                const glm::vec3 normal = glm::vec3(normals[v]);
+                const float normalLength = glm::length(normal);
+                vertex.normal = normalLength > 0.0f ? normal / normalLength : glm::vec3(0.0f, 0.0f, 1.0f);
                 vertex.texCoord = glm::vec2(uvs[v]);
                 vertex.tangent = glm::vec3(tangents[v]);
                 vertex.color = glm::vec3(colors[v]);
                 model.vertices.push_back(vertex);
-                minBounds = glm::min(minBounds, vertex.position);
-                maxBounds = glm::max(maxBounds, vertex.position);
             }
 
             // Indices (support uint8 / uint16 / uint32).
@@ -327,22 +360,27 @@ GlTFModel loadGlTF(const std::string &path)
                 }
             }
 
-            GlTFPrimitive dstPrimitive;
+            Primitive dstPrimitive;
             dstPrimitive.firstIndex = firstIndex;
             dstPrimitive.indexCount = static_cast<uint32_t>(model.indices.size()) - firstIndex;
             dstPrimitive.materialIndex = primitive.material;
+            // Honest attribute reporting: the post-process chain only fills in
+            // what is missing, so a present-but-degenerate TANGENT must not be
+            // recomputed behind the file's back.
+            dstPrimitive.attributes = VertexAttribute::ePosition;
+            if (normIt != primitive.attributes.end()) dstPrimitive.attributes |= VertexAttribute::eNormal;
+            if (uvIt != primitive.attributes.end()) dstPrimitive.attributes |= VertexAttribute::eTexCoord;
+            if (tangentIt != primitive.attributes.end()) dstPrimitive.attributes |= VertexAttribute::eTangent;
+            if (colorIt != primitive.attributes.end()) dstPrimitive.attributes |= VertexAttribute::eColor;
             dstMesh.primitives.push_back(dstPrimitive);
         }
     }
-
-    model.minBounds = minBounds.x == std::numeric_limits<float>::max() ? glm::vec3(0.0f) : minBounds;
-    model.maxBounds = maxBounds.x == std::numeric_limits<float>::lowest() ? glm::vec3(0.0f) : maxBounds;
 
     // ----- Nodes ------------------------------------------------------------
     model.nodes.resize(input.nodes.size());
     for (size_t i = 0; i < input.nodes.size(); ++i) {
         const tinygltf::Node &src = input.nodes[i];
-        GlTFNode &dst = model.nodes[i];
+        ModelNode &dst = model.nodes[i];
         dst.name = src.name;
         dst.transform = nodeTransform(src);
         dst.meshIndex = src.mesh;
@@ -352,42 +390,25 @@ GlTFModel loadGlTF(const std::string &path)
             }
         }
     }
-    for (int root : input.scenes.empty() ? std::vector<int>{} : input.scenes[0].nodes) {
-        if (root >= 0 && root < static_cast<int>(input.nodes.size())) {
-            model.rootNodes.push_back(root);
+    if (!input.scenes.empty()) {
+        for (int root : input.scenes[0].nodes) {
+            if (root >= 0 && root < static_cast<int>(input.nodes.size())) {
+                model.rootNodes.push_back(root);
+            }
         }
     }
     if (model.rootNodes.empty()) {
-        for (size_t i = 0; i < model.nodes.size(); ++i) {
-            bool isChild = false;
-            for (const GlTFNode &node : model.nodes) {
-                if (std::find(node.children.begin(), node.children.end(), static_cast<int>(i)) != node.children.end()) {
-                    isChild = true;
-                    break;
-                }
+        std::vector<bool> isChild(model.nodes.size(), false);
+        for (const ModelNode &node : model.nodes) {
+            for (int child : node.children) {
+                if (child >= 0 && child < static_cast<int>(model.nodes.size())) isChild[child] = true;
             }
-            if (!isChild) model.rootNodes.push_back(static_cast<int>(i));
+        }
+        for (size_t i = 0; i < model.nodes.size(); ++i) {
+            if (!isChild[i]) model.rootNodes.push_back(static_cast<int>(i));
         }
     }
+
+    model.recomputeBounds();
     return model;
-}
-
-std::vector<glm::mat4> computeNodeWorldMatrices(const GlTFModel &model)
-{
-    std::vector<glm::mat4> world(model.nodes.size(), glm::mat4(1.0f));
-    std::vector<bool> visited(model.nodes.size(), false);
-
-    std::function<void(int, const glm::mat4 &)> visit = [&](int index, const glm::mat4 &parent) {
-        if (index < 0 || index >= static_cast<int>(model.nodes.size())) return;
-        if (visited[index]) return;
-        visited[index] = true;
-        world[index] = parent * model.nodes[index].transform;
-        for (int child : model.nodes[index].children) {
-            visit(child, world[index]);
-        }
-    };
-    for (int root : model.rootNodes) {
-        visit(root, glm::mat4(1.0f));
-    }
-    return world;
 }

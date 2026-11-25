@@ -5,7 +5,7 @@
 #include <stdexcept>
 #include <iostream>
 
-// STB_IMAGE_IMPLEMENTATION is compiled once in GlTFLoader.cpp (which also
+// STB_IMAGE_IMPLEMENTATION is compiled once in GltfModelLoader.cpp (which also
 // vendors tinygltf); this TU only needs the declarations.
 #include "stb_image.h"
 

@@ -30,7 +30,7 @@
 
 #include "Camera.h"
 #include "GLFWwindow.h"
-#include "GlTFLoader.h"
+#include "ModelLoader.h"
 #include "RenderCommon.h"
 
 #include "AttachmentDetailConfig.h"
@@ -74,48 +74,40 @@ constexpr float kTargetHeight = 2.0f;
 // normalises the whole mesh to a fixed height around the origin.
 std::vector<Vertex> loadMesh(const std::string &path)
 {
-    const GlTFModel model = loadGlTF(path);
+    const Model model = loadModel(path);
     if (!model.valid()) {
         throw std::runtime_error("stencil: " + path + " produced no geometry");
     }
-    const std::vector<glm::mat4> world = computeNodeWorldMatrices(model);
 
     std::vector<Vertex> vertices;
     glm::vec3 low(std::numeric_limits<float>::max());
     glm::vec3 high(std::numeric_limits<float>::lowest());
 
-    for (size_t nodeIndex = 0; nodeIndex < model.nodes.size(); ++nodeIndex) {
-        const GlTFNode &node = model.nodes[nodeIndex];
-        if (node.meshIndex < 0 || node.meshIndex >= static_cast<int>(model.meshes.size())
-            || nodeIndex >= world.size()) {
-            continue;
-        }
-        const glm::mat4 &transform = world[nodeIndex];
+    // forEachMeshInstance walks the node hierarchy; this only describes one
+    // (node, primitive) pair.
+    forEachMeshInstance(model, [&](const glm::mat4 &transform, int, const Mesh &, const Primitive &primitive) {
         const glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(transform)));
 
-        for (const GlTFPrimitive &primitive : model.meshes[node.meshIndex].primitives) {
-            glm::vec3 tint(1.0f);
-            if (primitive.materialIndex >= 0
-                && primitive.materialIndex < static_cast<int>(model.materials.size())) {
-                tint = glm::vec3(model.materials[primitive.materialIndex].baseColorFactor);
-            }
-            for (uint32_t i = primitive.firstIndex;
-                 i < primitive.firstIndex + primitive.indexCount && i < model.indices.size(); ++i) {
-                const uint32_t index = model.indices[i];
-                if (index >= model.vertices.size()) {
-                    continue;
-                }
-                const GlTFVertex &src = model.vertices[index];
-                Vertex vertex;
-                vertex.position = glm::vec3(transform * glm::vec4(src.position, 1.0f));
-                vertex.normal = glm::normalize(normalMatrix * src.normal);
-                vertex.color = src.color * tint;
-                vertices.push_back(vertex);
-                low = glm::min(low, vertex.position);
-                high = glm::max(high, vertex.position);
-            }
+        glm::vec3 tint(1.0f);
+        if (primitive.materialIndex >= 0 && primitive.materialIndex < static_cast<int>(model.materials.size())) {
+            tint = glm::vec3(model.materials[primitive.materialIndex].baseColorFactor);
         }
-    }
+        for (uint32_t i = primitive.firstIndex;
+             i < primitive.firstIndex + primitive.indexCount && i < model.indices.size(); ++i) {
+            const uint32_t index = model.indices[i];
+            if (index >= model.vertices.size()) {
+                continue;
+            }
+            const MeshVertex &src = model.vertices[index];
+            Vertex vertex;
+            vertex.position = glm::vec3(transform * glm::vec4(src.position, 1.0f));
+            vertex.normal = glm::normalize(normalMatrix * src.normal);
+            vertex.color = src.color * tint;
+            vertices.push_back(vertex);
+            low = glm::min(low, vertex.position);
+            high = glm::max(high, vertex.position);
+        }
+    });
 
     const glm::vec3 span = high - low;
     const float maxSpan = std::max({span.x, span.y, span.z, 0.0001f});
@@ -160,10 +152,13 @@ void test(int argc, char **argv)
     uint32_t resizeAfter = 0;
     uint32_t dumpAfter = 0;
     float outlineWidth = 0.035f;
+    std::string modelPath = PROJECT_ROOT_PATH "/data/models/suzanne.gltf";
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--dump") {
             dumpOnce = true;
+        } else if (arg == "--model" && i + 1 < argc) {
+            modelPath = argv[++i];
         } else if (arg == "--no-fill") {
             noFill = true;
         } else if (arg == "--clear-mid") {
@@ -186,9 +181,8 @@ void test(int argc, char **argv)
     auto mgr = RenderManager::Create(window, MAX_FRAMES_IN_FLIGHT);
 
     // ---- geometry ---------------------------------------------------------
-    const std::vector<Vertex> vertices =
-        loadMesh(PROJECT_ROOT_PATH "/data/models/suzanne.gltf");
-    std::cout << "[stencil] suzanne " << vertices.size() << " expanded vertices, outline width "
+    const std::vector<Vertex> vertices = loadMesh(modelPath);
+    std::cout << "[stencil] " << modelPath << " -> " << vertices.size() << " expanded vertices, outline width "
               << outlineWidth << std::endl;
 
     // ---- one descriptor layout / one asset shared by both pipelines -------

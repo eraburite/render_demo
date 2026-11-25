@@ -14,7 +14,7 @@
 
 #include "Camera.h"
 #include "GLFWwindow.h"
-#include "GlTFLoader.h"
+#include "ModelLoader.h"
 #include "KtxLoader.h"
 #include "RenderCommon.h"
 
@@ -42,7 +42,7 @@ struct EngineModel {
 // Centre the mesh, fit it into a ~2 unit box and expand the indices into a
 // plain vertex stream so the draw needs no index buffer -- same conversion as
 // the gltf examples.
-EngineModel toEngineModel(const GlTFModel &gltf)
+EngineModel toEngineModel(const Model &gltf)
 {
     const glm::vec3 extent = gltf.maxBounds - gltf.minBounds;
     const float maxExtent = std::max({extent.x, extent.y, extent.z, 0.0001f});
@@ -51,7 +51,7 @@ EngineModel toEngineModel(const GlTFModel &gltf)
 
     std::vector<Vertex> source;
     source.reserve(gltf.vertices.size());
-    for (const GlTFVertex &src : gltf.vertices) {
+    for (const MeshVertex &src : gltf.vertices) {
         Vertex dst;
         dst.position = (src.position - center) * scale;
         dst.normal = src.normal;
@@ -109,7 +109,7 @@ void test(int argc, char **argv)
     const uint32_t layerCount = ktx.layers;
     TextureImageSpec arraySpec = ktx.imageSpec();
 
-    GlTFModel gltf = loadGlTF(PROJECT_ROOT_PATH "/data/models/sphere.gltf");
+    Model gltf = loadModel(PROJECT_ROOT_PATH "/data/models/sphere.gltf");
     if (!gltf.valid()) {
         throw std::runtime_error("texturearray: no triangle geometry in sphere.gltf");
     }

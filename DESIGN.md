@@ -95,7 +95,10 @@ render_demo/
 │   │   ├── AttachmentDetailConfig.h    # Simple/GBuffer/SubpassDeferred 附件配置 + DependencyPreset + StencilAttachmentSpec
 │   │   ├── DebugViewMode.h             # 调试视图枚举 + push constant + 按键状态（见 13.2）
 │   │   ├── ImageDump.h/.cpp            # 中间结果编码 + PPM 存盘 + --capture/--view 解析（见 13.4）
-│   │   ├── GlTFLoader.h/.cpp           # tinygltf 之上的纯 CPU glTF 解析（见 14.2）
+│   │   ├── ModelAsset.h/.cpp           # 加载器中立的数据层：MeshVertex/Material/Primitive/Mesh/ModelNode/Model（见 18）
+│   │   ├── ModelLoader.h/.cpp          # IModelLoader + 注册表 + 统一后处理链（见 18.2）
+│   │   ├── GltfModelLoader.h/.cpp      # glTF/GLB 加载器（tinygltf + stb_image 的唯一实现 TU）
+│   │   ├── ObjModelLoader.h/.cpp       # OBJ/MTL 加载器（tiny_obj_loader，见 18.4）
 │   │   ├── KtxLoader.h/.cpp            # KTX 1.0 解析（RGBA8/R16，cube/array/3D，见 15.2）
 │   │   └── VertexInputStateConfig.h    # Vertex / VertexInputAtlas
 │   ├── simplest/{test1.cpp,shader/}
@@ -110,6 +113,7 @@ render_demo/
 │   │                                                       # 纹理家族迁移（test14..test18，见 15）
 │   ├── subpasses/{test19.cpp,shader/}                       # 三 subpass 延迟+透明（见 16）
 │   └── stencil/{test20.cpp,shader/}                         # stencil 描边（见 17）
+├── tools/gltf2obj.py               # glTF -> OBJ 导出，用于生成往返验证资源（见 18.5）
 └── build_vs/                       # Visual Studio 构建目录（含各示例可执行程序）
 ```
 
@@ -785,7 +789,7 @@ dstAccess = MemoryRead | ColorRead | ColorWrite | DepthStencilAttachmentWrite
 | 扩展 | `src/SecondaryCommandBuffer.h` | `SecondaryRecorder`：per-thread command pool + secondary buffer + 独立绑定缓存 + viewport/scissor 设置 |
 | 扩展 | `src/IRenderPass.h` + `BasicRenderPass` + `LoopSequence::recordPass` | 可选 `vk::SubpassContents`（默认 eInline），支持 secondary buffer 执行 |
 | 缺陷 | `src/RenderManager::CreatePipeline` | index buffer 的 `elementType` 由 `eCustom` 改为 `vertexInput->indexType()`，修复索引绘制抛异常 |
-| 示例 | `examples/common/GlTFLoader.*` | tinygltf 之上的纯 CPU glTF 解析（顶点/索引/节点矩阵/材质/纹理） |
+| 示例 | `examples/common/GltfModelLoader.*` | tinygltf 之上的纯 CPU glTF 解析（顶点/索引/节点矩阵/材质/纹理）；加载器抽象与 OBJ 通路见 18 |
 | 示例 | `test7..test13` | 迁移 7 个示例：geometryshader / tessellation / deferred / terraintessellation / gltfloading / gltfscenerendering / multithreading（见 14） |
 | 扩展 | `src/typedefs.h` | `TextureImageSpec` 增加 `depth/layers/faces/format/mipsInData/addressMode`，视图类型由维度推导（见 15.2） |
 | 结构 | `src/TextureImage.h/.cpp`（原 `TextureImage2D`） | 泛化为 2D / 2D array / cube / cube array / 3D；上传分「GPU 生成 mip」与「按子资源拷贝预烘焙 mip」两条路径 |
@@ -835,6 +839,12 @@ dstAccess = MemoryRead | ColorRead | ColorWrite | DepthStencilAttachmentWrite
 | 缺陷 | `src/ImageReadback.cpp` | 回读组合深度模板图像时 barrier 的 `aspectMask` 必须含 DEPTH\|STENCIL（VUID 03320），而 copy region 只能含一个 aspect（VUID 00188）；两者拆成独立参数 |
 | 扩展 | `examples/common/ImageDump.h/.cpp` | `DumpResult::rgb8` 暴露写进 PPM 的字节，示例可直接做像素级断言 |
 | 示例 | `test20` + `examples/stencil/shader/` | stencil 描边：两条管线共享一个 asset（四组 stage key），`--dump` 同时抓交换链帧与 S8 平面（见 17） |
+| 重构 | `examples/common/ModelAsset.h/.cpp`（新增） | 原 `GlTFVertex/GlTFMaterial/GlTFModel` 等改为加载器中立的 `MeshVertex/Material/Primitive/Mesh/ModelNode/Model`；`Primitive::attributes` 如实声明文件里到底有哪些属性（见 18.1） |
+| 重构 | `examples/common/ModelLoader.h/.cpp`（新增） | `IModelLoader` + `ModelLoaderRegistry` + 统一后处理链（去重/法线/切线/V 翻转/变换），格式数 N 与修复项 M 从 N×M 降为 N+M（见 18.2） |
+| 重构 | `examples/common/GltfModelLoader.h/.cpp`（原 `GlTFLoader.*`） | 改成 `IModelLoader` 实现；顺带修掉贴图相对路径按**工作目录**解析的旧缺陷，改为按模型目录解析 |
+| 新增 | `examples/common/ObjModelLoader.h/.cpp` | OBJ/MTL 加载器，直接复用 `external/tiny_obj_loader.h`；证明新增格式只需一个类 + 一次注册（见 18.4） |
+| 工具 | `tools/gltf2obj.py` | glTF → OBJ 导出（烘焙节点变换、翻转 V、保留 float 精度），用于生成往返验证资源（见 18.5） |
+| 结构 | `examples/common/ModelAsset.*` + `test19` + `test20` | `forEachMeshInstance()` 取代两处手写的节点递归，示例只描述"一个 (节点, primitive) 怎么处理" |
 
 ---
 
@@ -853,7 +863,10 @@ dstAccess = MemoryRead | ColorRead | ColorWrite | DepthStencilAttachmentWrite
 | `AttachmentDetailConfig.h` | `SimpleAttachmentDetail`（3 种依赖预设）与 `GBufferAttachmentDetail` |
 | `DebugViewMode.h` | 调试视图枚举 / 32 B push constant / 数字键边沿触发状态；header-only 且不依赖 GLFW（按键查询以回调注入），详见 13.2 |
 | `ImageDump.h/.cpp` | 中间结果 → PPM 的编码与存盘、`DumpResult` 统计量、`--capture` / `--view` 命令行解析，详见 13.4 |
-| `GlTFLoader.h/.cpp` | tinygltf 之上的纯 CPU glTF 解析：顶点/索引/节点世界矩阵/材质/纹理，详见 14.2 |
+| `ModelAsset.h/.cpp` | 加载器中立的模型数据层（顶点/索引/材质/节点/纹理 + 实例遍历），详见 18.1 |
+| `ModelLoader.h/.cpp` | `IModelLoader` / 注册表 / 共享后处理链，详见 18.2 |
+| `GltfModelLoader.h/.cpp` | glTF/GLB 加载器：顶点/索引/节点世界矩阵/材质/纹理，详见 14.2 |
+| `ObjModelLoader.h/.cpp` | OBJ/MTL 加载器，详见 18.4 |
 | `VertexInputStateConfig.h` | `Vertex` 结构、`VertexComponent` 与属性表、`VertexInputAtlas` |
 
 **纹理坐标约定（Vulkan）**：Vulkan 图像与 stb_image 都把第 0 行存在顶部，采样时 UV `(0,0)` 对应左上角 texel。因此 `loadTexture()` 不做垂直翻转，shader 里也不对 V 取反；`CubeVertices` 的 36 个顶点统一按「从面外看 `(0,0)` 在左上角」排布（±Z/±Y 面 V 向下增大，±X 面 U 沿 Z、V 沿 Y，−Y 面 +Z 为上）。若误用 OpenGL 风格 UV（V=0 在几何底部），贴图会上下颠倒；±X 面还会因 U/V 互换而旋转 90°。offscreen 的全屏三角形同样依赖这个约定：NDC `(−1,−1)`（屏幕左上）对应 `uv=(0,0)`，直接采样 offscreen attachment 的左上 texel，无需翻转。
@@ -987,6 +1000,12 @@ cmake --build build -j
 ./build/examples/stencil/stencil --dump --ref 2        # 改 dynamic reference，NOT_EQUAL 全部通过
 ./build/examples/stencil/stencil --dump --resize-after 20 --dump-after 45  # resize 后再抓，验证附件重建
 
+# 模型加载（见 18）：同一个 loadModel()，扩展名决定走哪个加载器
+./build/examples/gltfloading/gltfloading --model data/models/plane.gltf
+./build/examples/gltfloading/gltfloading --model data/models/plane.obj   # OBJ 通路
+./build/examples/stencil/stencil --dump --model data/models/plane.obj    # 两个格式的 dump 应逐字节一致
+python tools/gltf2obj.py data/models/deer.gltf /tmp/deer.obj             # 用官方脚本导出新 OBJ
+
 # 调试：数字键切换通道视图，P 存盘；也可脚本化（见 13.6）
 ./build/examples/gbuffer/gbuffer --view 2            # 直接进 normal 视图
 ./build/examples/gbuffer/gbuffer --capture 30        # 跑 30 帧后存盘并退出
@@ -1009,7 +1028,7 @@ stencil 示例还会单独抓一张 `0001_stencil-mask.ppm`：它是 depth-stenc
 
 - `globalConfig`：唯一提供 include 目录与 glfw/Vulkan 链接的接口目标。
 - `myEngine`：`src/*.cpp`（GLOB）静态库，历史实现已从构建中排除。
-- `example_common`：`GLFWwindow.cpp`、`TextureLoader.cpp`、`GlTFLoader.cpp`（唯一编译 stb/tinygltf 实现的 TU）、`KtxLoader.cpp`（KTX 解析，见 15.2）、`ImageDump.cpp`、`glm.cpp`（只编译一次）。
+- `example_common`：`GLFWwindow.cpp`、`TextureLoader.cpp`、`GltfModelLoader.cpp`（唯一编译 stb/tinygltf 实现的 TU）、`ObjModelLoader.cpp`（唯一编译 tiny_obj_loader 的 TU）、`ModelAsset.cpp`、`ModelLoader.cpp`、`KtxLoader.cpp`（KTX 解析，见 15.2）、`ImageDump.cpp`、`glm.cpp`（只编译一次）。
 - `add_render_example(target source shader_target [generated headers...])`：统一示例可执行配置，生成的 shader 头显式列为依赖，保证干净构建目录也能触起着色器编译。
 - `cmake/vulkan_shader_compiler.cmake`：自定义目标名按输出 `.spv` 的完整路径唯一化（曾因两个示例都编译 `shader/mesh.vert` 而让全新 configure 失败，见 15.5）；`glslangValidator` 编译 `.vert/.frag/.comp/.geom/.tesc/.tese` → `.spv`，再由 `bin_file_to_header.cmake` 转成 `.hpp`。这两步写在**同一条** `add_custom_command` 里（`.spv` 与 `.hpp` 同时是 OUTPUT），因为 CMake 生成器（MSBuild）在同一轮构建里先判定 `CustomBuild` 批次的输出是否最新：拆成两条链式命令时，头文件的新旧判定发生在 `.spv` 被重写之前，于是改完 shader 需要**构建两次**头文件才会更新——第一次只重编 `.spv`，可执行文件里仍是旧 SPIR-V，表现为「改了 shader 但画面完全没变」（本轮排查 offscreen 的灰色立方体、particle 的空画面就是这个坑）。
 
@@ -1052,6 +1071,7 @@ stencil 示例还会单独抓一张 `0001_stencil-mask.ppm`：它是 depth-stenc
 | 交换链图像回读 | ✅ 已实现（见 16.2 / 17）：swapchain 申请了 `eTransferSrc`，`LoopSequence::getImageIndex()` 定位当前帧，`--dump` 可抓合成后的交换链帧；S8 平面回读见 17.4 |
 | 深度通道导出 | G-Buffer 与 offscreen 的深度 `storeOp = DontCare`，内容不留存，因此没有深度 PPM；深度用 position 通道反推（`eLinearDepth`） |
 | 回读阻塞 | `ImageReadback::capture()` 提交后同步等 fence，一次 capture 会停顿一个 copy 的时长（2048² RGBA32F 约 64 MB），仅适合手动/脚本触发的调试 |
+| 模型格式 | 已支持 glTF/GLB 与 OBJ/MTL，新格式只需一个 `IModelLoader` 实现 + 一次注册（见 18）；`Model` 目前**没有蒙皮/形变字段**，骨骼动画类示例（skinning/morph）暂不可迁移 |
 
 ---
 
@@ -1066,7 +1086,7 @@ stencil 示例还会单独抓一张 `0001_stencil-mask.ppm`：它是 depth-stenc
 | 资源与管线 | 9 组 | 资源聚合/两种管线/渲染通道/句柄 | `ShaderAssetGroup`、`GraphicsPipeline`、`ComputePipeline`、`BasicRenderPass`、`VulkanHandle` |
 | 设备资源 | 9 组 | 分配器/缓冲/纹理/输入附件/附件/工具 | `DeviceMemoryAllocator`、`BufferObject`、`TextureImage`、`TextureSamplerCombine`、`InputAttachmentView`、`ImageAttachment` |
 | 配置接口 | 4 个 | 顶点/附件/描述符/compute 配置抽象 | `IVertexInputStateGroup`、`IAttachmentDetail`、`IDescriptorSetDetail`、`ComputeLayoutConfig.h` |
-| 示例公共 | 18 个 | 窗口/相机/几何/纹理/KTX/配置表/glTF 加载 | `examples/common/*`（含 `GlTFLoader`、`KtxLoader`） |
+| 示例公共 | 21 个 | 窗口/相机/几何/纹理/KTX/配置表/模型数据层与加载器 | `examples/common/*`（含 `ModelAsset`、`ModelLoader`、`GltfModelLoader`、`ObjModelLoader`、`KtxLoader`） |
 
 ### 9.2 已实施的优化
 
@@ -1509,7 +1529,7 @@ P6
 | --- | --- |
 | `VulkanExampleBase` 基类 + `VULKAN_EXAMPLE_MAIN()` | `test()` + `main()` try/catch，窗口与 `RenderManager::Create` 组合 |
 | `vks::initializers::*`（约 30 个 create-info 助手） | `DescriptorLayoutAtlas::makeSet` / `SimpleAttachmentDetail` / `GraphicsPipelineConfig` |
-| `vkglTF::Model::loadFromFile()`（68 KB 加载器） | `GlTFLoader`（纯 CPU 解析，输出 POD；上传仍走 `ShaderAssetGroup`） |
+| `vkglTF::Model::loadFromFile()`（68 KB 加载器） | `loadModel()` + `IModelLoader` 注册表（纯 CPU 解析，输出 POD；上传仍走 `ShaderAssetGroup`，见 18） |
 | `drawCmdBuffers[]` + `submitInfo` + 信号量数组 | `LoopSequence::recordPass()` / `submitFrame()` / `presentFrame()` |
 | `loadShader(getShadersPath()+...)` | `vulkan_compile_shader()` 在构建期把 GLSL 编成 `shader/xxx_yyy.hpp` 中的 SPIR-V 数组 |
 
@@ -1537,21 +1557,23 @@ P6
 
 `DeviceRequirement` 增加 `geometryShader` / `tessellationShader` / `fillModeNonSolid` / `samplerAnisotropy`（默认只开各向异性）。`RenderManager::Create(window, frames, requirement)` 把请求透传到设备筛选与 `vkCreateDevice`。`PhysicalDeviceUtils::checkDeviceSuitable` 只检查**被请求**的特性，所以旧示例的设备选择结果不变。请求未被满足时在构造期抛错，而不是留下一个运行时 validation error。
 
-**③ glTF 加载器（`examples/common/GlTFLoader.h/.cpp`）**
+**③ 模型加载器（`examples/common/{ModelLoader,GltfModelLoader,ObjModelLoader}.*`，见 18）**
 
-`tinygltf/json.hpp` 与 `tiny_gltf.h` 作为 header-only vendored 到 `external/tinygltf/`（MIT）。加载器刻意停在**纯 CPU 数据层**：
+`tinygltf/json.hpp` 与 `tiny_gltf.h` 作为 header-only vendored 到 `external/tinygltf/`（MIT），OBJ 走 `external/tiny_obj_loader.h`。加载器刻意停在**纯 CPU 数据层**：
 
 ```cpp
-GlTFModel m = loadGlTF(PROJECT_ROOT_PATH "/data/models/deer.gltf");
+Model m = loadModel(PROJECT_ROOT_PATH "/data/models/deer.gltf"); // 扩展名决定用哪个加载器
 // m.vertices / m.indices / m.meshes[].primitives / m.materials / m.images
 // computeNodeWorldMatrices(m) -> 每个节点的世界矩阵
+// forEachMeshInstance(m, fn)  -> 按场景顺序遍历 (节点, mesh, primitive)
 ```
 
-- 所有 primitive 展开进**单一**顶点/索引缓冲，draw 简化为 `(firstIndex, indexCount)`；引擎完全不知道 glTF 的存在。
+- 所有 primitive 展开进**单一**顶点/索引缓冲，draw 简化为 `(firstIndex, indexCount)`；引擎完全不知道文件格式的存在。
+- 属性补齐（去重 / 法线 / 切线 / V 翻转 / 变换）**不在加载器里**，由注册表统一执行一次，见 18.2。
 - 正确处理 `byteStride`（交错属性）、`uint8/16/32` 索引、TRS 与显式 `matrix` 节点、归一化整数属性。
-- 纹理通过 stb_image 解码为 RGBA8；stb 实现集中在 `GlTFLoader.cpp` 一个 TU（`TextureLoader.cpp` 只 include 声明），避免重复符号。
+- 纹理通过 stb_image 解码为 RGBA8，相对路径按**模型所在目录**解析；stb 实现集中在 `GltfModelLoader.cpp` 一个 TU（`TextureLoader.cpp` 只 include 声明），避免重复符号。
 
-**一个 stb 陷阱**：v2.21 的实现部分位于 include guard **之外**，同一 TU 内 include 两次会重复定义全部符号。`tiny_gltf.h` 内部会 `#include "stb_image.h"`，因此 `GlTFLoader.cpp` 不再自己 include 它——只靠 tinygltf 的那一次 include 同时提供声明与唯一实现。
+**一个 stb 陷阱**：v2.21 的实现部分位于 include guard **之外**，同一 TU 内 include 两次会重复定义全部符号。`tiny_gltf.h` 内部会 `#include "stb_image.h"`，因此 `GltfModelLoader.cpp` 不再自己 include 它——只靠 tinygltf 的那一次 include 同时提供声明与唯一实现。`ObjModelLoader.cpp` 只 include 声明（`STB_IMAGE_IMPLEMENTATION` 不定义），因此仍只有一份实现。
 
 **④ Secondary command buffer（`src/SecondaryCommandBuffer.h`）**
 
@@ -2025,3 +2047,145 @@ outline 7838（1.28%），VUID 仍为 0 —— 声明层的附件重建链是通
 | `separateDepthStencilLayouts` | 未启用 | 未启用 | 因此 barrier 必须同时含 DEPTH\|STENCIL；若将来启用该特性，17.4 的两条约束可以合并 |
 
 仍待覆盖的能力见 15.7：独立 sampler、查询池、多视口、多 vertex binding。
+
+---
+
+## 18. 模型加载重构（加载器中立 + 可插拔格式）
+
+### 18.1 为什么必须先改数据层
+
+重构前的加载器只有一个，但它的**类型名就是格式名**：`GlTFModel`、`GlTFVertex`、`GlTFMaterial`、`GlTFPrimitive`、`GlTFNode`、`GlTFMesh`、`GlTFImage`，散在 11 个示例的 50 多处引用里。想接入第二种格式，只有两条路：
+
+| 方案 | 后果 |
+| --- | --- |
+| 复制一份 `ObjModel`/`ObjVertex` | 示例无法共用渲染代码，每个新格式都要再抄一遍顶点上传 |
+| 让 OBJ 加载器返回 `GlTFModel` | 类型名撒谎，读代码的人会去翻 glTF 规范找一个 OBJ 根本没有的字段 |
+
+两条都会随时间腐化，所以先把**数据层**中立化，再谈加载器抽象。新名字与旧名字一一对应（`test19`/`test20` 的 `SceneMesh`/`EngineModel` 等示例私有类型不受影响）：
+
+| 旧 | 新 | 说明 |
+| --- | --- | --- |
+| `GlTFVertex` | `MeshVertex` | 全字段浮点布局，含 position/normal/texCoord/tangent/color |
+| `GlTFMaterial` | `Material` | `alphaMode` 从 `int` 改成 `AlphaMode` 枚举 |
+| `GlTFPrimitive` | `Primitive` | 新增 `attributes` 位掩码（见下） |
+| `GlTFMesh` | `Mesh` | |
+| `GlTFNode` | `ModelNode` | 不叫 `SceneNode`：`test13` 已有一个同名的示例私有节点类型 |
+| `GlTFImage` | `TextureImage` | 新增 `name`，便于日志定位 |
+| `GlTFModel` | `Model` | 新增 `triangleCount()` / `instanceCount()` / `recomputeBounds()` |
+
+**`Primitive::attributes` 是这次重构里唯一"新增语义"的字段**，也是后面所有自动修复的前提。统一成一种顶点格式后，"文件里没有法线"和"文件里的法线恰好是默认值"在数据上无法区分：`MeshVertex::normal` 默认 `(0,0,0)`，可 `tangent` 的默认值 `(1,0,0)` 完全可能是真的。没有这个位掩码，后处理只有两个选择——全部重算（丢掉文件里的硬边法线）或全部不重算（OBJ 缺法线的模型渲染成一团黑）。
+
+```cpp
+namespace VertexAttribute {
+inline constexpr uint32_t ePosition = 1u << 0;
+inline constexpr uint32_t eNormal   = 1u << 1;
+inline constexpr uint32_t eTangent  = 1u << 2;
+inline constexpr uint32_t eTexCoord = 1u << 3;
+inline constexpr uint32_t eColor    = 1u << 4;
+}
+```
+
+顺带把两处手写的节点递归（`test19::mergeModel`、`test20::loadMesh`）换成 `forEachMeshInstance(model, fn)`：回调收到 `(worldMatrix, nodeIndex, mesh, primitive)`，示例只写"一个 (节点, primitive) 该怎么处理"，不再重复实现 DFS 与环检测。`computeNodeWorldMatrices()` 也改成显式栈，避免深层嵌套的畸形文件打爆默认 1 MB 栈。
+
+### 18.2 三层分工：loader / 后处理 / 注册表
+
+```
+IModelLoader          一个格式一个类，只做「字节 -> Model」，不做任何修复
+      ↓
+post-process chain    去重 / 生成法线 / 生成切线 / V 翻转 / 缩放居中，全局共享一份
+      ↓
+ModelLoaderRegistry   按扩展名选 loader，调用 load()，再跑后处理链
+```
+
+把后处理放在**注册表外层**而不是各 loader 内部，是本轮唯一真正重要的架构决定。理由是可数的：格式数 N、修复项 M，写在 loader 里就是 N×M 份组合，外加 M 个 bug 要修 N 次；写在外层是 N+M，而且新格式**零成本**继承整条链——`ObjModelLoader` 全文没有一行去重或法线生成的代码，却拿到了全部能力。
+
+`ModelLoadOptions` 用三态 `Toggle{eAuto,eOn,eOff}` 而不是 `bool`，因为"该不该去重"是**格式相关**的：glTF 的 primitive 本来就索引化，OBJ 的面流是完全炸开的。`eAuto` 让 loader 通过 `defaultPlan()` 推荐，调用方可以强行覆盖：
+
+| 选项 | 默认 | glTF 推荐 | OBJ 推荐 |
+| --- | --- | --- | --- |
+| `deduplicate` | `eAuto` | on | on |
+| `flipTexCoordV` | `eAuto` | off（glTF 原点在左上，与 Vulkan 一致） | **on**（OBJ/MTL 原点在左下） |
+| `generateNormals` | `eAuto` | on（属性缺失时才算） | on |
+| `generateTangents` | `eAuto` | on | on |
+
+执行顺序有硬性依赖，写死在 `ModelLoaderRegistry::load()` 里并加注释：
+
+1. **去重**——必须在属性生成之前，否则新生成的属性会让文件里本应合并的顶点变得不同
+2. **V 翻转**——必须在切线生成之前，切线由 UV 导数求得
+3. **法线**——必须在切线之前，切线要对法线做 Gram-Schmidt 正交化
+4. **变换**（缩放/居中/归一化）——最后，只动位置不动拓扑
+
+### 18.3 去重的三个约束（比参考实现多出来的复杂度）
+
+参考实现 `28_model_loading.cpp` 的做法是 `std::unordered_map<Vertex, uint32_t>` 全局去重 + 浮点位模式 hash，在"单个 shape、单材质、无节点变换"的场景里足够。放到本框架的多格式、多 primitive、带场景图的语境里会踩三处：
+
+| 约束 | 违反的后果 | 本实现 |
+| --- | --- | --- |
+| **必须在属性生成之前** | 先补法线再去重，两个原本相同的顶点会因为各自累加的面法线不同而无法合并，去重退化成空操作 | 顺序写死（见 18.2） |
+| **必须逐 primitive 独立** | 跨 primitive 共享顶点时，A 的"生成法线"会写进同时被 B 引用、且 B 自带法线的顶点，硬边被抹平 | 每个 primitive 一个私有窗口，`firstIndex/indexCount` 语义完全不变 |
+| **必须比较量化值而非位模式** | `-0.0f` 与 `+0.0f` 位不同但相等；经过一次矩阵往返后末位比特会抖，本该合并的顶点漏合 | 14 个分量各自 `llround(v * 1e6)` 后比较 |
+
+代价是每个 primitive 会复制少量边界顶点。这是刻意的取舍：primitive 私有窗口让"属性生成"可以放心地按 primitive 批量写，不必担心污染邻接数据，而这个性质比省下的几十个字节值钱得多。
+
+### 18.4 OBJ 加载器：扩展性的一次实证
+
+`ObjModelLoader` 全文约 250 行，除了解析本身，没有一行涉及去重、法线、切线、变换——全部由共享链提供。注册只需要在注册表构造函数里加一句。
+
+解析上有四处与参考实现不同，都是"框架比单文件示例要求更多"所致：
+
+| 点 | 参考 `28_model_loading.cpp` | 本实现 | 原因 |
+| --- | --- | --- | --- |
+| 顶点去重键 | 浮点位模式 hash | `(vertex_index, texcoord_index, normal_index)` 三元组 | OBJ 本来就是三路索引，用索引组合是**精确**的，也更快；浮点 hash 在坐标恰好相同时才等价 |
+| 材质分段 | 不处理（单材质） | 按 `material_ids` 的**连续相同段**切 primitive | 一个 `Primitive` 只能有一个材质；按连续段而非 map 分组，输出顺序与文件一致 |
+| V 轴 | 解析时直接 `1.0f - v` 硬写 | 交给 `defaultPlan().flipTexCoordV` | 翻转是**采样约定**问题，不是解析问题；调用方可能用别的纹理系统 |
+| 纹理路径 | 无 | `baseDirectory` 解析 mtl 与贴图 | mtl 里的贴图名是相对路径，参考实现依赖工作目录 |
+
+MTL → `Material` 的映射（MLT 是 Phong 模型，与 PBR 字段没有一一对应）：
+
+| MTL | Material | 说明 |
+| --- | --- | --- |
+| `Kd` | `baseColorFactor.rgb` | |
+| `d`（dissolve） | `baseColorFactor.a` + `alphaMode` | `< 0.999` 视为 `eBlend` |
+| `Ke` | `emissiveFactor` | |
+| `Ns`（shininess） | `roughnessFactor = clamp(1 - Ns/1000, 0.08, 1)` | 没有更好的信息源；MTL 的 PBR 扩展写了 `Pr` 时优先用它 |
+| `Pm`（metallic） | `metallicFactor`，缺省 **0** | 核心 MTL 没有金属度，默认非金属比默认全金属安全 |
+| `map_Kd` / `norm`+`bump` / `map_Ka` / `map_Ke` | baseColor / normal / occlusion / emissive | 贴图解码走 stb，同一路径只解一次 |
+| —— | `doubleSided = true` | OBJ 不记录绕序保证，导出器各行其是；双面比"整片消失"好 |
+
+三角化由 `LoadObj(..., triangulate=true)` 完成，多边形按扇形拆分，绕序不变。
+
+### 18.5 往返验证：同一个几何，两条通路
+
+只测"OBJ 能加载"没有意义，要测"两条通路产出**同一个东西**"。为此写了 `tools/gltf2obj.py`：读 glTF、烘焙节点世界变换、把 UV 写成 `1 - v`（OBJ 约定）、用 `%.9g` 保证 float 精确往返，输出 OBJ + MTL。
+
+| 验证 | 方法 | 结果 |
+| --- | --- | --- |
+| 顶点/索引数 | `[model]` 日志对比 | `suzanne`：glTF **7958 / 47232**，OBJ **7958 / 47232**，完全一致 |
+| 几何数值 | Python 复算烘焙后的前 3 个顶点与 bounds | 7 位小数一致，span 完全相同 |
+| 渲染结果 | `stencil --dump` 分别跑两个格式，比较 PPM 字节 | **S8 平面逐字节一致**；最终帧 921600 像素中**仅 1 个**边缘像素不同（光栅化边界抖动的浮点序） |
+| 材质通路 | `plane.obj` + `plane.mtl`（`Kd 1 1 1` / `d 1`） | 解析出 1 个材质，`tint` 与 glTF 默认值相同 |
+| 属性生成 | 日志里的 `N normal set(s) / M tangent set(s) generated` | `plane.gltf` 自带 TANGENT → 0 组生成；`plane.obj` 无切线概念 → 1 组生成 |
+
+`plane.obj` / `plane.mtl`（合计 303 B）入库作为最小回归资源；`suzanne.obj`（1.2 MB）不入库，需要时用脚本现生成。
+
+### 18.6 差异与限制
+
+| 项 | 现状 | 原因/后续 |
+| --- | --- | --- |
+| 场景图 | OBJ 每个 mesh 生成一个根节点（单位变换） | OBJ 没有层级概念；`forEachMeshInstance` 因此对两种格式行为一致 |
+| 顶点色 | OBJ 无此概念，保持白色默认，不设 `eColor` | |
+| 切线 | OBJ 无此概念，由后处理从 UV 生成 | 无 UV 的 OBJ（如 `suzanne`）不会生成，`attributes` 如实标记 |
+| 蒙皮/形变 | `Model` 里没有 joint / weight / morph target 字段 | 本框架没有骨骼动画通路；接入时按同样方式扩展 `MeshVertex` 与 `Primitive` 即可 |
+| 材质模型 | MTL 走 Phong → PBR 的经验映射 | 只能近似；真正的 OBJ PBR 扩展（`Pr`/`Pm`）已优先采用 |
+| 后处理粒度 | 属性"整 primitive 全有或全无" | 同一 primitive 里混着"有法线"和"没法线"的顶点时，选择整体重算，避免接缝 |
+| 跨 primitive 去重 | 不做 | 刻意（见 18.3）；若将来确需合并，应改为"重排索引 + 允许 primitive 共享窗口" |
+| 注册表 | 进程级单例，按扩展名线性查找 | 格式数量是 O(10) 量级，线性足够；同名扩展后注册者胜出，便于测试覆盖内置格式 |
+
+### 18.7 构建与验证状态
+
+| 项 | 结果 |
+| --- | --- |
+| 全量构建 | 20 个示例 + `myEngine` + `example_common`：**0 error / 0 warning** |
+| 运行期校验 | 20 个示例逐个冒烟：**VUID = 0 / Validation Error = 0** |
+| 回归 | 原 19 个示例的渲染输出与重构前一致（改名未触碰渲染路径；`test19`/`test20` 换了遍历写法，dump 结果不变） |
+

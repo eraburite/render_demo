@@ -20,7 +20,7 @@
 
 #include "Camera.h"
 #include "GLFWwindow.h"
-#include "GlTFLoader.h"
+#include "ModelLoader.h"
 #include "KtxLoader.h"
 #include "RenderCommon.h"
 
@@ -61,7 +61,7 @@ const char *const MODE_NAMES[5] = {
 // Center and uniformly fit the glTF into a ~2 unit box.  The index list is
 // expanded into a plain vertex stream because the engine's draw path does not
 // infer an index type from the buffer spec (same approach as gltfloading).
-std::vector<Vertex> toEngineModel(const GlTFModel &gltf)
+std::vector<Vertex> toEngineModel(const Model &gltf)
 {
     const glm::vec3 extent = gltf.maxBounds - gltf.minBounds;
     const float maxExtent = std::max({extent.x, extent.y, extent.z, 0.0001f});
@@ -70,7 +70,7 @@ std::vector<Vertex> toEngineModel(const GlTFModel &gltf)
 
     std::vector<Vertex> source;
     source.reserve(gltf.vertices.size());
-    for (const GlTFVertex &src : gltf.vertices) {
+    for (const MeshVertex &src : gltf.vertices) {
         Vertex dst;
         dst.position = (src.position - center) * scale;
         dst.normal = src.normal;
@@ -107,7 +107,7 @@ void test(int argc, char **argv)
     auto mgr = RenderManager::Create(window, MAX_FRAMES_IN_FLIGHT);
 
     // ----- Assets ---------------------------------------------------------
-    GlTFModel gltf = loadGlTF(PROJECT_ROOT_PATH "/data/models/plane.gltf");
+    Model gltf = loadModel(PROJECT_ROOT_PATH "/data/models/plane.gltf");
     if (!gltf.valid()) {
         throw std::runtime_error("parallaxmapping: no triangle geometry in plane.gltf");
     }

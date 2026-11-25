@@ -15,7 +15,7 @@
 
 #include "Camera.h"
 #include "GLFWwindow.h"
-#include "GlTFLoader.h"
+#include "ModelLoader.h"
 #include "RenderCommon.h"
 
 #include "AttachmentDetailConfig.h"
@@ -67,7 +67,7 @@ std::shared_ptr<DescriptorLayoutAtlas> makeLayout()
 
 // Convert loaded glTF vertices into the engine Vertex layout and fit the
 // model into a ~2 unit box centred at the origin (same as geometryshader).
-std::vector<Vertex> toEngineVertices(const GlTFModel &model, float &outScale)
+std::vector<Vertex> toEngineVertices(const Model &model, float &outScale)
 {
     const glm::vec3 extent = model.maxBounds - model.minBounds;
     const float maxExtent = std::max({extent.x, extent.y, extent.z, 0.0001f});
@@ -76,7 +76,7 @@ std::vector<Vertex> toEngineVertices(const GlTFModel &model, float &outScale)
 
     std::vector<Vertex> result;
     result.reserve(model.vertices.size());
-    for (const GlTFVertex &src : model.vertices) {
+    for (const MeshVertex &src : model.vertices) {
         Vertex dst;
         dst.position = (src.position - center) * outScale;
         dst.normal = src.normal;
@@ -127,7 +127,7 @@ void test(int argc, char **argv)
 
     // ----- Load model -------------------------------------------------------
     const std::string modelPath = PROJECT_ROOT_PATH "/data/models/deer.gltf";
-    GlTFModel gltf = loadGlTF(modelPath);
+    Model gltf = loadModel(modelPath);
     if (!gltf.valid()) {
         throw std::runtime_error("tessellation: failed to load " + modelPath);
     }

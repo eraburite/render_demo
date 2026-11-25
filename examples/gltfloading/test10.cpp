@@ -15,7 +15,7 @@
 
 #include "Camera.h"
 #include "GLFWwindow.h"
-#include "GlTFLoader.h"
+#include "ModelLoader.h"
 #include "RenderCommon.h"
 
 #include "AttachmentDetailConfig.h"
@@ -78,7 +78,7 @@ struct EngineModel {
 // indexed-draw path cannot infer an index type from its buffer spec, so the
 // index list is expanded into a plain vertex stream (draw instead of
 // drawIndexed) -- the geometry and every node matrix are unchanged.
-EngineModel toEngineModel(const GlTFModel &gltf)
+EngineModel toEngineModel(const Model &gltf)
 {
     const glm::vec3 extent = gltf.maxBounds - gltf.minBounds;
     const float maxExtent = std::max({extent.x, extent.y, extent.z, 0.0001f});
@@ -87,7 +87,7 @@ EngineModel toEngineModel(const GlTFModel &gltf)
 
     std::vector<Vertex> source;
     source.reserve(gltf.vertices.size());
-    for (const GlTFVertex &src : gltf.vertices) {
+    for (const MeshVertex &src : gltf.vertices) {
         Vertex dst;
         dst.position = (src.position - center) * scale;
         dst.normal = src.normal;
@@ -112,14 +112,14 @@ EngineModel toEngineModel(const GlTFModel &gltf)
 // child of node 1 (it inherits two ancestor transforms).  deer.gltf and
 // suzanne.gltf contain a single mesh node, so the extra nodes reuse that mesh
 // to make the hierarchy visible.
-void buildDemoTree(GlTFModel &gltf)
+void buildDemoTree(Model &gltf)
 {
     const int meshIndex = gltf.meshes.empty() ? -1 : 0;
     gltf.nodes.clear();
     gltf.rootNodes.clear();
 
     auto addNode = [&](const char *name, const glm::mat4 &local, int mesh, std::vector<int> children) {
-        GlTFNode node;
+        ModelNode node;
         node.name = name;
         node.transform = local;
         node.meshIndex = mesh;
@@ -163,7 +163,7 @@ void test(int argc, char **argv)
 
     // ----- Load the glTF file ---------------------------------------------
     const std::string modelPath = parseModelPath(argc, argv);
-    GlTFModel gltf = loadGlTF(modelPath);
+    Model gltf = loadModel(modelPath);
     if (!gltf.valid()) {
         throw std::runtime_error("gltfloading: no triangle geometry in " + modelPath);
     }

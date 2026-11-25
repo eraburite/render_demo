@@ -15,7 +15,7 @@
 
 #include "Camera.h"
 #include "GLFWwindow.h"
-#include "GlTFLoader.h"
+#include "ModelLoader.h"
 #include "KtxLoader.h"
 #include "RenderCommon.h"
 
@@ -59,7 +59,7 @@ struct EngineModel {
 // Same conversion as the gltf examples: centre, fit into a ~2 unit box and
 // expand the index list so the draw needs no index buffer.  The model matrix
 // applied later places/scales the result.
-EngineModel toEngineModel(const GlTFModel &gltf)
+EngineModel toEngineModel(const Model &gltf)
 {
     const glm::vec3 extent = gltf.maxBounds - gltf.minBounds;
     const float maxExtent = std::max({extent.x, extent.y, extent.z, 0.0001f});
@@ -68,7 +68,7 @@ EngineModel toEngineModel(const GlTFModel &gltf)
 
     std::vector<Vertex> source;
     source.reserve(gltf.vertices.size());
-    for (const GlTFVertex &src : gltf.vertices) {
+    for (const MeshVertex &src : gltf.vertices) {
         Vertex dst;
         dst.position = (src.position - center) * scale;
         dst.normal = src.normal;
@@ -88,9 +88,12 @@ EngineModel toEngineModel(const GlTFModel &gltf)
     return out;
 }
 
-EngineModel loadModel(const std::string &path)
+// Local helper: the engine vertex stream this example draws with, converted
+// from the loader-neutral model.  Named differently from the global
+// loadModel() so the name does not shadow it.
+EngineModel loadEngineModel(const std::string &path)
 {
-    GlTFModel gltf = loadGlTF(path);
+    Model gltf = loadModel(path);
     if (!gltf.valid()) {
         throw std::runtime_error("texturecubemap: no triangle geometry in " + path);
     }
@@ -127,11 +130,11 @@ void test(int argc, char **argv)
     }
     TextureImageSpec cubeSpec = ktx.imageSpec();
 
-    EngineModel skybox = loadModel(PROJECT_ROOT_PATH "/data/models/cube.gltf");
+    EngineModel skybox = loadEngineModel(PROJECT_ROOT_PATH "/data/models/cube.gltf");
 
     std::vector<ReflectiveObject> objects;
-    objects.push_back({"sphere", loadModel(PROJECT_ROOT_PATH "/data/models/sphere.gltf"), glm::mat4(1.0f)});
-    objects.push_back({"teapot", loadModel(PROJECT_ROOT_PATH "/data/models/teapot.gltf"), glm::mat4(1.0f)});
+    objects.push_back({"sphere", loadEngineModel(PROJECT_ROOT_PATH "/data/models/sphere.gltf"), glm::mat4(1.0f)});
+    objects.push_back({"teapot", loadEngineModel(PROJECT_ROOT_PATH "/data/models/teapot.gltf"), glm::mat4(1.0f)});
 
     // The meshes are normalised to a 2 unit box, so a unit scale gives a
     // radius of ~1; +-1.8 keeps both objects apart and inside the 45 degree
