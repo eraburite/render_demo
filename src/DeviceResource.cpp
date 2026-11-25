@@ -1,9 +1,9 @@
 #include "DeviceResource.h"
 
-#include "TextureImage2D.h"
+#include "TextureImage.h"
 #include "TextureSamplerCombine.h"
 
-void ImageViewCollector::visit(TextureImage2D &texture)
+void ImageViewCollector::visit(TextureImage &texture)
 {
     vk::ImageView view = texture.imageView();
     if (view != vk::ImageView{}) {

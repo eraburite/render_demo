@@ -170,7 +170,8 @@ ImageBundle DeviceResourceUtils::createImage(const std::shared_ptr<vk::Device> &
 std::shared_ptr<vk::ImageView> DeviceResourceUtils::createImageView(const std::shared_ptr<vk::Device> &device,
                                                                     vk::Image image, vk::Format format,
                                                                     vk::ImageAspectFlags aspect, uint32_t mipLevels,
-                                                                    vk::ImageViewType viewType)
+                                                                    vk::ImageViewType viewType,
+                                                                    uint32_t baseArrayLayer, uint32_t layerCount)
 {
     vk::ImageViewCreateInfo createInfo{};
     createInfo.image = image;
@@ -183,8 +184,8 @@ std::shared_ptr<vk::ImageView> DeviceResourceUtils::createImageView(const std::s
     createInfo.subresourceRange.aspectMask = aspect;
     createInfo.subresourceRange.baseMipLevel = 0;
     createInfo.subresourceRange.levelCount = mipLevels;
-    createInfo.subresourceRange.baseArrayLayer = 0;
-    createInfo.subresourceRange.layerCount = 1;
+    createInfo.subresourceRange.baseArrayLayer = baseArrayLayer;
+    createInfo.subresourceRange.layerCount = layerCount;
 
     vk::ImageView view{};
     checkResult(device->createImageView(&createInfo, nullptr, &view), "failed to create image view");
@@ -292,6 +293,25 @@ void DeviceResourceUtils::copyBufferToImage(const vk::CommandBuffer &cmd, vk::Bu
     region.imageSubresource.layerCount = layerCount;
     region.imageOffset = vk::Offset3D(0, 0, 0);
     region.imageExtent = vk::Extent3D(width, height, 1);
+
+    cmd.copyBufferToImage(buffer, image, vk::ImageLayout::eTransferDstOptimal, 1, &region);
+}
+
+void DeviceResourceUtils::copyBufferToImageRegion(const vk::CommandBuffer &cmd, vk::Buffer buffer, vk::Image image,
+                                                  vk::DeviceSize bufferOffset, uint32_t mipLevel,
+                                                  uint32_t baseArrayLayer, uint32_t layerCount, uint32_t width,
+                                                  uint32_t height, uint32_t depth)
+{
+    vk::BufferImageCopy region{};
+    region.bufferOffset = bufferOffset;
+    region.bufferRowLength = 0;   // texels are tightly packed
+    region.bufferImageHeight = 0; // rows are tightly packed
+    region.imageSubresource.aspectMask = vk::ImageAspectFlagBits::eColor;
+    region.imageSubresource.mipLevel = mipLevel;
+    region.imageSubresource.baseArrayLayer = baseArrayLayer;
+    region.imageSubresource.layerCount = layerCount;
+    region.imageOffset = vk::Offset3D(0, 0, 0);
+    region.imageExtent = vk::Extent3D(width, height, depth);
 
     cmd.copyBufferToImage(buffer, image, vk::ImageLayout::eTransferDstOptimal, 1, &region);
 }

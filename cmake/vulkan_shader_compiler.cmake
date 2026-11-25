@@ -18,15 +18,25 @@ function(vulkan_compile_shader)
      include (TestBigEndian)
      TEST_BIG_ENDIAN(IS_BIG_ENDIAN)
 
-     ## Property needs to be retrieved explicitly from globals
-     get_property(VULKAN_COMPILE_SHADER_CWD GLOBAL PROPERTY VULKAN_COMPILE_SHADER_CWD_PROPERTY)
-     ## The directory may not be created so we need to ensure its present 
-     get_filename_component(SHADER_COMPILE_SPV_PATH ${SHADER_COMPILE_SPV_FILE_FULL} DIRECTORY)
-     if(NOT EXISTS ${SHADER_COMPILE_SPV_PATH})
-             get_filename_component(SHADER_COMPILE_SPV_FILENAME ${SHADER_COMPILE_SPV_FILE_FULL} NAME)
-             add_custom_target(build-time-make-directory-${SHADER_COMPILE_SPV_FILENAME} ALL
-             COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_COMPILE_SPV_PATH})
-     endif()
+    ## Property needs to be retrieved explicitly from globals
+    get_property(VULKAN_COMPILE_SHADER_CWD GLOBAL PROPERTY VULKAN_COMPILE_SHADER_CWD_PROPERTY)
+    ## The directory may not be created so we need to ensure its present 
+    get_filename_component(SHADER_COMPILE_SPV_PATH ${SHADER_COMPILE_SPV_FILE_FULL} DIRECTORY)
+    if(NOT EXISTS ${SHADER_COMPILE_SPV_PATH})
+            get_filename_component(SHADER_COMPILE_SPV_FILENAME ${SHADER_COMPILE_SPV_FILE_FULL} NAME)
+            ## Custom target names live in a *global* namespace, so the plain
+            ## file name collides as soon as two examples compile a shader with
+            ## the same name (e.g. gltfloading/shader/mesh.vert and
+            ## geometryshader/shader/mesh.vert), which makes a from-scratch
+            ## configure fail with CMP0002.  A short hash of the full output path
+            ## keeps the name unique without making it long: Visual Studio turns
+            ## each custom target into its own .vcxproj, and a path-length name
+            ## (tried first) overflowed into MSB3501.
+            string(SHA1 SHADER_COMPILE_TARGET_HASH "${SHADER_COMPILE_SPV_FILE_FULL}")
+            string(SUBSTRING "${SHADER_COMPILE_TARGET_HASH}" 0 12 SHADER_COMPILE_TARGET_HASH)
+            add_custom_target(build-time-make-directory-${SHADER_COMPILE_TARGET_HASH} ALL
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_COMPILE_SPV_PATH})
+    endif()
 
      # .comp -> .spv -> .hpp in a *single* custom command.
      ## Splitting this into two chained custom commands makes the generators

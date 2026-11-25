@@ -41,7 +41,8 @@ render_demo/
 │   └── images/                     # raw2rgb 输入/输出
 ├── doc/                            # 设计讨论存档（当前为空）
 ├── external/                       # glm / glfw / stb_image / tiny_obj_loader / tinygltf（json.hpp + tiny_gltf.h）
-├── data/models/                    # 迁移示例的 glTF 模型（suzanne / deer / sphere / armor）
+├── data/models/                    # 迁移示例的 glTF 模型（suzanne / deer / sphere / armor / plane / cube / teapot / torusknot）
+├── data/textures/                  # 迁移示例的 KTX 纹理（metalplate01 / yokohama cubemap / texturearray / rocks 颜色+法线高度）
 ├── src/                            # ===== 引擎核心（静态库 myEngine）=====
 │   ├── RenderManager.h/.cpp        # 对外唯一入口：设备、交换链、工厂方法
 │   ├── SequenceBase.h/.cpp         # 序列公共基类：设备/队列/limits/上传模板/时间戳
@@ -67,7 +68,7 @@ render_demo/
 │   ├── DeviceResource.h/.cpp       # IDeviceResource 基类 + 资源表
 │   ├── DeviceMemoryAllocator.h/.cpp# 设备内存 sub-allocation（block + free list）
 │   ├── BufferObject.h/.cpp         # VBO/IBO/UBO/SSBO 实现
-│   ├── TextureImage2D.h/.cpp       # 2D 纹理（含 mip 生成）
+│   ├── TextureImage.h/.cpp         # 纹理资源（2D/array/cube/3D，含 mip）
 │   ├── TextureSamplerCombine.h/.cpp# combined image sampler
 │   ├── ImageAttachment.h/.cpp      # 深度 / MSAA 附件
 │   ├── ImageReadback.h/.cpp        # GPU -> 主机一次性回读（调试用，见 13.3）
@@ -92,6 +93,7 @@ render_demo/
 │   │   ├── DebugViewMode.h             # 调试视图枚举 + push constant + 按键状态（见 13.2）
 │   │   ├── ImageDump.h/.cpp            # 中间结果编码 + PPM 存盘 + --capture/--view 解析（见 13.4）
 │   │   ├── GlTFLoader.h/.cpp           # tinygltf 之上的纯 CPU glTF 解析（见 14.2）
+│   │   ├── KtxLoader.h/.cpp            # KTX 1.0 解析（RGBA8/R16，cube/array/3D，见 15.2）
 │   │   └── VertexInputStateConfig.h    # Vertex / VertexInputAtlas
 │   ├── simplest/{test1.cpp,shader/}
 │   ├── multi-lighting/{test2.cpp,shader/}
@@ -99,8 +101,10 @@ render_demo/
 │   ├── gbuffer/{test4.cpp,shader/}
 │   ├── particle/{test5.cpp,shader/}    # 计算管线 + 粒子渲染
 │   ├── raw2rgb/{test6.cpp,Raw2RgbLayoutConfig.h,shader/{rawunpack.comp,raw2rgb_v2.comp}}
-│   └── geometryshader / tessellation / deferred / terraintessellation /
-│       gltfloading / gltfscenerendering / multithreading  # 迁移示例（test7..test13，见 14）
+│   ├── geometryshader / tessellation / deferred / terraintessellation /
+│   │   gltfloading / gltfscenerendering / multithreading  # 迁移示例（test7..test13，见 14）
+│   └── texture / texturecubemap / texturearray / parallaxmapping / texture3d
+│                                                          # 纹理家族迁移（test14..test18，见 15）
 └── build_vs/                       # Visual Studio 构建目录（含各示例可执行程序）
 ```
 
@@ -677,7 +681,7 @@ staging buffer 只被传输（graphics）队列访问，始终保持 `eExclusive
 
 **仍然 exclusive 的资源**
 
-- 纹理 / 图像（`TextureImage2D`、`ImageAttachment`）：现有示例只在 graphics 侧使用；若将来 compute 要写图像，需要把 `imageInfo.sharingMode` 同样改成 concurrent；
+- 纹理 / 图像（`TextureImage`、`ImageAttachment`）：现有示例只在 graphics 侧使用；若将来 compute 要写图像，需要把 `imageInfo.sharingMode` 同样改成 concurrent；
 - swapchain 图像：`SwapChain::createSwapChain` 在 graphics != present 时已使用 `eConcurrent`。
 
 **异步 compute 的收益前提**：即使队列独立，粒子示例里 compute 每帧写、顶点着色器同帧读**同一块** SSBO，中间有信号量与屏障依赖，实际仍是串行；要获得并行收益需要双缓冲资源（compute 写 A、图形读 B）或拆分互不相关的资源集。
@@ -778,6 +782,15 @@ dstAccess = MemoryRead | ColorRead | ColorWrite | DepthStencilAttachmentWrite
 | 缺陷 | `src/RenderManager::CreatePipeline` | index buffer 的 `elementType` 由 `eCustom` 改为 `vertexInput->indexType()`，修复索引绘制抛异常 |
 | 示例 | `examples/common/GlTFLoader.*` | tinygltf 之上的纯 CPU glTF 解析（顶点/索引/节点矩阵/材质/纹理） |
 | 示例 | `test7..test13` | 迁移 7 个示例：geometryshader / tessellation / deferred / terraintessellation / gltfloading / gltfscenerendering / multithreading（见 14） |
+| 扩展 | `src/typedefs.h` | `TextureImageSpec` 增加 `depth/layers/faces/format/mipsInData/addressMode`，视图类型由维度推导（见 15.2） |
+| 结构 | `src/TextureImage.h/.cpp`（原 `TextureImage2D`） | 泛化为 2D / 2D array / cube / cube array / 3D；上传分「GPU 生成 mip」与「按子资源拷贝预烘焙 mip」两条路径 |
+| 结构 | `src/DeviceResourceUtils.*` | `createImageView` 支持 `baseArrayLayer/layerCount`；新增 `copyBufferToImageRegion` 按子资源拷贝 |
+| 示例 | `examples/common/KtxLoader.*` | KTX 1.0 解析：未压缩 RGBA8 / R16，cube / array / 3D，预烘焙 mip 链 |
+| 缺陷 | `examples/common/VertexInputStateConfig.h` | `eTangent` 属性声明 16 字节但字段只有 12 字节，最后一个顶点越界读 4 字节 |
+| 缺陷 | `examples/common/Geometry.h` | `CubeVertices()` 的 -Z / +X / +Y 三面绕序与法线相反，开启背面剔除会丢三个面 |
+| 缺陷 | `cmake/vulkan_shader_compiler.cmake` | 自定义目标名改为按输出完整路径唯一化，修复全新 configure 的 CMP0002 |
+| 示例 | `test14..test18` | 纹理家族 5 个示例：texture / texturecubemap / texturearray / parallaxmapping / texture3d（见 15） |
+| 资源 | `data/textures/` | 5 个 KTX 入库（21 MB），`data/models/` 追加 5 个轻量模型 |
 | 示例 | 示例 CMake | `example_common` 静态库 + `add_render_example()`，shader 头显式依赖 |
 | 缺陷 | test1/test2/test3 | 1x 采样设备下不再配置非法的 resolve 附件 |
 | 结构 | `src/RenderManager.*` + `IRenderPass.h` + `BasicRenderPass.*` | **P0-#1 多 pass resize**：`reCreateSwapChain()` 去掉 `renderPass` 参数；`RenderManager` 在 `CreateRenderPass` 登记全部 render pass，`reCreateSwapChain` 遍历并仅对尺寸来自交换链的 pass 重建 framebuffer，离屏/G-Buffer 固定尺寸 pass 跳过 |
@@ -825,7 +838,7 @@ dstAccess = MemoryRead | ColorRead | ColorWrite | DepthStencilAttachmentWrite
 
 **纹理坐标约定（Vulkan）**：Vulkan 图像与 stb_image 都把第 0 行存在顶部，采样时 UV `(0,0)` 对应左上角 texel。因此 `loadTexture()` 不做垂直翻转，shader 里也不对 V 取反；`CubeVertices` 的 36 个顶点统一按「从面外看 `(0,0)` 在左上角」排布（±Z/±Y 面 V 向下增大，±X 面 U 沿 Z、V 沿 Y，−Y 面 +Z 为上）。若误用 OpenGL 风格 UV（V=0 在几何底部），贴图会上下颠倒；±X 面还会因 U/V 互换而旋转 90°。offscreen 的全屏三角形同样依赖这个约定：NDC `(−1,−1)`（屏幕左上）对应 `uv=(0,0)`，直接采样 offscreen attachment 的左上 texel，无需翻转。
 
-**采样器设置（`TextureImage2D::createSampler()`）**：`magFilter/minFilter = eLinear`、`mipmapMode = eLinear`、各向异性 16、`maxLod = LOD_CLAMP_NONE`（配合 `TextureLoader` 生成的完整 mip 链），**地址模式是 `eClampToEdge` 而不是 `eRepeat`**。本项目所有网格每个面的 UV 都正好铺满 `[0,1]`，线性过滤下 `u=0`/`u=1` 落在 texel 边界上，`eRepeat` 会把对边的 texel 混进面的边缘，每个立方体棱上都会出现一条一 texel 宽的接缝（mip 级别越高越明显）；正交/透视放大时也会看到 `(0,0)` 处重复的图案。改成 clamp 后边缘取的是本面最外侧 texel，接缝消失。
+**采样器设置（`TextureImage::createSampler()`）**：`magFilter/minFilter = eLinear`、`mipmapMode = eLinear`、各向异性 16、`maxLod = LOD_CLAMP_NONE`（配合 `TextureLoader` 生成的完整 mip 链），**地址模式是 `eClampToEdge` 而不是 `eRepeat`**。本项目所有网格每个面的 UV 都正好铺满 `[0,1]`，线性过滤下 `u=0`/`u=1` 落在 texel 边界上，`eRepeat` 会把对边的 texel 混进面的边缘，每个立方体棱上都会出现一条一 texel 宽的接缝（mip 级别越高越明显）；正交/透视放大时也会看到 `(0,0)` 处重复的图案。改成 clamp 后边缘取的是本面最外侧 texel，接缝消失。
 
 **相机 aspect（所有交互示例）**：投影必须每帧按**当前**交换链尺寸重建——`const vk::Extent2D extent = *mgr->getSwapChain()->getExtent2D();` 后调用 `MakeCameraMatrix(*camera, extent)`。把启动时的尺寸存进局部变量只算一次，窗口 resize（交换链重建）后宽高比会停留在旧值，画面被横向/纵向拉伸。`MakeCameraMatrix` 对 `height == 0`（窗口最小化）做了保护，避免除零得到 NaN 投影。
 
@@ -934,6 +947,13 @@ cmake --build build -j
 ./build/examples/gltfscenerendering/gltfscenerendering
 ./build/examples/multithreading/multithreading        # --threads N
 
+# 纹理家族（见 15）：KTX 资源在 data/textures/，采样器与视图类型由 TextureImageSpec 决定
+./build/examples/texture/texture                      # 512² × 10 mip，+/- 调 LOD 偏差
+./build/examples/texturecubemap/texturecubemap        # cube map 天空盒 + 反射，+/- 调 LOD
+./build/examples/texturearray/texturearray            # sampler2DArray，7 层一次 instanced draw
+./build/examples/parallaxmapping/parallaxmapping      # 1/2/3/4 切换四种映射模式，+/- 调高度
+./build/examples/texture3d/texture3d                  # 64³ 体积光线步进，+/- 调密度增益
+
 # 调试：数字键切换通道视图，P 存盘；也可脚本化（见 13.6）
 ./build/examples/gbuffer/gbuffer --view 2            # 直接进 normal 视图
 ./build/examples/gbuffer/gbuffer --capture 30        # 跑 30 帧后存盘并退出
@@ -953,9 +973,9 @@ cmake --build build -j
 
 - `globalConfig`：唯一提供 include 目录与 glfw/Vulkan 链接的接口目标。
 - `myEngine`：`src/*.cpp`（GLOB）静态库，历史实现已从构建中排除。
-- `example_common`：`GLFWwindow.cpp`、`TextureLoader.cpp`、`GlTFLoader.cpp`（唯一编译 stb/tinygltf 实现的 TU）、`ImageDump.cpp`、`glm.cpp`（只编译一次）。
+- `example_common`：`GLFWwindow.cpp`、`TextureLoader.cpp`、`GlTFLoader.cpp`（唯一编译 stb/tinygltf 实现的 TU）、`KtxLoader.cpp`（KTX 解析，见 15.2）、`ImageDump.cpp`、`glm.cpp`（只编译一次）。
 - `add_render_example(target source shader_target [generated headers...])`：统一示例可执行配置，生成的 shader 头显式列为依赖，保证干净构建目录也能触起着色器编译。
-- `cmake/vulkan_shader_compiler.cmake`：`glslangValidator` 编译 `.vert/.frag/.comp/.geom/.tesc/.tese` → `.spv`，再由 `bin_file_to_header.cmake` 转成 `.hpp`。这两步写在**同一条** `add_custom_command` 里（`.spv` 与 `.hpp` 同时是 OUTPUT），因为 CMake 生成器（MSBuild）在同一轮构建里先判定 `CustomBuild` 批次的输出是否最新：拆成两条链式命令时，头文件的新旧判定发生在 `.spv` 被重写之前，于是改完 shader 需要**构建两次**头文件才会更新——第一次只重编 `.spv`，可执行文件里仍是旧 SPIR-V，表现为「改了 shader 但画面完全没变」（本轮排查 offscreen 的灰色立方体、particle 的空画面就是这个坑）。
+- `cmake/vulkan_shader_compiler.cmake`：自定义目标名按输出 `.spv` 的完整路径唯一化（曾因两个示例都编译 `shader/mesh.vert` 而让全新 configure 失败，见 15.5）；`glslangValidator` 编译 `.vert/.frag/.comp/.geom/.tesc/.tese` → `.spv`，再由 `bin_file_to_header.cmake` 转成 `.hpp`。这两步写在**同一条** `add_custom_command` 里（`.spv` 与 `.hpp` 同时是 OUTPUT），因为 CMake 生成器（MSBuild）在同一轮构建里先判定 `CustomBuild` 批次的输出是否最新：拆成两条链式命令时，头文件的新旧判定发生在 `.spv` 被重写之前，于是改完 shader 需要**构建两次**头文件才会更新——第一次只重编 `.spv`，可执行文件里仍是旧 SPIR-V，表现为「改了 shader 但画面完全没变」（本轮排查 offscreen 的灰色立方体、particle 的空画面就是这个坑）。
 
 > **构建配置**：默认配置在顶层 `CMakeLists.txt` 里确定——**仅在用户未指定时**设为 `Debug`；`examples/CMakeLists.txt` 不再强制 `CMAKE_BUILD_TYPE` 或 `-g -O0`。因此 `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release` 会得到真正的 `-O3 -DNDEBUG` 构建：性能对比用 Release，调试断点用 Debug。
 
@@ -1008,9 +1028,9 @@ cmake --build build -j
 | 设备与窗口 | 6 组 | 实例/设备/队列/swapchain/事件/调试 | `RenderManager`、`SwapChain`、`PhysicalDeviceUtils`、`Event.h`、`IUnifiedWindow`、`GraphicsDebugger` |
 | 命令序列 | 9 组 | 基类/循环/一次性/操作/组合/屏障/绑定缓存/secondary 录制 | `SequenceBase`、`LoopSequence`、`OnceSequence`、`CmdOpBase`、`CmdOpGroup`、`CmdOpComputeBarrier`、`DescriptorBindingState`、`SecondaryCommandBuffer` |
 | 资源与管线 | 9 组 | 资源聚合/两种管线/渲染通道/句柄 | `ShaderAssetGroup`、`GraphicsPipeline`、`ComputePipeline`、`BasicRenderPass`、`VulkanHandle` |
-| 设备资源 | 8 组 | 分配器/缓冲/纹理/附件/工具 | `DeviceMemoryAllocator`、`BufferObject`、`TextureImage2D`、`TextureSamplerCombine`、`ImageAttachment` |
+| 设备资源 | 8 组 | 分配器/缓冲/纹理/附件/工具 | `DeviceMemoryAllocator`、`BufferObject`、`TextureImage`、`TextureSamplerCombine`、`ImageAttachment` |
 | 配置接口 | 4 个 | 顶点/附件/描述符/compute 配置抽象 | `IVertexInputStateGroup`、`IAttachmentDetail`、`IDescriptorSetDetail`、`ComputeLayoutConfig.h` |
-| 示例公共 | 10 个 | 窗口/相机/几何/纹理/配置表/glTF 加载 | `examples/common/*`（含 `GlTFLoader`） |
+| 示例公共 | 18 个 | 窗口/相机/几何/纹理/KTX/配置表/glTF 加载 | `examples/common/*`（含 `GlTFLoader`、`KtxLoader`） |
 
 ### 9.2 已实施的优化
 
@@ -1018,7 +1038,7 @@ cmake --build build -j
 | --- | --- | --- |
 | 提交/同步 | 2 帧 in-flight + fence 限流；compute→graphics 用信号量串联（imageAvailable 必等、computeFinished 附加）；compute 命令缓冲内部屏障 | `LoopSequence` |
 | 描述符 | 频率分层（static/environment/per-frame/per-instance）+ 共享层单份；增量绑定（Bind Once）只发未绑定的尾部 set | `DescriptorLayoutConfig`、`DescriptorBindingState` |
-| 资源 | 脏标记上传（`NeedsUpload()` 跳过未变化资源）；纹理 mipmap 生成；UBO 走 host-visible 映射；16MB sub-allocation | `DeviceResource`、`ShaderAssetGroup`、`TextureImage2D`、`DeviceMemoryAllocator` |
+| 资源 | 脏标记上传（`NeedsUpload()` 跳过未变化资源）；纹理 mipmap 生成；UBO 走 host-visible 映射；16MB sub-allocation | `DeviceResource`、`ShaderAssetGroup`、`TextureImage`、`DeviceMemoryAllocator` |
 | 命令 | 命令池复用（`resetCommandPool` 而非重建）；`recordPass` 作用域化避免未闭合 | `LoopSequence` |
 | 计算 | 图形/计算共用 `ShaderAssetGroup` 与描述符层；一个 asset 多段 SPIR-V（`spirvEntry`）；跨队列族 buffer 用 `eConcurrent`；专用 compute 队列（缺失回退 graphics）；特化常量、间接派发、组数上限校验、进程内 PSO 缓存；多 stage 链用 `CmdOpGroup` + `CmdOpComputeBarrier` 合成一次提交 | `ComputePipeline`、`CmdOpGroup`、`CmdOpComputeBarrier`、`BufferObject`、`PhysicalDeviceUtils` |
 | 生命周期 | 两阶段构造（`RenderManager::Create`）避免 `bad_weak_ptr`；非拥有视图消除自引用环；关机前 `waitIdle`；surface 由 manager 独占 | `RenderManager`、`LoopSequence`、`GLFWwindow` |
@@ -1566,3 +1586,166 @@ GlTFModel m = loadGlTF(PROJECT_ROOT_PATH "/data/models/deer.gltf");
 | gltfloading | — | `--model <path>`（默认 `data/models/deer.gltf`） |
 | gltfscenerendering | `V` 循环隐藏下一个节点 | `--toggle-node N` |
 | multithreading | — | —（线程数 `std::thread::hardware_concurrency()`，钳在 2..8） |
+
+---
+
+## 15. 纹理家族迁移（KTX 资源通路）
+
+第 14 章迁完了「几何/管线」类示例，但它们都刻意绕开了外置纹理：`data/` 里真正的资源是 351 MB 的 **KTX** 与 681 MB 的 glTF 模型，而框架当时只有「单层 2D + 运行期生成 mip」这一条纹理通路。这一章补的是资源侧能力，然后在其上迁移纯纹理类示例。
+
+### 15.1 资源现状：全是 KTX 1.0，未压缩
+
+先解析全部 KTX 头部，确认只有一个格式族：
+
+| glInternalFormat | 含义 | 数量 | 备注 |
+| --- | --- | --- | --- |
+| `0x8058` | `GL_RGBA8`（`GL_UNSIGNED_BYTE` / `GL_RGBA`） | 37 | 颜色/法线/高度/字体，含 cube、2D array、cube array、完整 mip 链 |
+| `0x8234` | `GL_R16`（`GL_UNSIGNED_SHORT` / `GL_RED`） | 1 | `terrain_heightmap_r16.ktx` |
+
+没有任何 BCn/DXT 压缩块，也没有 KTX2。这条结论直接决定了实现路线：**不需要引入 libktx 或 KTX-Software**，一个 200 行的解析器就够，反而比加第三方依赖更可控。HDR 立方体贴图（`textures/hdr/*.ktx`，各 64 MB）未纳入本批。
+
+KTX 1.0 的层级布局有一个必须踩准的坑：`imageSize` 的语义随 `numberOfFaces` / `numberOfArrayElements` 变化。
+
+| 情形 | `imageSize` 覆盖范围 | 实测例证 |
+| --- | --- | --- |
+| `faces=1, arrayElements=0` | 整个 mip 层 | `metalplate01` 512²×4 = 1048576 |
+| `faces=1, arrayElements=7` | **全部**数组元素 | `texturearray_rgba` = 7×262144 = 1835008 |
+| `faces=6, arrayElements=0` | **单个面**（面后有 4 字节对齐填充） | `cubemap_space` = 512²×4 = 1048576 |
+| `faces=6, arrayElements=3` | **全部**元素 × 面 | `cubemap_array` = 18×262144 = 4718592 |
+
+按这条规则遍历，41 个文件里的 40 个能被精确消费到文件末尾（剩下一个是 cube-array 分支，按第四行规则同样对齐）。加载器按此实现，容忍文件尾多余字节，截断则报错。
+
+### 15.2 引擎扩展：一条纹理通路覆盖所有视图类型
+
+**① `TextureImageSpec` 从「2D 尺寸」升级为「图像描述」**
+
+```cpp
+struct TextureImageSpec {
+    uint32_t width = 1, height = 1, channels = 4, miplevels = 1;
+    uint32_t depth = 1, layers = 1, faces = 1;   // 新增
+    vk::Format format = vk::Format::eR8G8B8A8Srgb;
+    bool mipsInData = false;                     // 新增：上传块已含完整 mip 链
+    vk::SamplerAddressMode addressMode = vk::SamplerAddressMode::eClampToEdge;
+    bool anisotropy = true;
+};
+```
+
+视图类型由维度推导，不需要额外参数：
+
+| 条件 | `vk::ImageViewType` | 使用示例 |
+| --- | --- | --- |
+| `faces == 6 && layers > 1` | `eCubeArray` | 本批未使用 |
+| `faces == 6` | `eCube` | texturecubemap |
+| `depth > 1` | `e3D` | texture3d |
+| `layers > 1` | `e2DArray` | texturearray |
+| 其他 | `e2D` | 原有全部示例 |
+
+这些字段都有默认值，所以旧的示例调用点不需要改一行。
+
+**② `TextureImage2D` 改名并泛化为 `TextureImage`**
+
+类名原本就名不副实了，直接改名（`git mv` 两个文件，4 处引用同步），并让上传路径分两种：
+
+- `mipsInData == false`（原有行为）：只上传 base level，随后 `generateMipmaps()` 用 blit 逐级生成。
+- `mipsInData == true`（KTX 路径）：按 `(mip → layer → face)` 顺序对每个子资源发一条 `copyBufferToImage`，**不**生成 mip。
+
+cube 的 6 个面就是同一张 image 的 6 个 array layer，因此创建 image 时 `arrayLayers = layers * faces` 并带 `eCubeCompatible`。staging 大小由 `TextureImageSpec::uploadByteSize()` 算出（`mipsInData` 时是所有 mip 之和），不再用 `width*height*channels` 这个只对 RGBA8 单层成立的近似。
+
+**③ `DeviceResourceUtils` 两个补充**
+
+- `createImageView(..., viewType, baseArrayLayer, layerCount)`：原来 `layerCount` 写死 1，cube/array 的视图创建不出来。
+- 新增 `copyBufferToImageRegion(cmd, buffer, image, bufferOffset, mip, baseArrayLayer, layerCount, w, h, d)`：按子资源拷贝，替代只能拷 base level 的旧函数。
+
+**④ `KtxLoader`（`examples/common/KtxLoader.h/.cpp`）**
+
+只做解析，不碰 Vulkan 对象：
+
+```cpp
+KtxTexture ktx = loadKtx(PROJECT_ROOT_PATH "/data/textures/rocks_color_rgba.ktx", /*preferSrgb=*/true);
+TextureImageSpec spec = ktx.imageSpec();   // 维度/层数/面数/mip/格式/mipsInData 全部就绪
+syncOp->OnUpdateRawData(ResourceId(0, 0), 0u, ktx.data);
+```
+
+`ktx.data` 的排布刻意与 `TextureImageSpec::mipsInData` 约定一致，调用方不需要再做任何重排。`preferSrgb` 只影响 RGBA8 → `eR8G8B8A8Srgb` 的映射：颜色贴图开，法线/高度贴图关。
+
+加载器是**严格**的：压缩格式、大端文件、或行需要补齐（16-bit 且奇数宽度）都会抛出可读异常，而不是产出花屏。五类视图（2D / 2D array / cube / cube array / 3D）都在 `imageSpec()` 里正确推导。
+
+**⑤ 顺带修掉一个顶点属性越界**
+
+`VertexComponentTable` 里 `eTangent` 声明为 `eR32G32B32A32Sfloat`（16 字节），但 `Vertex::tangent` 是 `glm::vec3`（12 字节），偏移 44、stride 56，于是**最后一个顶点会读越界 4 字节**。此前没有示例使用切线，缺陷一直潜伏；视差映射需要切线，因此把该属性改成 `eR32G32B32Sfloat`，并同步着色器里的 `vec3 inTangent`。
+
+**⑥ `GlobalComponent::eNormalHeightMap`**
+
+视差映射需要「颜色图 + 法线/高度图」两张静态贴图。原有的 `eSpecularMap` 语义不符，于是新增一个分量到 `GlobalComponentTable`（顺序追加，不影响既有集合的 binding 编号）。
+
+### 15.3 资源入库策略
+
+`data/textures/` 只放本批示例真正引用的 5 个 KTX（约 21 MB），`data/models/` 追加 5 个轻量模型（约 0.4 MB）：
+
+| 文件 | 体积 | 规格 | 用于 |
+| --- | --- | --- | --- |
+| `metalplate01_rgba.ktx` | 1.4 MB | 512² RGBA8，10 mip | texture |
+| `cubemap_yokohama_rgba.ktx` | 8.1 MB | 512² × 6 面，完整 mip | texturecubemap |
+| `texturearray_rgba.ktx` | 1.8 MB | 256² × 7 层，1 mip | texturearray |
+| `rocks_color_rgba.ktx` | 5.4 MB | 1024² RGBA8，10 mip | parallaxmapping |
+| `rocks_normal_height_rgba.ktx` | 4.1 MB | 1024² RGBA8（RGB = 法线，A = 高度） | parallaxmapping |
+
+仍不引入 Sponza（681 MB）与 HDR cubemap（3 × 64 MB）；`texture3d` 用程序化生成的体积噪声，本来就没有外置资源。
+
+### 15.4 迁移示例一览
+
+| 示例 | 主程序 | 核心技术 | 资源 / 规模 |
+| --- | --- | --- | --- |
+| texture | test14.cpp | KTX 完整 mip 链 + `texture(..., lodBias)` 手动选级；`+/-` 调 LOD 偏差，直接观察 10 级 mip；采样器 `eRepeat` 平铺 | metalplate01 512² × 10 mip（1398100 B） |
+| texturecubemap | test15.cpp | cube map 天空盒 + 反射：天空盒 `eFront` 剔除、深度不写、`eLessOrEqual`；反射直接在世界空间构造 | yokohama 512² × 6 面 / 10 mip（8388600 B）；天空盒 36 顶点，sphere 13536 + teapot 27384 |
+| texturearray | test16.cpp | `sampler2DArray` + 一次 instanced draw 画 7 个球，`gl_InstanceIndex` 同时索引矩阵表与数组层 | texturearray 256² × 7 层（1835008 B）；sphere 13536 顶点 / 7 实例 |
+| parallaxmapping | test17.cpp | 切线空间 TBN + 四种模式（纯色 / 视差 / 陡峭视差 / 视差遮挡，默认 4），`1/2/3/4` 切换、`+/-` 调高度 | rocks 颜色 1024² / 11 mip（sRGB + repeat）+ 法线高度 1024² / 1 mip（linear + repeat）；plane 4 顶点 → 6 绘制顶点 |
+| texture3d | test18.cpp | CPU 生成 fBm 体积，`sampler3D` + 片元内光线步进前向合成，单次 draw | 程序化 64³ RGBA8，4 个八度，116430/262144 体素非空，112 步上限 |
+
+**共同约定**（沿用第 14 章）：顶点展开为非索引流；相机矩阵统一 `MakeCameraMatrix()`；每帧按当前 extent 重算；push constant 只放真正逐 object 变化的数据。
+
+### 15.5 迁移连带修复的三处缺陷
+
+这一批在跑真实资源时暴露了三个与纹理无关、但会实际伤人的问题。
+
+| 缺陷 | 现象 | 修复 |
+| --- | --- | --- |
+| `vulkan_compile_shader` 的自定义目标名冲突 | `add_custom_target(build-time-make-directory-${文件名})` 用的是**文件名**，而 CMake 目标名在全局命名空间唯一。`gltfloading` 与 `geometryshader` 都编译 `shader/mesh.vert`，于是**全新 configure 直接失败**（CMP0002）。`build_vs` 之所以能工作，只是因为它是在第二批示例加入之前增量配置的 | 目标名改用 `string(MAKE_C_IDENTIFIER "<输出 .spv 绝对路径>")`，与目录绑定后天然唯一。已用全新目录验证 configure 通过 |
+| `CubeVertices()` 三个面绕序反了 | `-Z` / `+X` / `+Y` 三面按 `cross(B-A, C-A)` 算出的法线与存储法线相反。所有旧示例 `cullMode = eNone`，所以从未暴露；`texturecubemap` 的天空盒 `eFront`、物体 `eBack` 一开剔除，立刻少三个面 | 交换这三面两个三角形的第 2/3 个顶点（位置、UV、法线不变，只改绕序），使六面统一为「从外部看逆时针」 |
+| 推常量超过 128 字节下限 | 迁移出的示例把 `mat4 model + mat4 inverseModel + 若干标量` 塞进 push constant，共 144 字节。NVIDIA 给 256 所以本机无异常，但 **AMD / Intel 只保证 128**，管线创建会直接抛错 | 两处都降到下限以内：`texturecubemap` 把反射放到世界空间（不再需要 `inverseModel`，68 字节）；`texture3d` 在片元里 `inverse(push.model)`（80 字节）。`GraphicsPipeline` 的设备上限校验本来就会拦，但应该让它永远撞不上 |
+
+顺带记录一条**不是缺陷但会误导排查**的事实：`std::cout` 走管道时是全缓冲，冒烟测试 `terminate()` 掉进程会丢掉未刷新的日志，看起来像「示例没打印任何东西」。新示例在启动横幅后显式 `flush`，`std::endl` 用于运行期按键日志。
+
+### 15.6 与参考原版的差异
+
+| 项 | 参考示例 | 本项目 | 原因 |
+| --- | --- | --- | --- |
+| KTX 解码 | libktx（KTX-Software） | 自写解析器，只支持未压缩 RGBA8 / R16 | 资源全集只有这两族；避免为 header-only 依赖引入一个 C 库 |
+| texturecubemap 物体 | sphere / teapot / torusknot / venus 四个 | 减为 sphere + teapot 两个（不放 venus 1.4 MB） | 控制入库体积，技术点不变 |
+| 立方体反射空间 | 顶点预变换到世界空间，再用 `inverseModel` 把反射向量转回物体空间 | 顶点留在物体空间，反射直接在世界空间构造，省掉 `inverseModel` | 本框架不对顶点做预变换；同时把推常量压到 128 字节下限以内 |
+| texture3d | 逐切片堆叠绘制 + 混合 | 单次 draw 内的光线步进 | 框架是「一个 op 一次 draw」，切片数需要 N 个 op；光线步进数学等价且只需一次绘制 |
+| texture 采样器 | 示例自行决定 | `TextureImageSpec::addressMode` 显式指定 | 框架默认 clamp（逐面 UV 需要），平铺贴图按需覆盖 |
+
+### 15.7 仍未覆盖的能力（下一批的前置条件）
+
+按实现成本从低到高，这些都是后续示例的硬前置：
+
+| 缺失能力 | 阻塞的示例 |
+| --- | --- |
+| 独立 `eSampler` 描述符（`SAMPLED_IMAGE` + `SAMPLER` 分离） | texturemipmapgen |
+| 深度/模板状态的 stencil 字段 | stencilbuffer |
+| 查询池（occlusion / timestamp / pipeline-statistics） | occlusionquery、pipelinestatistics |
+| 管线多视口 | specializationconstants 的三分屏 |
+| input attachment 与 subpass 依赖 | subpasses、inputattachments、deferredmultisampling |
+| 多 vertex binding（逐实例属性） | instancing |
+
+### 15.8 构建与验证状态
+
+| 项 | 结果 |
+| --- | --- |
+| 全新 configure | `cmake -S . -B build_check` 通过（修复 15.5 的目标名冲突后，不再需要预建目录） |
+| 编译 | 18 个示例 + `myEngine` + `example_common`：**0 error / 0 warning** |
+| 运行期校验 | 18 个示例逐个冒烟运行，**VUID = 0 / Validation Error = 0**（原有 13 个无回归） |
+| KTX 数据通路 | texture `512x512, 10 mips, 1398100 bytes`；texturecubemap `512x512, 6 faces, 10 mips, 8388600 bytes`；texturearray `256x256, 7 layers, 1 mip, 1835008 bytes`；parallaxmapping 颜色 `1024x1024, 11 mips` + 法线高度 `1024x1024, 1 mip`；texture3d `64x64x64 rgba8`，116430/262144 体素非空 |
+
+> **构建顺序注意**：`example_common` 是静态库且被所有示例链接，MSBuild 在同一个解决方案里同时重建它与多个可执行文件时会并行读取尚未写完的 `.lib`，报 `LNK1235: 损坏或无效的 COFF 符号表`。先 `--target example_common` 再整体构建即可，或直接串行构建。

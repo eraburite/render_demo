@@ -33,7 +33,9 @@ inline constexpr auto VertexComponentTable = std::make_tuple(
     VertexComponentSpec{VertexComponent::eColor, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, color), 12},
     VertexComponentSpec{VertexComponent::eUV, vk::Format::eR32G32Sfloat, offsetof(Vertex, texCoord), 8},
     VertexComponentSpec{VertexComponent::eNormal, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, normal), 12},
-    VertexComponentSpec{VertexComponent::eTangent, vk::Format::eR32G32B32A32Sfloat, offsetof(Vertex, tangent), 16});
+    // Vertex::tangent is a vec3, so the attribute must be 3 components: a
+    // R32G32B32A32 read would pull 4 bytes past the end of the last vertex.
+    VertexComponentSpec{VertexComponent::eTangent, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, tangent), 12});
 
 // Concrete vertex input group.  location follows the listed component order.
 class VertexInputAtlas : public IVertexInputStateGroup {

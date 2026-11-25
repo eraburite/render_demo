@@ -33,7 +33,7 @@ struct ObjectParamsArray {
 };
 
 // ---- set0: eStatic global -------------------------------------------------
-enum class GlobalComponent { ebaseColor, eSpecularMap, eMaterialParams };
+enum class GlobalComponent { ebaseColor, eSpecularMap, eMaterialParams, eNormalHeightMap };
 using GlobalConfig = DescriptorComponentSpec<GlobalComponent>;
 inline constexpr auto GlobalComponentTable = std::make_tuple(
     GlobalConfig{GlobalComponent::ebaseColor, vk::DescriptorType::eCombinedImageSampler, 1,
@@ -41,6 +41,8 @@ inline constexpr auto GlobalComponentTable = std::make_tuple(
     GlobalConfig{GlobalComponent::eSpecularMap, vk::DescriptorType::eCombinedImageSampler, 1,
                  vk::ShaderStageFlagBits::eFragment},
     GlobalConfig{GlobalComponent::eMaterialParams, vk::DescriptorType::eStorageBuffer, 1,
+                 vk::ShaderStageFlagBits::eFragment},
+    GlobalConfig{GlobalComponent::eNormalHeightMap, vk::DescriptorType::eCombinedImageSampler, 1,
                  vk::ShaderStageFlagBits::eFragment});
 
 // ---- set1: eEnvironment ----------------------------------------------------

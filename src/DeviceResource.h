@@ -59,7 +59,7 @@ class DeviceResourceVisitor {
 public:
     virtual ~DeviceResourceVisitor() = default;
     virtual void visit(class BufferObject &) {}
-    virtual void visit(class TextureImage2D &) {}
+    virtual void visit(class TextureImage &) {}
     virtual void visit(class TextureSamplerCombine &) {}
 };
 
@@ -111,7 +111,7 @@ private:
 // Collects image views from a resource table (e.g. offscreen resolve targets).
 class ImageViewCollector : public DeviceResourceVisitor {
 public:
-    void visit(TextureImage2D &texture) override;
+    void visit(TextureImage &texture) override;
     void visit(TextureSamplerCombine &combine) override;
 
     const std::vector<vk::ImageView> &views() const { return m_views; }

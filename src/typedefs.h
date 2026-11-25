@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -220,13 +221,90 @@ struct GBufferSpec {
     size_t getTotalByte() const { return elementCount * elementSize; }
 };
 
+// Texture description shared by the auto-created descriptor resource and the
+// upload path.  Defaults describe the historical single-2D-layer RGBA8 case, so
+// existing examples keep their meaning; cube / array / 3D / pre-baked mip
+// chains opt in explicitly.
 struct TextureImageSpec {
     uint32_t width = 1;
     uint32_t height = 1;
     uint32_t channels = 4;
     uint32_t miplevels = 1;
-    size_t getTotalPixels() const { return width * height * channels; }
+    uint32_t depth = 1;   // > 1 => 3D image
+    uint32_t layers = 1;  // array elements (cube => layers of 6 faces each)
+    uint32_t faces = 1;   // 6 => cube / cube array
+
+    vk::Format format = vk::Format::eR8G8B8A8Srgb;
+    // When true the uploaded block already holds the whole mip chain, packed as
+    // (mip -> layer -> face); the GPU then only copies.  When false only the
+    // base level is uploaded and the mips are generated with vkCmdBlitImage.
+    bool mipsInData = false;
+
+    vk::SamplerAddressMode addressMode = vk::SamplerAddressMode::eClampToEdge;
+    bool anisotropy = true;
+
+    uint32_t bytesPerTexel() const;
+    uint32_t subresourceCount() const { return layers * faces; }
+    size_t getTotalPixels() const { return width * height * depth * layers * faces * channels; }
+    // Size of one mip level of the whole image (all layers/faces/depth slices).
+    size_t mipByteSize(uint32_t mip) const;
+    // Size of the host block described by this spec.
+    size_t uploadByteSize() const;
+    vk::ImageViewType imageViewType() const;
+    vk::ImageType imageType() const { return depth > 1 ? vk::ImageType::e3D : vk::ImageType::e2D; }
+    uint32_t arrayLayers() const { return layers * faces; }
 };
+
+inline uint32_t TextureImageSpec::bytesPerTexel() const
+{
+    switch (format) {
+    case vk::Format::eR8Unorm:
+        return 1u;
+    case vk::Format::eR16Unorm:
+    case vk::Format::eR16Sfloat:
+    case vk::Format::eR8G8Unorm:
+        return 2u;
+    case vk::Format::eR8G8B8A8Unorm:
+    case vk::Format::eR8G8B8A8Srgb:
+        return 4u;
+    case vk::Format::eR16G16B16A16Sfloat:
+        return 8u;
+    default:
+        return channels;
+    }
+}
+
+inline size_t TextureImageSpec::mipByteSize(uint32_t mip) const
+{
+    const uint32_t w = std::max(1u, width >> mip);
+    const uint32_t h = std::max(1u, height >> mip);
+    const uint32_t d = std::max(1u, depth >> mip);
+    return static_cast<size_t>(w) * h * d * arrayLayers() * bytesPerTexel();
+}
+
+inline size_t TextureImageSpec::uploadByteSize() const
+{
+    if (!mipsInData) {
+        return mipByteSize(0);
+    }
+    size_t total = 0;
+    for (uint32_t mip = 0; mip < std::max(1u, miplevels); ++mip) {
+        total += mipByteSize(mip);
+    }
+    return total;
+}
+
+inline vk::ImageViewType TextureImageSpec::imageViewType() const
+{
+    if (faces == 6) {
+        return layers > 1 ? vk::ImageViewType::eCubeArray : vk::ImageViewType::eCube;
+    }
+    if (depth > 1) {
+        return vk::ImageViewType::e3D;
+    }
+    return layers > 1 ? vk::ImageViewType::e2DArray : vk::ImageViewType::e2D;
+}
+
 
 inline constexpr bool IsInputResource(ResourceTypes type)
 {

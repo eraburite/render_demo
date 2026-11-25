@@ -6,14 +6,15 @@
 #include "DeviceResourceUtils.h"
 #include "typedefs.h"
 
-// 2D texture with optional mipmaps.  Combined with a sampler by
-// TextureSamplerCombine for descriptor writes.
-class TextureImage2D : public IDeviceResource {
+// Sampled image bound through a combined image sampler.  Covers every view type
+// the examples need: 2D, 2D array, cube, cube array and 3D.  The upload block is
+// either a single base level (mips then generated on the GPU) or a full mip
+// chain packed as (mip -> layer -> face) straight out of a KTX file.
+class TextureImage : public IDeviceResource {
 public:
-    TextureImage2D(std::shared_ptr<vk::Device> device, vk::PhysicalDeviceMemoryProperties memProps,
-                   std::shared_ptr<DeviceMemoryAllocator> allocator, TextureImageSpec spec,
-                   vk::Format format = vk::Format::eR8G8B8A8Srgb);
-    ~TextureImage2D() override;
+    TextureImage(std::shared_ptr<vk::Device> device, vk::PhysicalDeviceMemoryProperties memProps,
+                 std::shared_ptr<DeviceMemoryAllocator> allocator, TextureImageSpec spec);
+    ~TextureImage() override;
 
     void updateRawData(const void *data, size_t size) override;
     ResourceTypes resourceType() const override { return ResourceTypes::eTexture; }
@@ -22,7 +23,7 @@ public:
     void OnUploadCompleted() override;
     void OnReadbackRequested() override;
     void *MappedData() override { return m_mapped; }
-    size_t MappedByteSize() const override { return m_byteSize; }
+    size_t MappedByteSize() const override { return m_stagingBytes; }
 
     void recordCopyFromStagingToDevice(const vk::CommandBuffer &cmd) override;
     void recordCopyFromDeviceToStaging(const vk::CommandBuffer &cmd) override {}
@@ -34,7 +35,8 @@ public:
     vk::ImageView imageView() const { return m_imageView ? *m_imageView : vk::ImageView{}; }
     vk::Sampler sampler() const { return m_sampler ? *m_sampler : vk::Sampler{}; }
     uint32_t mipLevels() const { return m_spec.miplevels; }
-    vk::Format format() const { return m_format; }
+    vk::Format format() const { return m_spec.format; }
+    const TextureImageSpec &spec() const { return m_spec; }
 
 private:
     void createSampler();
@@ -44,8 +46,7 @@ private:
     std::shared_ptr<DeviceMemoryAllocator> m_allocator;
     vk::PhysicalDeviceMemoryProperties m_memProps;
     TextureImageSpec m_spec;
-    vk::Format m_format;
-    size_t m_byteSize = 0;
+    size_t m_stagingBytes = 0;
     int32_t m_width = 1;
     int32_t m_height = 1;
 

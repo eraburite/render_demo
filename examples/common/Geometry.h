@@ -10,19 +10,22 @@
 // store row 0 at the top, so sampling with these UVs displays textures upright
 // without flipping pixels in loadTexture() or the V coordinate in any shader.
 //
-// The previous UVs were authored with the OpenGL convention (V = 0 at the
-// geometric bottom) and were not even consistent across faces: the +/-Z and
-// +/-Y faces were upside down, and the +/-X faces had U/V swapped (90-degree
-// rotation).  Face order, positions, winding and normals are unchanged.
+// Winding: every face is counter-clockwise when viewed from outside, which is
+// what vk::FrontFace::eCounterClockwise + eBack culling expects.  The -Z, +X and
+// +Y faces used to emit their two triangles in the opposite order: their
+// cross(B - A, C - A) pointed *against* the stored normal, so any pipeline with
+// back-face culling dropped exactly those three faces.  Nothing noticed while
+// every example ran with cullMode = eNone; the texturecubemap example (skybox
+// culls eFront, objects cull eBack) exposed it immediately.
 inline std::vector<Vertex> CubeVertices(const glm::vec3 &color = glm::vec3(1.0f))
 {
     using V = Vertex;
     const glm::vec3 c = color;
     return {
         // -Z face: viewed from -Z, +Y is up and -X is screen-right.
-        V{{-0.5f, -0.5f, -0.5f}, c, {1, 1}, {0, 0, -1}}, {{0.5f, -0.5f, -0.5f}, c, {0, 1}, {0, 0, -1}},
-        V{{0.5f, 0.5f, -0.5f}, c, {0, 0}, {0, 0, -1}},  {{0.5f, 0.5f, -0.5f}, c, {0, 0}, {0, 0, -1}},
-        V{{-0.5f, 0.5f, -0.5f}, c, {1, 0}, {0, 0, -1}}, {{-0.5f, -0.5f, -0.5f}, c, {1, 1}, {0, 0, -1}},
+        V{{-0.5f, -0.5f, -0.5f}, c, {1, 1}, {0, 0, -1}}, {{0.5f, 0.5f, -0.5f}, c, {0, 0}, {0, 0, -1}},
+        V{{0.5f, -0.5f, -0.5f}, c, {0, 1}, {0, 0, -1}},  {{0.5f, 0.5f, -0.5f}, c, {0, 0}, {0, 0, -1}},
+        V{{-0.5f, -0.5f, -0.5f}, c, {1, 1}, {0, 0, -1}}, {{-0.5f, 0.5f, -0.5f}, c, {1, 0}, {0, 0, -1}},
 
         // +Z face: viewed from +Z, +Y is up and +X is screen-right.
         V{{-0.5f, -0.5f, 0.5f}, c, {0, 1}, {0, 0, 1}},  {{0.5f, -0.5f, 0.5f}, c, {1, 1}, {0, 0, 1}},
@@ -35,20 +38,19 @@ inline std::vector<Vertex> CubeVertices(const glm::vec3 &color = glm::vec3(1.0f)
         V{{-0.5f, -0.5f, 0.5f}, c, {1, 1}, {-1, 0, 0}}, {{-0.5f, 0.5f, 0.5f}, c, {1, 0}, {-1, 0, 0}},
 
         // +X face: viewed from +X, +Y is up and -Z is screen-right.
-        V{{0.5f, 0.5f, 0.5f}, c, {0, 0}, {1, 0, 0}},   {{0.5f, 0.5f, -0.5f}, c, {1, 0}, {1, 0, 0}},
-        V{{0.5f, -0.5f, -0.5f}, c, {1, 1}, {1, 0, 0}}, {{0.5f, -0.5f, -0.5f}, c, {1, 1}, {1, 0, 0}},
-        V{{0.5f, -0.5f, 0.5f}, c, {0, 1}, {1, 0, 0}},  {{0.5f, 0.5f, 0.5f}, c, {0, 0}, {1, 0, 0}},
+        V{{0.5f, 0.5f, 0.5f}, c, {0, 0}, {1, 0, 0}},   {{0.5f, -0.5f, -0.5f}, c, {1, 1}, {1, 0, 0}},
+        V{{0.5f, 0.5f, -0.5f}, c, {1, 0}, {1, 0, 0}},  {{0.5f, -0.5f, -0.5f}, c, {1, 1}, {1, 0, 0}},
+        V{{0.5f, 0.5f, 0.5f}, c, {0, 0}, {1, 0, 0}},   {{0.5f, -0.5f, 0.5f}, c, {0, 1}, {1, 0, 0}},
 
         // -Y face: viewed from -Y, +Z is up and +X is screen-right.
-        // This face already used the correct convention; kept as-is.
         V{{-0.5f, -0.5f, -0.5f}, c, {0, 1}, {0, -1, 0}}, {{0.5f, -0.5f, -0.5f}, c, {1, 1}, {0, -1, 0}},
         V{{0.5f, -0.5f, 0.5f}, c, {1, 0}, {0, -1, 0}},   {{0.5f, -0.5f, 0.5f}, c, {1, 0}, {0, -1, 0}},
         V{{-0.5f, -0.5f, 0.5f}, c, {0, 0}, {0, -1, 0}},  {{-0.5f, -0.5f, -0.5f}, c, {0, 1}, {0, -1, 0}},
 
         // +Y face: viewed from +Y, -Z is up and +X is screen-right.
-        V{{-0.5f, 0.5f, -0.5f}, c, {0, 0}, {0, 1, 0}}, {{0.5f, 0.5f, -0.5f}, c, {1, 0}, {0, 1, 0}},
-        V{{0.5f, 0.5f, 0.5f}, c, {1, 1}, {0, 1, 0}},   {{0.5f, 0.5f, 0.5f}, c, {1, 1}, {0, 1, 0}},
-        V{{-0.5f, 0.5f, 0.5f}, c, {0, 1}, {0, 1, 0}},  {{-0.5f, 0.5f, -0.5f}, c, {0, 0}, {0, 1, 0}},
+        V{{-0.5f, 0.5f, -0.5f}, c, {0, 0}, {0, 1, 0}}, {{0.5f, 0.5f, 0.5f}, c, {1, 1}, {0, 1, 0}},
+        V{{0.5f, 0.5f, -0.5f}, c, {1, 0}, {0, 1, 0}},  {{0.5f, 0.5f, 0.5f}, c, {1, 1}, {0, 1, 0}},
+        V{{-0.5f, 0.5f, -0.5f}, c, {0, 0}, {0, 1, 0}}, {{-0.5f, 0.5f, 0.5f}, c, {0, 1}, {0, 1, 0}},
     };
 }
 

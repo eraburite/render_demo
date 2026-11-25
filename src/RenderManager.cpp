@@ -16,7 +16,7 @@
 #include "PhysicalDeviceUtils.h"
 #include "ShaderAssetGroup.h"
 #include "SwapChain.h"
-#include "TextureImage2D.h"
+#include "TextureImage.h"
 
 #include <algorithm>
 #include <set>
@@ -439,7 +439,7 @@ RenderManager::CreateShaderAssetGroup(std::shared_ptr<const IVertexInputStateGro
                             return nullptr;
                         } else {
                             (void)binding;
-                            return std::make_shared<TextureImage2D>(getLogicalDevice(),
+                            return std::make_shared<TextureImage>(getLogicalDevice(),
                                                                     m_physicalDeviceMemoryProperties, m_allocator,
                                                                     typedSpec);
                         }
