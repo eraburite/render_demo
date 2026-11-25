@@ -18,6 +18,14 @@ public:
     virtual vk::Extent2D extent() const = 0;
 
     virtual void begin(const vk::CommandBuffer &cmd, uint32_t frameIndex, vk::Extent2D renderArea) = 0;
+    // Like begin(), but lets the caller ask for secondary command buffer
+    // execution in the first subpass.  Default keeps the legacy inline path.
+    virtual void begin(const vk::CommandBuffer &cmd, uint32_t frameIndex, vk::Extent2D renderArea,
+                       vk::SubpassContents contents)
+    {
+        (void)contents;
+        begin(cmd, frameIndex, renderArea);
+    }
     virtual void end(const vk::CommandBuffer &cmd) = 0;
     virtual void nextSubpass(const vk::CommandBuffer &cmd) = 0;
 

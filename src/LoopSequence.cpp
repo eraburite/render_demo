@@ -353,6 +353,12 @@ void LoopSequence::record(const std::shared_ptr<CmdOpBase> &op)
 
 void LoopSequence::recordPass(const std::shared_ptr<IRenderPass> &renderPass, const std::function<void()> &body)
 {
+    recordPass(renderPass, body, vk::SubpassContents::eInline);
+}
+
+void LoopSequence::recordPass(const std::shared_ptr<IRenderPass> &renderPass, const std::function<void()> &body,
+                              vk::SubpassContents contents)
+{
     if (!renderPass) {
         return;
     }
@@ -362,7 +368,7 @@ void LoopSequence::recordPass(const std::shared_ptr<IRenderPass> &renderPass, co
     // built per in-flight frame slot.  Using the frame index for both wrote
     // into the wrong swapchain image and presented an unrendered UNDEFINED one.
     const uint32_t framebufferIndex = renderPass->isSwapChainSized() ? m_imageIndex : m_currentFrame;
-    renderPass->begin(cmd, framebufferIndex, renderPass->extent());
+    renderPass->begin(cmd, framebufferIndex, renderPass->extent(), contents);
     m_activeRenderPass = renderPass;
     try {
         body();
@@ -376,6 +382,17 @@ void LoopSequence::recordPass(const std::shared_ptr<IRenderPass> &renderPass, co
     }
     renderPass->end(cmd);
     m_activeRenderPass.reset();
+}
+
+void LoopSequence::executeSecondaries(const std::vector<vk::CommandBuffer> &secondaries)
+{
+    if (!m_activeRenderPass) {
+        throw std::runtime_error("executeSecondaries() must be called inside recordPass()");
+    }
+    if (secondaries.empty()) {
+        return;
+    }
+    (*m_commandBuffers[m_currentFrame]).executeCommands(secondaries);
 }
 
 void LoopSequence::nextSubpass()

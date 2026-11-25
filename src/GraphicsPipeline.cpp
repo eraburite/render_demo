@@ -70,10 +70,11 @@ GraphicsPipeline::GraphicsPipeline(std::shared_ptr<vk::Device> device, DeviceFea
                                    std::shared_ptr<const IVertexInputStateGroup> vertexInput,
                                    std::shared_ptr<const IDescriptorSetLayoutGroup> descriptorLayout,
                                    std::shared_ptr<ShaderAssetGroup> asset,
-                                   const std::shared_ptr<IRenderPass> &renderPass, uint32_t subpass) :
+                                   const std::shared_ptr<IRenderPass> &renderPass, uint32_t subpass,
+                                   GraphicsPipelineConfig config) :
     m_device(std::move(device)), m_feature(feature), m_vertexInput(std::move(vertexInput)),
     m_descriptorLayout(std::move(descriptorLayout)), m_asset(std::move(asset)), m_renderPass(renderPass),
-    m_subpass(subpass)
+    m_subpass(subpass), m_config(std::move(config))
 {
 }
 
@@ -221,37 +222,78 @@ void GraphicsPipeline::createPipeline(const std::shared_ptr<IRenderPass> &render
         return nullptr;
     };
 
-    const std::vector<uint32_t> *vertexCode = findCode(" vert", "vert");
-    const std::vector<uint32_t> *fragmentCode = findCode(" frag", "frag");
-    if (!vertexCode) {
-        throw std::runtime_error("GraphicsPipeline: missing \"vert\" SPIR-V code");
+    // Build the stage list.  The legacy default (no explicit stages) is the
+    // {vert, frag} pair; an explicit list may add geom / tesc / tese.
+    std::vector<GraphicsPipelineStage> stageSpecs = m_config.stages;
+    if (stageSpecs.empty()) {
+        stageSpecs = {{"vert", vk::ShaderStageFlagBits::eVertex},
+                      {"frag", vk::ShaderStageFlagBits::eFragment}};
     }
-    if (!fragmentCode) {
-        throw std::runtime_error("GraphicsPipeline: missing \"frag\" SPIR-V code");
+
+    // Shader modules and their specialization-map storage must outlive the
+    // createGraphicsPipelines call, so keep them in vectors local to this
+    // function (stable addresses for pNext / pSpecializationInfo pointers).
+    std::vector<ShaderModuleHandle> shaderModules;
+    shaderModules.reserve(stageSpecs.size());
+    std::vector<vk::PipelineShaderStageCreateInfo> shaderStages;
+    shaderStages.reserve(stageSpecs.size());
+
+    // Specialization data: one map/data pair per (stage key) group.  Stored in
+    // a deque-like vector of vectors whose inner buffers are never resized
+    // after this point, so the pointers handed to Vulkan stay valid.
+    struct SpecStorage {
+        std::vector<vk::SpecializationMapEntry> entries;
+        std::vector<std::byte> data;
+        vk::SpecializationInfo info{};
+    };
+    std::vector<SpecStorage> specStorage;
+    specStorage.reserve(m_config.specializations.size());
+
+    for (const GraphicsPipelineStage &spec : stageSpecs) {
+        const std::vector<uint32_t> *code = findCode(spec.key.c_str(), spec.key.c_str());
+        if (!code) {
+            throw std::runtime_error("GraphicsPipeline: missing \"" + spec.key + "\" SPIR-V code");
+        }
+        shaderModules.push_back(createShaderModule(m_device, *code));
+
+        vk::PipelineShaderStageCreateInfo stage{};
+        stage.stage = spec.stage;
+        stage.module = static_cast<vk::ShaderModule>(shaderModules.back());
+        stage.pName = "main";
+
+        for (const auto &group : m_config.specializations) {
+            if (group.first != spec.key || group.second.empty()) {
+                continue;
+            }
+            SpecStorage storage;
+            uint32_t offset = 0;
+            for (const SpecializationConstant &constant : group.second) {
+                vk::SpecializationMapEntry entry{};
+                entry.constantID = constant.constantId;
+                entry.offset = offset;
+                entry.size = static_cast<size_t>(constant.data.size());
+                storage.entries.push_back(entry);
+                storage.data.insert(storage.data.end(), constant.data.begin(), constant.data.end());
+                offset += static_cast<uint32_t>(constant.data.size());
+            }
+            storage.info.mapEntryCount = static_cast<uint32_t>(storage.entries.size());
+            storage.info.pMapEntries = storage.entries.data();
+            storage.info.dataSize = storage.data.size();
+            storage.info.pData = storage.data.data();
+            specStorage.push_back(std::move(storage));
+            stage.pSpecializationInfo = &specStorage.back().info;
+            break;
+        }
+        shaderStages.push_back(stage);
     }
-
-    ShaderModuleHandle vertexModule = createShaderModule(m_device, *vertexCode);
-    ShaderModuleHandle fragmentModule = createShaderModule(m_device, *fragmentCode);
-
-    vk::PipelineShaderStageCreateInfo vertexStage{};
-    vertexStage.stage = vk::ShaderStageFlagBits::eVertex;
-    vertexStage.module = static_cast<vk::ShaderModule>(vertexModule);
-    vertexStage.pName = "main";
-
-    vk::PipelineShaderStageCreateInfo fragmentStage{};
-    fragmentStage.stage = vk::ShaderStageFlagBits::eFragment;
-    fragmentStage.module = static_cast<vk::ShaderModule>(fragmentModule);
-    fragmentStage.pName = "main";
-
-    const std::array<vk::PipelineShaderStageCreateInfo, 2> shaderStages{vertexStage, fragmentStage};
 
     const vk::PipelineVertexInputStateCreateInfo emptyVertexInput{};
     const vk::PipelineVertexInputStateCreateInfo &vertexInputInfo =
         m_vertexInput ? m_vertexInput->pipelineVertexInputState() : emptyVertexInput;
 
     vk::PipelineInputAssemblyStateCreateInfo inputAssembly{};
-    inputAssembly.topology = vk::PrimitiveTopology::eTriangleList;
-    inputAssembly.primitiveRestartEnable = VK_FALSE;
+    inputAssembly.topology = m_config.topology;
+    inputAssembly.primitiveRestartEnable = m_config.primitiveRestartEnable ? VK_TRUE : VK_FALSE;
 
     vk::PipelineViewportStateCreateInfo viewportState{};
     viewportState.viewportCount = 1;
@@ -260,25 +302,36 @@ void GraphicsPipeline::createPipeline(const std::shared_ptr<IRenderPass> &render
     vk::PipelineRasterizationStateCreateInfo rasterizer{};
     rasterizer.depthClampEnable = VK_FALSE;
     rasterizer.rasterizerDiscardEnable = VK_FALSE;
-    rasterizer.polygonMode = vk::PolygonMode::eFill;
-    rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode = vk::CullModeFlagBits::eNone;
-    rasterizer.frontFace = vk::FrontFace::eCounterClockwise;
+    rasterizer.polygonMode = m_config.polygonMode;
+    rasterizer.lineWidth = m_config.lineWidth;
+    rasterizer.cullMode = m_config.cullMode;
+    rasterizer.frontFace = m_config.frontFace;
     rasterizer.depthBiasEnable = VK_FALSE;
+
+    // Tessellation state: only present when patch control points > 0.  The
+    // backing object lives for the whole createGraphicsPipelines call.
+    vk::PipelineTessellationStateCreateInfo tessellationState{};
+    tessellationState.patchControlPoints = m_config.patchControlPoints;
 
     vk::PipelineMultisampleStateCreateInfo multisampling{};
     multisampling.sampleShadingEnable = VK_FALSE;
     multisampling.rasterizationSamples = msaa;
 
     vk::PipelineDepthStencilStateCreateInfo depthStencil{};
-    depthStencil.depthTestEnable = VK_TRUE;
-    depthStencil.depthWriteEnable = VK_TRUE;
-    depthStencil.depthCompareOp = vk::CompareOp::eLess;
+    depthStencil.depthTestEnable = m_config.depthTestEnable ? VK_TRUE : VK_FALSE;
+    depthStencil.depthWriteEnable = m_config.depthWriteEnable ? VK_TRUE : VK_FALSE;
+    depthStencil.depthCompareOp = m_config.depthCompareOp;
     depthStencil.depthBoundsTestEnable = VK_FALSE;
     depthStencil.stencilTestEnable = VK_FALSE;
 
     vk::PipelineColorBlendAttachmentState colorBlendAttachment{};
-    colorBlendAttachment.blendEnable = VK_FALSE;
+    colorBlendAttachment.blendEnable = m_config.blendEnable ? VK_TRUE : VK_FALSE;
+    colorBlendAttachment.srcColorBlendFactor = vk::BlendFactor::eSrcAlpha;
+    colorBlendAttachment.dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
+    colorBlendAttachment.colorBlendOp = vk::BlendOp::eAdd;
+    colorBlendAttachment.srcAlphaBlendFactor = vk::BlendFactor::eOne;
+    colorBlendAttachment.dstAlphaBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
+    colorBlendAttachment.alphaBlendOp = vk::BlendOp::eAdd;
     colorBlendAttachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG
                                           | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
 
@@ -325,6 +378,7 @@ void GraphicsPipeline::createPipeline(const std::shared_ptr<IRenderPass> &render
     pipelineInfo.pStages = shaderStages.data();
     pipelineInfo.pVertexInputState = &vertexInputInfo;
     pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pTessellationState = m_config.patchControlPoints > 0 ? &tessellationState : nullptr;
     pipelineInfo.pViewportState = &viewportState;
     pipelineInfo.pRasterizationState = &rasterizer;
     pipelineInfo.pMultisampleState = &multisampling;

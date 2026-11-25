@@ -5,7 +5,8 @@
 #include <stdexcept>
 #include <iostream>
 
-#define STB_IMAGE_IMPLEMENTATION
+// STB_IMAGE_IMPLEMENTATION is compiled once in GlTFLoader.cpp (which also
+// vendors tinygltf); this TU only needs the declarations.
 #include "stb_image.h"
 
 LoadedTexture loadTexture(const std::string &path)

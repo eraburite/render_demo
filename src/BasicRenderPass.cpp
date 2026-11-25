@@ -272,6 +272,12 @@ void BasicRenderPass::createFramebuffers(const std::vector<vk::ImageView> &swapC
 
 void BasicRenderPass::begin(const vk::CommandBuffer &cmd, uint32_t frameIndex, vk::Extent2D renderArea)
 {
+    begin(cmd, frameIndex, renderArea, vk::SubpassContents::eInline);
+}
+
+void BasicRenderPass::begin(const vk::CommandBuffer &cmd, uint32_t frameIndex, vk::Extent2D renderArea,
+                            vk::SubpassContents contents)
+{
     if (m_framebuffers.empty()) {
         throw std::runtime_error("BasicRenderPass::begin called before framebuffers were created");
     }
@@ -290,7 +296,7 @@ void BasicRenderPass::begin(const vk::CommandBuffer &cmd, uint32_t frameIndex, v
     beginInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
     beginInfo.pClearValues = clearValues.data();
 
-    cmd.beginRenderPass(&beginInfo, vk::SubpassContents::eInline);
+    cmd.beginRenderPass(&beginInfo, contents);
 
     vk::Viewport viewport{};
     viewport.x = 0.0f;

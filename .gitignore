@@ -12,7 +12,10 @@
 /build
 /build*
 /captures
-/external
+/external/*
+# Vendored header-only dependencies that must be versioned (exception to /external/*).
+!/external/tinygltf/
+!/external/stb_image.h
 .externalNativeBuild
 .vscode
 *.doc
@@ -21,3 +24,5 @@
 # 渲染调试存盘（Debug View / PPM dump，见 DESIGN.md 13.4）
 /dump
 **/dump
+# raw2rgb 示例运行时回写的输入副本（合成数据，无需入库）
+/assets/images/input_raw12_*.raw

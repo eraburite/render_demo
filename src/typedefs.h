@@ -74,6 +74,14 @@ struct DeviceRequirement {
     bool graphics = true;
     bool present = true;
     bool compute = false;
+    // Optional features for the extended examples.  All default to false so
+    // existing examples keep the legacy device setup.  Requesting one makes
+    // PhysicalDeviceUtils skip devices that lack it and createDevice() enable
+    // it (failing early with a readable message rather than a validation error).
+    bool geometryShader = false;
+    bool tessellationShader = false;
+    bool fillModeNonSolid = false;
+    bool samplerAnisotropy = true;
     std::vector<const char *> extensions;
 };
 

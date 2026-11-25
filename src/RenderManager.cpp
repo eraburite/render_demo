@@ -102,8 +102,8 @@ std::vector<vk::ImageView> swapChainImageViews(const std::shared_ptr<SwapChain> 
 }
 } // namespace
 
-RenderManager::RenderManager(IUnifiedWindow &window, uint32_t maxFramesInFlight) :
-    m_window(window), m_maxFramesInFlight(maxFramesInFlight)
+RenderManager::RenderManager(IUnifiedWindow &window, uint32_t maxFramesInFlight, DeviceRequirement requirement) :
+    m_window(window), m_maxFramesInFlight(maxFramesInFlight), m_requirement(std::move(requirement))
 {
     // Phase one: only wire events.  initVulkan() runs from Create() after the
     // shared control block exists, so shared_from_this() is valid there.
@@ -131,9 +131,10 @@ RenderManager::~RenderManager()
     }
 }
 
-std::shared_ptr<RenderManager> RenderManager::Create(IUnifiedWindow &window, uint32_t maxFramesInFlight)
+std::shared_ptr<RenderManager> RenderManager::Create(IUnifiedWindow &window, uint32_t maxFramesInFlight,
+                                                     DeviceRequirement requirement)
 {
-    auto manager = std::shared_ptr<RenderManager>(new RenderManager(window, maxFramesInFlight));
+    auto manager = std::shared_ptr<RenderManager>(new RenderManager(window, maxFramesInFlight, std::move(requirement)));
     manager->initVulkan();
     return manager;
 }
@@ -143,20 +144,19 @@ void RenderManager::initVulkan()
     createInstance();
     m_surface = m_window.createSurface(instanceView());
 
-    DeviceRequirement requirement;
-    requirement.graphics = true;
-    requirement.present = true;
-    requirement.compute = true;
-    requirement.extensions = deviceRequiredExtensions;
+    // The engine always needs a compute queue and the swapchain extension;
+    // layer in caller-requested optional features on top.
+    m_requirement.compute = true;
+    m_requirement.extensions = deviceRequiredExtensions;
     std::tie(m_physicalDevice, m_queueFamilyIndices) =
-        PhysicalDeviceUtils::select(m_instance, m_surface, requirement);
+        PhysicalDeviceUtils::select(m_instance, m_surface, m_requirement);
 
     m_physicalDevice->getMemoryProperties(&m_physicalDeviceMemoryProperties);
     m_physicalDevice->getProperties(&m_physicalDeviceProperties);
     m_msaaSamples = maxUsableSampleCount(m_physicalDeviceProperties);
     m_depthFormat = PhysicalDeviceUtils::findDepthFormat(m_physicalDevice);
 
-    createDevice(requirement);
+    createDevice(m_requirement);
 
     // One cache for every compute pipeline this manager creates.  It starts empty
     // (this run compiles from scratch) and is only reused within the process; the
@@ -252,7 +252,10 @@ void RenderManager::createDevice(const DeviceRequirement &req)
     }
 
     vk::PhysicalDeviceFeatures deviceFeatures{};
-    deviceFeatures.samplerAnisotropy = VK_TRUE;
+    deviceFeatures.samplerAnisotropy = req.samplerAnisotropy ? VK_TRUE : VK_FALSE;
+    deviceFeatures.geometryShader = req.geometryShader ? VK_TRUE : VK_FALSE;
+    deviceFeatures.tessellationShader = req.tessellationShader ? VK_TRUE : VK_FALSE;
+    deviceFeatures.fillModeNonSolid = req.fillModeNonSolid ? VK_TRUE : VK_FALSE;
 
     vk::DeviceCreateInfo createInfo{};
     createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
@@ -471,7 +474,7 @@ std::shared_ptr<GraphicsPipeline>
 RenderManager::CreatePipeline(std::shared_ptr<const IVertexInputStateGroup> vertexInput,
                               std::shared_ptr<const IDescriptorSetLayoutGroup> descriptorLayout,
                               std::shared_ptr<ShaderAssetGroup> asset, const std::shared_ptr<IRenderPass> &renderPass,
-                              uint32_t subpass)
+                              uint32_t subpass, GraphicsPipelineConfig config)
 {
     const std::shared_ptr<const IVertexInputStateGroup> vertexInputClone =
         vertexInput ? vertexInput->sharedClone() : nullptr;
@@ -487,8 +490,12 @@ RenderManager::CreatePipeline(std::shared_ptr<const IVertexInputStateGroup> vert
                                                                m_allocator, ResourceTypes::eVertex, MemoryTypes::eDevice,
                                                                vertexSpec, &sharedFamilies));
         if (vertexInputClone->hasIndexBuffer() && vertexInputClone->indexCount() > 0) {
+            // The element type must stay concrete: BufferObject::bindToPipeline
+            // derives vk::IndexType from it.  eCustom would make every indexed
+            // draw throw "cannot infer index type from buffer spec".
             const GBufferSpec indexSpec{vertexInputClone->indexCount(),
-                                        indexTypeByteSize(vertexInputClone->indexType()), DataTypes::eCustom};
+                                        indexTypeByteSize(vertexInputClone->indexType()),
+                                        vertexInputClone->indexType()};
             asset->addInputResource(ResourceTypes::eIndex,
                                     std::make_shared<BufferObject>(getLogicalDevice(),
                                                                    m_physicalDeviceMemoryProperties, m_allocator,
@@ -502,7 +509,8 @@ RenderManager::CreatePipeline(std::shared_ptr<const IVertexInputStateGroup> vert
     feature.maxPushConstantSize = m_physicalDeviceProperties.limits.maxPushConstantsSize;
 
     auto pipeline = std::make_shared<GraphicsPipeline>(getLogicalDevice(), feature, vertexInputClone,
-                                                       descriptorLayoutClone, asset, renderPass, subpass);
+                                                       descriptorLayoutClone, asset, renderPass, subpass,
+                                                       std::move(config));
     pipeline->builtUp();
     return pipeline;
 }

@@ -6,6 +6,7 @@
 #include <vector>
 #include <vulkan/vulkan.hpp>
 #include "ComputePipeline.h"
+#include "GraphicsPipeline.h"
 #include "DeviceMemoryAllocator.h"
 #include "IDescriptorSetDetail.h"
 #include "IRenderPass.h"
@@ -29,7 +30,8 @@ class IAttachmentDetail;
 // so shared_from_this() is valid.
 class RenderManager : public std::enable_shared_from_this<RenderManager> {
 public:
-    static std::shared_ptr<RenderManager> Create(IUnifiedWindow &window, uint32_t maxFramesInFlight);
+    static std::shared_ptr<RenderManager> Create(IUnifiedWindow &window, uint32_t maxFramesInFlight,
+                                                 DeviceRequirement requirement = {});
     ~RenderManager();
 
     RenderManager(const RenderManager &) = delete;
@@ -45,7 +47,8 @@ public:
     std::shared_ptr<GraphicsPipeline> CreatePipeline(std::shared_ptr<const IVertexInputStateGroup> vertexInput,
                                                     std::shared_ptr<const IDescriptorSetLayoutGroup> descriptorLayout,
                                                     std::shared_ptr<ShaderAssetGroup> asset,
-                                                    const std::shared_ptr<IRenderPass> &renderPass, uint32_t subpass);
+                                                    const std::shared_ptr<IRenderPass> &renderPass, uint32_t subpass,
+                                                    GraphicsPipelineConfig config = {});
     std::shared_ptr<ComputePipeline> CreateComputePipeline(
         std::shared_ptr<const IDescriptorSetLayoutGroup> descriptorLayout, std::shared_ptr<ShaderAssetGroup> asset,
         const std::string &spirvEntry = "comp", ComputePipelineOptions options = {});
@@ -79,7 +82,7 @@ public:
     void reCreateSwapChain();
 
 private:
-    explicit RenderManager(IUnifiedWindow &window, uint32_t maxFramesInFlight);
+    explicit RenderManager(IUnifiedWindow &window, uint32_t maxFramesInFlight, DeviceRequirement requirement);
     void initVulkan();
     void createInstance();
     void createDevice(const DeviceRequirement &req);
@@ -94,6 +97,7 @@ private:
 private:
     IUnifiedWindow &m_window;
     uint32_t m_maxFramesInFlight = 2;
+    DeviceRequirement m_requirement;
 
     std::shared_ptr<vk::Instance> m_instance;
     std::shared_ptr<GraphicsDebugger> m_debugger;

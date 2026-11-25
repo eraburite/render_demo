@@ -28,6 +28,8 @@ public:
     vk::Extent2D extent() const override { return m_extent; }
 
     void begin(const vk::CommandBuffer &cmd, uint32_t frameIndex, vk::Extent2D renderArea) override;
+    void begin(const vk::CommandBuffer &cmd, uint32_t frameIndex, vk::Extent2D renderArea,
+               vk::SubpassContents contents) override;
     void end(const vk::CommandBuffer &cmd) override;
     void nextSubpass(const vk::CommandBuffer &cmd) override;
 

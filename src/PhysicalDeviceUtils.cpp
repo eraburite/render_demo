@@ -54,8 +54,14 @@ bool PhysicalDeviceUtils::checkDeviceSuitable(const vk::PhysicalDevice &device,
 
     vk::PhysicalDeviceFeatures supportedFeatures{};
     device.getFeatures(&supportedFeatures);
-    return familyIndices.isComplete() && extensionsSupported && swapChainAdequate
-           && supportedFeatures.samplerAnisotropy
+    // Optional features are only required when the caller asked for them, so
+    // existing examples keep selecting the same device as before.
+    const bool featuresAdequate =
+        (!req.samplerAnisotropy || supportedFeatures.samplerAnisotropy)
+        && (!req.geometryShader || supportedFeatures.geometryShader)
+        && (!req.tessellationShader || supportedFeatures.tessellationShader)
+        && (!req.fillModeNonSolid || supportedFeatures.fillModeNonSolid);
+    return familyIndices.isComplete() && extensionsSupported && swapChainAdequate && featuresAdequate
            && (!req.compute || familyIndices.computeFamily.has_value());
 }
 

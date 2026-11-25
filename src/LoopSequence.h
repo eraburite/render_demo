@@ -28,6 +28,13 @@ public:
     void recordDispatch(const std::shared_ptr<CmdOpBase> &op);
     void record(const std::shared_ptr<CmdOpBase> &op);
     void recordPass(const std::shared_ptr<IRenderPass> &renderPass, const std::function<void()> &body);
+    // Same as above but opens the first subpass with the given contents, e.g.
+    // eSecondaryCommandBuffers when the body executes secondary buffers.
+    void recordPass(const std::shared_ptr<IRenderPass> &renderPass, const std::function<void()> &body,
+                    vk::SubpassContents contents);
+    // Executes secondary command buffers inside the currently open renderPass
+    // body.  Throws when called outside recordPass().
+    void executeSecondaries(const std::vector<vk::CommandBuffer> &secondaries);
     // Advances the render pass opened by the enclosing recordPass() body to the
     // next subpass.  Throws when called outside recordPass().
     void nextSubpass();

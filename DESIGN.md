@@ -40,7 +40,8 @@ render_demo/
 │   ├── textures/                   # 示例贴图
 │   └── images/                     # raw2rgb 输入/输出
 ├── doc/                            # 设计讨论存档（当前为空）
-├── external/                       # glm / glfw / stb_image / tiny_obj_loader（tinygltf/json 未使用）
+├── external/                       # glm / glfw / stb_image / tiny_obj_loader / tinygltf（json.hpp + tiny_gltf.h）
+├── data/models/                    # 迁移示例的 glTF 模型（suzanne / deer / sphere / armor）
 ├── src/                            # ===== 引擎核心（静态库 myEngine）=====
 │   ├── RenderManager.h/.cpp        # 对外唯一入口：设备、交换链、工厂方法
 │   ├── SequenceBase.h/.cpp         # 序列公共基类：设备/队列/limits/上传模板/时间戳
@@ -52,8 +53,9 @@ render_demo/
 │   ├── CmdOpComputeDispatch.h      # compute 命令操作
 │   ├── CmdOpGroup.h                # 把多个 CmdOp 合成一次提交（多 stage 计算链）
 │   ├── CmdOpComputeBarrier.h       # compute -> 下一阶段的显式内存依赖
+│   ├── SecondaryCommandBuffer.h    # secondary command buffer 录制器（多线程示例）
 │   ├── ShaderAssetGroup.h/.cpp     # VBO/UBO/SSBO/纹理/PushConstant 的聚合与更新
-│   ├── GraphicsPipeline.h/.cpp     # SetLayout/Pool/Sets/PipelineLayout/Pipeline
+│   ├── GraphicsPipeline.h/.cpp     # 图形管线（多 stage / topology / tessellation / spec 常量）
 │   ├── ComputePipeline.h/.cpp      # 计算管线（spec 常量 / 间接派发 / 限额校验 / 增量绑定）
 │   ├── DescriptorBindingState.h    # 增量绑定缓存（Bind Once）
 │   ├── VulkanHandle.h              # Vulkan 句柄 RAII 包装
@@ -89,13 +91,16 @@ render_demo/
 │   │   ├── AttachmentDetailConfig.h    # Simple/GBuffer 附件配置 + DependencyPreset
 │   │   ├── DebugViewMode.h             # 调试视图枚举 + push constant + 按键状态（见 13.2）
 │   │   ├── ImageDump.h/.cpp            # 中间结果编码 + PPM 存盘 + --capture/--view 解析（见 13.4）
+│   │   ├── GlTFLoader.h/.cpp           # tinygltf 之上的纯 CPU glTF 解析（见 14.2）
 │   │   └── VertexInputStateConfig.h    # Vertex / VertexInputAtlas
 │   ├── simplest/{test1.cpp,shader/}
 │   ├── multi-lighting/{test2.cpp,shader/}
 │   ├── offscreen/{test3.cpp,shader/}
 │   ├── gbuffer/{test4.cpp,shader/}
 │   ├── particle/{test5.cpp,shader/}    # 计算管线 + 粒子渲染
-│   └── raw2rgb/{test6.cpp,Raw2RgbLayoutConfig.h,shader/{rawunpack.comp,raw2rgb_v2.comp}}
+│   ├── raw2rgb/{test6.cpp,Raw2RgbLayoutConfig.h,shader/{rawunpack.comp,raw2rgb_v2.comp}}
+│   └── geometryshader / tessellation / deferred / terraintessellation /
+│       gltfloading / gltfscenerendering / multithreading  # 迁移示例（test7..test13，见 14）
 └── build_vs/                       # Visual Studio 构建目录（含各示例可执行程序）
 ```
 
@@ -766,6 +771,13 @@ dstAccess = MemoryRead | ColorRead | ColorWrite | DepthStencilAttachmentWrite
 | 示例 | `examples/common/AttachmentDetailConfig.h` | 引入 `DependencyPreset`，depth 显式设 stencil ops |
 | 示例 | `examples/common/DescriptorLayoutConfig.h` | 描述符池大小按实际 `vk::DescriptorType` 统计 |
 | 示例 | `test1..test4` | 统一录制风格（`recordPass`）、去除无效宏分支与重复数据 |
+| 扩展 | `src/GraphicsPipeline.*` | `GraphicsPipelineConfig`：任意 stage（geom/tesc/tese）、topology/patch、polygonMode/cullMode、depth/blend 开关、按 stage 的 specialization constant |
+| 扩展 | `src/typedefs.h` + `PhysicalDeviceUtils.cpp` + `RenderManager::createDevice` | `DeviceRequirement` 增加 geometryShader / tessellationShader / fillModeNonSolid / samplerAnisotropy，按需请求与筛选 |
+| 扩展 | `src/SecondaryCommandBuffer.h` | `SecondaryRecorder`：per-thread command pool + secondary buffer + 独立绑定缓存 + viewport/scissor 设置 |
+| 扩展 | `src/IRenderPass.h` + `BasicRenderPass` + `LoopSequence::recordPass` | 可选 `vk::SubpassContents`（默认 eInline），支持 secondary buffer 执行 |
+| 缺陷 | `src/RenderManager::CreatePipeline` | index buffer 的 `elementType` 由 `eCustom` 改为 `vertexInput->indexType()`，修复索引绘制抛异常 |
+| 示例 | `examples/common/GlTFLoader.*` | tinygltf 之上的纯 CPU glTF 解析（顶点/索引/节点矩阵/材质/纹理） |
+| 示例 | `test7..test13` | 迁移 7 个示例：geometryshader / tessellation / deferred / terraintessellation / gltfloading / gltfscenerendering / multithreading（见 14） |
 | 示例 | 示例 CMake | `example_common` 静态库 + `add_render_example()`，shader 头显式依赖 |
 | 缺陷 | test1/test2/test3 | 1x 采样设备下不再配置非法的 resolve 附件 |
 | 结构 | `src/RenderManager.*` + `IRenderPass.h` + `BasicRenderPass.*` | **P0-#1 多 pass resize**：`reCreateSwapChain()` 去掉 `renderPass` 参数；`RenderManager` 在 `CreateRenderPass` 登记全部 render pass，`reCreateSwapChain` 遍历并仅对尺寸来自交换链的 pass 重建 framebuffer，离屏/G-Buffer 固定尺寸 pass 跳过 |
@@ -808,6 +820,7 @@ dstAccess = MemoryRead | ColorRead | ColorWrite | DepthStencilAttachmentWrite
 | `AttachmentDetailConfig.h` | `SimpleAttachmentDetail`（3 种依赖预设）与 `GBufferAttachmentDetail` |
 | `DebugViewMode.h` | 调试视图枚举 / 32 B push constant / 数字键边沿触发状态；header-only 且不依赖 GLFW（按键查询以回调注入），详见 13.2 |
 | `ImageDump.h/.cpp` | 中间结果 → PPM 的编码与存盘、`DumpResult` 统计量、`--capture` / `--view` 命令行解析，详见 13.4 |
+| `GlTFLoader.h/.cpp` | tinygltf 之上的纯 CPU glTF 解析：顶点/索引/节点世界矩阵/材质/纹理，详见 14.2 |
 | `VertexInputStateConfig.h` | `Vertex` 结构、`VertexComponent` 与属性表、`VertexInputAtlas` |
 
 **纹理坐标约定（Vulkan）**：Vulkan 图像与 stb_image 都把第 0 行存在顶部，采样时 UV `(0,0)` 对应左上角 texel。因此 `loadTexture()` 不做垂直翻转，shader 里也不对 V 取反；`CubeVertices` 的 36 个顶点统一按「从面外看 `(0,0)` 在左上角」排布（±Z/±Y 面 V 向下增大，±X 面 U 沿 Z、V 沿 Y，−Y 面 +Z 为上）。若误用 OpenGL 风格 UV（V=0 在几何底部），贴图会上下颠倒；±X 面还会因 U/V 互换而旋转 90°。offscreen 的全屏三角形同样依赖这个约定：NDC `(−1,−1)`（屏幕左上）对应 `uv=(0,0)`，直接采样 offscreen attachment 的左上 texel，无需翻转。
@@ -912,6 +925,15 @@ cmake --build build -j
 ./build/examples/particle/particle
 ./build/examples/raw2rgb/raw2rgb
 
+# 迁移示例（见 14）
+./build/examples/geometryshader/geometryshader        # G 键切换法线可视化
+./build/examples/tessellation/tessellation            # PN-triangles 细分
+./build/examples/deferred/deferred                    # MRT + 延迟光照
+./build/examples/terraintessellation/terraintessellation --wireframe
+./build/examples/gltfloading/gltfloading              # --model <path> 换模型
+./build/examples/gltfscenerendering/gltfscenerendering
+./build/examples/multithreading/multithreading        # --threads N
+
 # 调试：数字键切换通道视图，P 存盘；也可脚本化（见 13.6）
 ./build/examples/gbuffer/gbuffer --view 2            # 直接进 normal 视图
 ./build/examples/gbuffer/gbuffer --capture 30        # 跑 30 帧后存盘并退出
@@ -931,9 +953,9 @@ cmake --build build -j
 
 - `globalConfig`：唯一提供 include 目录与 glfw/Vulkan 链接的接口目标。
 - `myEngine`：`src/*.cpp`（GLOB）静态库，历史实现已从构建中排除。
-- `example_common`：`GLFWwindow.cpp`、`TextureLoader.cpp`、`ImageDump.cpp`、`glm.cpp`（只编译一次）。
+- `example_common`：`GLFWwindow.cpp`、`TextureLoader.cpp`、`GlTFLoader.cpp`（唯一编译 stb/tinygltf 实现的 TU）、`ImageDump.cpp`、`glm.cpp`（只编译一次）。
 - `add_render_example(target source shader_target [generated headers...])`：统一示例可执行配置，生成的 shader 头显式列为依赖，保证干净构建目录也能触起着色器编译。
-- `cmake/vulkan_shader_compiler.cmake`：`glslangValidator` 编译 `.vert/.frag/.comp` → `.spv`，再由 `bin_file_to_header.cmake` 转成 `.hpp`。这两步写在**同一条** `add_custom_command` 里（`.spv` 与 `.hpp` 同时是 OUTPUT），因为 CMake 生成器（MSBuild）在同一轮构建里先判定 `CustomBuild` 批次的输出是否最新：拆成两条链式命令时，头文件的新旧判定发生在 `.spv` 被重写之前，于是改完 shader 需要**构建两次**头文件才会更新——第一次只重编 `.spv`，可执行文件里仍是旧 SPIR-V，表现为「改了 shader 但画面完全没变」（本轮排查 offscreen 的灰色立方体、particle 的空画面就是这个坑）。
+- `cmake/vulkan_shader_compiler.cmake`：`glslangValidator` 编译 `.vert/.frag/.comp/.geom/.tesc/.tese` → `.spv`，再由 `bin_file_to_header.cmake` 转成 `.hpp`。这两步写在**同一条** `add_custom_command` 里（`.spv` 与 `.hpp` 同时是 OUTPUT），因为 CMake 生成器（MSBuild）在同一轮构建里先判定 `CustomBuild` 批次的输出是否最新：拆成两条链式命令时，头文件的新旧判定发生在 `.spv` 被重写之前，于是改完 shader 需要**构建两次**头文件才会更新——第一次只重编 `.spv`，可执行文件里仍是旧 SPIR-V，表现为「改了 shader 但画面完全没变」（本轮排查 offscreen 的灰色立方体、particle 的空画面就是这个坑）。
 
 > **构建配置**：默认配置在顶层 `CMakeLists.txt` 里确定——**仅在用户未指定时**设为 `Debug`；`examples/CMakeLists.txt` 不再强制 `CMAKE_BUILD_TYPE` 或 `-g -O0`。因此 `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release` 会得到真正的 `-O3 -DNDEBUG` 构建：性能对比用 Release，调试断点用 Debug。
 
@@ -950,9 +972,9 @@ cmake --build build -j
 | 项 | 说明 / 建议 |
 | --- | --- |
 | 队列 | graphics 与 present 属于不同队列族时，swapchain 采用 `Concurrent` 共享模式，未做显式 queue ownership transfer |
-| 每帧命令缓冲 | 目前每帧 1 个 primary buffer；若引入多线程录制，可扩展为 per-thread secondary buffer + 聚合 |
+| 每帧命令缓冲 | 每帧 1 个 primary buffer；多线程录制时由 `SecondaryRecorder` 提供 per-thread secondary buffer，primary 通过 `LoopSequence::executeSecondaries()` 聚合执行（见 14.2） |
 | 绑定缓存 | 缓存以「command buffer + pipeline layout」为粒度；自定义 `CmdOpBase` 若直接绑定 layout，需调用 `LoopSequence::InvalidateDescriptorBindings()` |
-| 多线程录制 | `LoopSequence` 的绑定缓存是单份成员，多线程录制需改为每线程/每帧各一份 |
+| 多线程录制 | ✅ 已实现：`SecondaryRecorder` 为每个线程建独立 command pool 与 `DescriptorBindingState`，secondary 带 render-pass 继承信息；见 14.2 / 14.5 的线程安全约定 |
 | 引用生命周期 | ✅ 已解决（P0-#2）：`GraphicsPipeline` 改为 `shared_ptr<const...>` 持有配置并 `SharedClone()` |
 | 采样法线 | G-Buffer 的 normal 直接写顶点法线，`mrt.frag` 中 TBN 计算未启用 |
 | 历史实现 | `MyRenderPass`/`GBufferRenderPass`/`OffscreenRenderPass`/`PostProcessRenderPass` 已由 `BasicRenderPass + IAttachmentDetail` 取代，旧源码已删除（可从 git `Initial commit` 追溯） |
@@ -984,11 +1006,11 @@ cmake --build build -j
 | 层 | 文件 | 主要职责 | 关键文件 |
 | --- | --- | --- | --- |
 | 设备与窗口 | 6 组 | 实例/设备/队列/swapchain/事件/调试 | `RenderManager`、`SwapChain`、`PhysicalDeviceUtils`、`Event.h`、`IUnifiedWindow`、`GraphicsDebugger` |
-| 命令序列 | 8 组 | 基类/循环/一次性/操作/组合/屏障/绑定缓存 | `SequenceBase`、`LoopSequence`、`OnceSequence`、`CmdOpBase`、`CmdOpGroup`、`CmdOpComputeBarrier`、`DescriptorBindingState` |
+| 命令序列 | 9 组 | 基类/循环/一次性/操作/组合/屏障/绑定缓存/secondary 录制 | `SequenceBase`、`LoopSequence`、`OnceSequence`、`CmdOpBase`、`CmdOpGroup`、`CmdOpComputeBarrier`、`DescriptorBindingState`、`SecondaryCommandBuffer` |
 | 资源与管线 | 9 组 | 资源聚合/两种管线/渲染通道/句柄 | `ShaderAssetGroup`、`GraphicsPipeline`、`ComputePipeline`、`BasicRenderPass`、`VulkanHandle` |
 | 设备资源 | 8 组 | 分配器/缓冲/纹理/附件/工具 | `DeviceMemoryAllocator`、`BufferObject`、`TextureImage2D`、`TextureSamplerCombine`、`ImageAttachment` |
 | 配置接口 | 4 个 | 顶点/附件/描述符/compute 配置抽象 | `IVertexInputStateGroup`、`IAttachmentDetail`、`IDescriptorSetDetail`、`ComputeLayoutConfig.h` |
-| 示例公共 | 9 个 | 窗口/相机/几何/纹理/配置表 | `examples/common/*` |
+| 示例公共 | 10 个 | 窗口/相机/几何/纹理/配置表/glTF 加载 | `examples/common/*`（含 `GlTFLoader`） |
 
 ### 9.2 已实施的优化
 
@@ -1405,3 +1427,142 @@ P6
 | 格式覆盖 | 5 类格式 | `ImageReadback::texelSize()` + `ImageDump::layoutOf()` 两处同时扩展 |
 | 编码覆盖 | 4 种 | 在 `DumpEncoding` + `encodeColor()` + 对应 shader 分支三处同步 |
 | 多示例复用 | 仅 gbuffer / offscreen 接入 | 其余示例按 13.2 的「子集 + 数字键」约定接 `DebugViewState`，并按 13.3 暴露附件图像 |
+
+---
+
+## 14. 扩展示例迁移（Vulkan Examples → render_demo 范式）
+
+本章记录从 Sascha Willems 的 Vulkan Examples（`D:/Vulkan-samples`）迁移 7 个示例到本框架的过程与设计决策。
+
+### 14.1 为什么是"重写"而非"搬运"
+
+参考示例基于 `VulkanExampleBase`（命令式：直接持有 `VkDevice`/`VkQueue`/`VkCommandBuffer`，手工 `vkCreate*` + `vks::initializers::*`），本框架则是声明式：示例只描述**资源规格 + 场景图 + 命令操作**，`RenderManager`/`LoopSequence` 负责设备、交换链、同步与录制。因此迁移时：
+
+| 参考侧 | render_demo 侧 |
+| --- | --- |
+| `VulkanExampleBase` 基类 + `VULKAN_EXAMPLE_MAIN()` | `test()` + `main()` try/catch，窗口与 `RenderManager::Create` 组合 |
+| `vks::initializers::*`（约 30 个 create-info 助手） | `DescriptorLayoutAtlas::makeSet` / `SimpleAttachmentDetail` / `GraphicsPipelineConfig` |
+| `vkglTF::Model::loadFromFile()`（68 KB 加载器） | `GlTFLoader`（纯 CPU 解析，输出 POD；上传仍走 `ShaderAssetGroup`） |
+| `drawCmdBuffers[]` + `submitInfo` + 信号量数组 | `LoopSequence::recordPass()` / `submitFrame()` / `presentFrame()` |
+| `loadShader(getShadersPath()+...)` | `vulkan_compile_shader()` 在构建期把 GLSL 编成 `shader/xxx_yyy.hpp` 中的 SPIR-V 数组 |
+
+迁移顺序按"先验证能力、后叠加复杂度"：geometryshader（几何 stage）→ tessellation（细分 stage）→ deferred（MRT 多 pass）→ terraintessellation（动态地形）→ gltfloading / gltfscenerendering（场景图）→ multithreading（secondary command buffer）。
+
+### 14.2 引擎能力扩展
+
+为支持这些示例，引擎做了三处**向后兼容**的扩展——默认参数与旧行为完全一致，原有 6 个示例无需改动。
+
+**① 图形管线多 stage 与可配置状态（`GraphicsPipelineConfig`）**
+
+`CreatePipeline(..., config = {})` 新增可选配置，空配置等价于旧的 `{vert, frag}` + triangle-list + fill + depth-less：
+
+| 字段 | 用途 | 对应示例 |
+| --- | --- | --- |
+| `stages`（`addStage(key, stage)`） | 任意 stage 组合：`vert` / `geom` / `tesc` / `tese` / `frag`，key 是 `ShaderAssetGroup` 里的 SPIR-V 注册名 | geometryshader、tessellation、terraintessellation |
+| `topology` / `patchControlPoints` | `ePatchList` + 控制点数触发 `VkPipelineTessellationStateCreateInfo` | tessellation（3）、terraintessellation（4） |
+| `polygonMode` / `cullMode` / `lineWidth` | 线框、单/双面 | terraintessellation（wireframe） |
+| `depthTest/Write/CompareOp`、`blendEnable` | 深度与混合开关 | 通用 |
+| `specializations`（`addSpecialization(stageKey, constants)`） | 按 stage 挂载 `VkSpecializationInfo`（复用 compute 侧的 `SpecializationConstant`） | 细分级别等构建期常量 |
+
+实现要点：shader module 与 specialization 的存储都放在 `createPipeline()` 的栈上并保持到 `createGraphicsPipelines()` 返回之后才释放，避免悬垂指针；`pTessellationState` 仅在 `patchControlPoints > 0` 时非空。
+
+**② 设备特性按需请求**
+
+`DeviceRequirement` 增加 `geometryShader` / `tessellationShader` / `fillModeNonSolid` / `samplerAnisotropy`（默认只开各向异性）。`RenderManager::Create(window, frames, requirement)` 把请求透传到设备筛选与 `vkCreateDevice`。`PhysicalDeviceUtils::checkDeviceSuitable` 只检查**被请求**的特性，所以旧示例的设备选择结果不变。请求未被满足时在构造期抛错，而不是留下一个运行时 validation error。
+
+**③ glTF 加载器（`examples/common/GlTFLoader.h/.cpp`）**
+
+`tinygltf/json.hpp` 与 `tiny_gltf.h` 作为 header-only vendored 到 `external/tinygltf/`（MIT）。加载器刻意停在**纯 CPU 数据层**：
+
+```cpp
+GlTFModel m = loadGlTF(PROJECT_ROOT_PATH "/data/models/deer.gltf");
+// m.vertices / m.indices / m.meshes[].primitives / m.materials / m.images
+// computeNodeWorldMatrices(m) -> 每个节点的世界矩阵
+```
+
+- 所有 primitive 展开进**单一**顶点/索引缓冲，draw 简化为 `(firstIndex, indexCount)`；引擎完全不知道 glTF 的存在。
+- 正确处理 `byteStride`（交错属性）、`uint8/16/32` 索引、TRS 与显式 `matrix` 节点、归一化整数属性。
+- 纹理通过 stb_image 解码为 RGBA8；stb 实现集中在 `GlTFLoader.cpp` 一个 TU（`TextureLoader.cpp` 只 include 声明），避免重复符号。
+
+**一个 stb 陷阱**：v2.21 的实现部分位于 include guard **之外**，同一 TU 内 include 两次会重复定义全部符号。`tiny_gltf.h` 内部会 `#include "stb_image.h"`，因此 `GlTFLoader.cpp` 不再自己 include 它——只靠 tinygltf 的那一次 include 同时提供声明与唯一实现。
+
+**④ Secondary command buffer（`src/SecondaryCommandBuffer.h`）**
+
+`SecondaryRecorder` 为每个工作线程建一个带 `eResetCommandBuffer` 的 command pool，每帧每线程一个 secondary buffer，并各自持有 `DescriptorBindingState`（主线程的绑定缓存对 secondary 无效）。`LoopSequence::executeSecondaries()` 在 `recordPass()` 的 body 内由 primary 执行它们。secondary 带 `eRenderPassContinue` 继承信息（renderPass / subpass / framebuffer）。
+
+### 14.3 资源策略
+
+大资源不入库：参考的 Sponza（268 MB + KTX）与 FlightHelmet（53 MB + 外置 PNG）被**轻量内嵌模型替代**——`data/models/` 只放数据内嵌在 `.gltf` 里的 suzanne（376 KB）、deer（1.4 MB）、sphere（140 KB）、armor（1.2 MB）与 deferred_floor（4 KB）。因此：
+
+- 加载器不需要 KTX 解码器；纹理数组（`VK_IMAGE_VIEW_TYPE_2D_ARRAY`）未实现也不构成阻塞。
+- KTX 依赖的 terraintessellation 改用**程序化高度场**（CPU 生成 sin/cos 叠加地形），既保留"高度驱动动态细分"的技术核心，又让工程自包含、可离线构建与冒烟测试。
+
+### 14.4 迁移示例一览
+
+| 示例 | 主程序 | 核心技术与交互 | 数据规模 |
+| --- | --- | --- | --- |
+| geometryshader | test7.cpp | 实体 Phong + `G` 键切换「几何着色器法线可视化」；geom stage 从三角形生成 6 条线段（每顶点 1 条，起红止蓝），`normaldebug.geom` 用 `line_strip` 输出 | suzanne 7958 顶点（非索引） |
+| tessellation | test8.cpp | 左右分屏：左 pass-through 细分、右 PN-triangles（10 控制点 B 样条）；用 specialization constant 把 clip.x 压到半屏并设 tessLevel=6 | deer 展开为 3588 个 patch |
+| deferred | test9.cpp | MRT G-Buffer（position/normal/albedo 三附件）+ 全屏三角形合成 6 个点光源 Blinn-Phong；`--dump` 用 ImageReadback 导出各通道 | armor 15843 源顶点 → 57651 展开 |
+| terraintessellation | test11.cpp | 程序化高度场 32×32=1024 个四边形 patch（4 控制点/patch）；TCS 按 patch 到相机距离动态设 tess level（1..8，近细远粗）；`W` 键切换 `eFill`/`eLine` | 4096 控制点，128×128 世界单位 |
+| gltfloading | test10.cpp | 节点树世界矩阵写入 set3 SSBO，单次 instanced draw 用 `gl_InstanceIndex` 取矩阵；`--model` 换模型 | deer 2440 源顶点 / 10764 索引 |
+| gltfscenerendering | test13.cpp | 递归场景图（SceneRoot→BranchLeft/Right→4 叶）；每节点一个 SSBO 矩阵；`--toggle-node N` / `V` 键切换节点可见性（把矩阵置零推出裁剪空间） | deer 7 节点演示树 |
+| multithreading | test12.cpp | worker 线程并行做视锥剔除 + 录制 secondary（`SecondaryRecorder`），primary `executeSecondaries` 聚合；每线程独立 pipeline/SSBO/push constant 上色（线程数 = `hardware_concurrency()` 钳在 2..8） | 1000 个立方体，约 788 个存活 |
+
+**共同的实现约定**：
+
+- 相机矩阵统一走 `MakeCameraMatrix()`（含 Vulkan Y 翻转），每帧按当前 swapchain extent 重算。
+- glTF 顶点经 `toEngineVertices()` 转成框架 `Vertex` 并居中和归一化，避免模型尺度/位置差异导致相机参数各不相同。
+- **索引缓冲**：上述 glTF/细分示例当前把索引**展开为非索引顶点流**。原因是迁移期间发现的引擎缺陷——`RenderManager::CreatePipeline` 曾把 index buffer spec 的 `elementType` 硬编码为 `eCustom`，而 `BufferObject::bindToPipeline` 需要具体类型推导 `vk::IndexType`，索引绘制会抛 `cannot infer index type from buffer spec`。该缺陷已在本轮修复（把 `vertexInput->indexType()` 写进 spec），后续示例可直接用真正的索引缓冲；已迁移的示例保留展开路径，几何等价。
+
+### 14.4.1 修复的两个引擎缺陷（迁移连带发现）
+
+| 缺陷 | 现象 | 修复 |
+| --- | --- | --- |
+| index buffer element type 为 `eCustom` | 任何 `drawIndexed` 在 `bindIndexBuffer` 前抛 `cannot infer index type from buffer spec`；此前 6 个示例都用非索引绘制，故未暴露 | `RenderManager::CreatePipeline` 把 `indexSpec.elementType` 设为 `vertexInput->indexType()` |
+| render pass 固定 `eInline` | secondary buffer 里 `vkCmdExecuteCommands` 触发 VUID-09680（contents 必须是 `SECONDARY_COMMAND_BUFFERS`） | `IRenderPass`/`BasicRenderPass`/`LoopSequence::recordPass` 增加可选的 `vk::SubpassContents`；默认仍是 `eInline` |
+
+此外 `SecondaryRecorder` 在 secondary 内**显式**设置 viewport/scissor：dynamic state 不会从 primary 继承，否则每帧 44 条 VUID-07831/07832。
+
+### 14.5 与参考原版的差异与已知限制
+
+| 项 | 参考示例 | 本项目 | 原因 |
+| --- | --- | --- | --- |
+| 资源 | Sponza 268 MB / FlightHelmet 53 MB + KTX | 内嵌数据的轻量 glTF（suzanne/deer/armor）+ 程序化高度场 | 保持仓库自包含、离线可构建；避免引入 KTX 解码器与 2D 纹理数组 |
+| UI | ImGui overlay（滑块/下拉框/复选框） | 命令行参数 + 键盘快捷键 | 框架未集成 ImGui；调试交互用最小的按键状态机 |
+| glTF 材质 | 完整 PBR + 法线贴图 + alphaMask 特化 | 简化的法线/顶点色光照 | 无纹理数组与 bindless；聚焦于渲染技术（细分/几何/MRT/场景图）本身 |
+| 视锥剔除 | `vks::Frustum` 逐物体 | 简化的 clip-space 判定或按组剔除 | 避免引入独立 frustum 模块 |
+| 命令行 | `VulkanExampleBase` 统一解析 | 各示例自行解析 `--model` / `--wireframe` / `--threads` 等 | 框架没有全局 CLI 层 |
+
+**线程安全约定**：`VkCommandPool` 不是线程安全的，`SecondaryRecorder` 为每个线程建独立 pool；`DescriptorBindingState` 也不能跨命令缓冲共享，每个 secondary 持有自己的一份。帧同步仍由 `LoopSequence` 的 fence/semaphore 负责，工作线程只录制、不提交。
+
+**间接派发的限制**（沿用 §8）：组数由 GPU 决定时 host 无法预检 `maxComputeWorkGroupCount`；本批示例未使用间接派发。
+
+### 14.6 构建与验证状态
+
+迁移完成后对**全部 13 个示例**做了一次全量构建 + 逐个冒烟运行（含 validation layer）：
+
+| 项 | 结果 |
+| --- | --- |
+| 配置 | Visual Studio 18 2026 / x64，`cmake --build build_vs --config Debug` |
+| 编译 | **0 error / 0 warning**（`myEngine` + `example_common` + 13 个目标） |
+| 产物 | `build_vs/examples/<name>/Debug/<name>.exe` × 13 |
+| 运行期校验 | 13 个示例全部 **VUID 计数 = 0**：simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb / geometryshader / tessellation / deferred / terraintessellation / gltfloading / gltfscenerendering / multithreading |
+| 数据通路 | deferred `armor: expanded to 57651 vertices`；geometryshader `loaded 7958 vertices from suzanne.gltf`；tessellation `2440 vertices / 10764 indices (3588 patches)`；terraintessellation `1024 quad patches, 4096 control points`；gltfloading `2440 source vertices, 10764 indices -> 10764 draw vertices, 5 nodes, 4 mesh instances`；gltfscenerendering 7 节点树 / `4 mesh nodes -> 4 instances in one draw`；multithreading `8 worker threads, 1000 objects, 125 matrix slots per thread` + `788/1000 objects survived frustum culling`；raw2rgb `demosaic: max |gpu-cpu| = 5.96e-08` |
+
+冒烟验证的两个注意点（供复现）：
+
+- 构建前需清掉 shell 里的代理变量（`unset https_proxy http_proxy HTTPS_PROXY HTTP_PROXY ALL_PROXY all_proxy`），否则 MSBuild 的自定义 build 步骤会以 MSB6001 失败。
+- 这些示例是交互式窗口，冒烟测试的做法是启动后运行若干秒再终止，从 stdout 里 grep `VUID` 与前述统计行；`particle` 额外支持 `--frames N` 自退出。
+
+**交互入口一览**（无 ImGui，全部是键盘 + CLI，且每个示例只暴露必要的几个）：
+
+| 示例 | 键盘 | 命令行 |
+| --- | --- | --- |
+| geometryshader | `G` 切换实体 / 法线可视化 | — |
+| tessellation | — | — |
+| deferred | — | `--dump`：首帧把 G-Buffer 各通道写成 `dump/*.ppm` |
+| terraintessellation | `W` 切换线框（也可 `--wireframe` 指定初始状态） | `--wireframe` |
+| gltfloading | — | `--model <path>`（默认 `data/models/deer.gltf`） |
+| gltfscenerendering | `V` 循环隐藏下一个节点 | `--toggle-node N` |
+| multithreading | — | —（线程数 `std::thread::hardware_concurrency()`，钳在 2..8） |
