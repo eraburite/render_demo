@@ -149,6 +149,170 @@ private:
 };
 
 // G-Buffer: position + normal + albedo (MRT) + depth, all sampled afterwards.
+// Weighted-blended order-independent transparency in a single render pass
+// (reference: LearnOpenGL/src/8.guest/2020/oit/weighted_blended.cpp).
+//
+//   0  opaque   RGBA16F  cleared, written by subpass 0, sampled by the screen pass
+//   1  depth    D*       cleared, written by subpass 0, *tested* by subpass 1
+//   2  accum    RGBA16F  cleared to 0, additive, written by subpass 1
+//   3  reveal   R8       cleared to 1, multiplicative, written by subpass 1
+//
+// The reference uses two framebuffers that share one depth texture.  Vulkan
+// expresses the same thing as two subpasses of one pass whose color attachment
+// sets are *disjoint*: subpass 0 writes attachment 0, subpass 1 writes 2..3
+// while depth-testing against 1.
+//
+// Disjoint sets are exactly why both subpasses need preserveAttachments.  An
+// attachment a subpass does not use may be clobbered by that subpass, and an
+// attachment's loadOp/storeOp apply to the whole pass rather than per subpass.
+// Without the two preserve lists, the clears performed at pass begin and the
+// opaque color written in subpass 0 are both undefined by the time subpass 1
+// and the screen pass consume them.
+//
+// The composite step (accum/reveal -> opaque) is *not* a third subpass here.
+// It needs the opaque image as a color attachment while reading accum/reveal,
+// and those are attachments of this pass, so it would force input attachments.
+// The screen pass samples all three as plain textures instead and folds the
+// reference's composite + final blit into one shader:
+//
+//     reference:  dst = avg * (1 - reveal) + opaque * reveal   (SRC_ALPHA blend)
+//     this pass:  mix(opaque, avg, 1 - reveal)                (identical)
+//
+// See DESIGN.md 20.3.
+class OitAttachmentDetail : public IAttachmentDetail {
+public:
+    OitAttachmentDetail(vk::Format depthFormat) : m_depthFormat(depthFormat) {}
+
+    bool isSwapChainSized() const override { return true; }
+
+    RenderPassBlueprint build(uint32_t, uint32_t, vk::SampleCountFlagBits) const override
+    {
+        RenderPassBlueprint bp;
+        bp.sampleCount = vk::SampleCountFlagBits::e1;
+        bp.swapChainSized = true;
+        // Subpass 0 writes exactly one color target, so the depth-only opaque
+        // pipeline gets one blend state; subpass 1 has two (accum + reveal).
+        bp.colorAttachmentCount = 1;
+
+        const auto colorTarget = [](vk::Format format) {
+            vk::AttachmentDescription attachment{};
+            attachment.format = format;
+            attachment.samples = vk::SampleCountFlagBits::e1;
+            attachment.loadOp = vk::AttachmentLoadOp::eClear;
+            attachment.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
+            attachment.stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
+            // Every color target is consumed after the pass (screen pass samples
+            // all three), so none of them may be DONT_CARE.
+            attachment.storeOp = vk::AttachmentStoreOp::eStore;
+            attachment.initialLayout = vk::ImageLayout::eUndefined;
+            attachment.finalLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+            return attachment;
+        };
+
+        // 0: opaque color.
+        bp.attachments.push_back(colorTarget(vk::Format::eR16G16B16A16Sfloat));
+
+        // 1: depth, shared by both subpasses.
+        vk::AttachmentDescription depth{};
+        depth.format = m_depthFormat;
+        depth.samples = vk::SampleCountFlagBits::e1;
+        depth.loadOp = vk::AttachmentLoadOp::eClear;
+        depth.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
+        depth.stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
+        // Subpass 1 tests against subpass 0's depth writes, so the contents must
+        // survive until the end of the pass.
+        depth.storeOp = vk::AttachmentStoreOp::eStore;
+        depth.initialLayout = vk::ImageLayout::eUndefined;
+        depth.finalLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+        bp.attachments.push_back(depth);
+
+        // 2: accumulation, 3: revealage.
+        bp.attachments.push_back(colorTarget(vk::Format::eR16G16B16A16Sfloat));
+        bp.attachments.push_back(colorTarget(vk::Format::eR8Unorm));
+
+        OffscreenTargetSpec opaque;
+        opaque.attachmentIndex = 0;
+        opaque.format = vk::Format::eR16G16B16A16Sfloat;
+        opaque.fixedSize = false; // follows the swapchain extent
+        bp.offscreenTargets.push_back(opaque);
+
+        OffscreenTargetSpec accum;
+        accum.attachmentIndex = 2;
+        accum.format = vk::Format::eR16G16B16A16Sfloat;
+        accum.fixedSize = false;
+        bp.offscreenTargets.push_back(accum);
+
+        OffscreenTargetSpec reveal;
+        reveal.attachmentIndex = 3;
+        reveal.format = vk::Format::eR8Unorm;
+        reveal.fixedSize = false;
+        bp.offscreenTargets.push_back(reveal);
+
+        // Subpass 0: solid geometry into the opaque target, writing depth.
+        SubpassBlueprint solid;
+        solid.colorAttachments.push_back(vk::AttachmentReference(0, vk::ImageLayout::eColorAttachmentOptimal));
+        solid.depthStencil = vk::AttachmentReference(1, vk::ImageLayout::eDepthStencilAttachmentOptimal);
+        // accum/reveal are unused here and must not be discarded.
+        solid.preserveAttachments = {2, 3};
+        bp.subpasses.push_back(solid);
+
+        // Subpass 1: transparent geometry into accum/reveal, depth-tested but
+        // not depth-written (the pipeline sets depthWriteEnable = false).
+        SubpassBlueprint transparent;
+        transparent.colorAttachments.push_back(
+            vk::AttachmentReference(2, vk::ImageLayout::eColorAttachmentOptimal));
+        transparent.colorAttachments.push_back(
+            vk::AttachmentReference(3, vk::ImageLayout::eColorAttachmentOptimal));
+        transparent.depthStencil = vk::AttachmentReference(1, vk::ImageLayout::eDepthStencilAttachmentOptimal);
+        // The opaque color was written by subpass 0 and is sampled later.
+        transparent.preserveAttachments = {0};
+        bp.subpasses.push_back(transparent);
+
+        const auto colorWrite = vk::AccessFlagBits::eColorAttachmentWrite;
+        const auto depthWrite = vk::AccessFlagBits::eDepthStencilAttachmentWrite;
+
+        // Previous frame's writes -> this frame's clears.  All three color
+        // targets are shared by every swapchain framebuffer, so the scope has to
+        // cover the previous frame's attachment writes, not just generic reads.
+        bp.dependencies.push_back(vk::SubpassDependency(
+            VK_SUBPASS_EXTERNAL, 0,
+            vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eLateFragmentTests,
+            vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests,
+            colorWrite | depthWrite, colorWrite | depthWrite,
+            vk::DependencyFlagBits::eByRegion));
+
+        // Subpass 0's depth writes must be visible to subpass 1's depth test.
+        bp.dependencies.push_back(vk::SubpassDependency(
+            0, 1,
+            vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eLateFragmentTests,
+            vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests,
+            colorWrite | depthWrite,
+            colorWrite | depthWrite | vk::AccessFlagBits::eDepthStencilAttachmentRead,
+            vk::DependencyFlagBits::eByRegion));
+
+        // Release the transparent targets to the screen pass' fragment shader.
+        // BOTTOM_OF_PIPE does not support SHADER_READ, so name FRAGMENT_SHADER.
+        bp.dependencies.push_back(vk::SubpassDependency(
+            1, VK_SUBPASS_EXTERNAL,
+            vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eLateFragmentTests,
+            vk::PipelineStageFlagBits::eFragmentShader,
+            colorWrite | depthWrite, vk::AccessFlagBits::eShaderRead,
+            vk::DependencyFlagBits::eByRegion));
+
+        // Per-attachment clear values, in attachment order.  reveal starts at 1
+        // ("nothing covered this pixel yet"); the screen pass discards those
+        // texels instead of running the division.
+        bp.clearValues.push_back(vk::ClearValue(vk::ClearColorValue(std::array<float, 4>{0.0f, 0.0f, 0.0f, 0.0f})));
+        bp.clearValues.push_back(vk::ClearValue(vk::ClearDepthStencilValue(1.0f, 0)));
+        bp.clearValues.push_back(vk::ClearValue(vk::ClearColorValue(std::array<float, 4>{0.0f, 0.0f, 0.0f, 0.0f})));
+        bp.clearValues.push_back(vk::ClearValue(vk::ClearColorValue(std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f})));
+        return bp;
+    }
+
+private:
+    vk::Format m_depthFormat;
+};
+
 class GBufferAttachmentDetail : public IAttachmentDetail {
 public:
     GBufferAttachmentDetail(vk::Format swapFormat, vk::Format depthFormat, uint32_t width, uint32_t height) :

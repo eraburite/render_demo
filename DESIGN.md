@@ -16,7 +16,7 @@
 | 数学库 | GLM |
 | 资源加载 | `stb_image` 解码；`tinygltf`（glTF/GLB）、`tiny_obj_loader`（OBJ/MTL）、KTX 1.0 解析器、assimp（`.dae/.fbx` 等，运行期动态绑定，可选，见 19.2） |
 | 构建 | CMake ≥ 3.22，需 `glslangValidator` 编译着色器并转成 `*.hpp` 字节码头 |
-| 目标产物 | `myEngine` 静态库 + `example_common` + **21 个**可执行示例（simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb，迁移示例 test7..test21，见 14–19） |
+| 目标产物 | `myEngine` 静态库 + `example_common` + **22 个**可执行示例（simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb，迁移示例 test7..test22，见 14–20） |
 
 依赖约定（由根 `CMakeLists.txt` 的 `globalConfig` 接口目标统一提供）：`src/`、`examples/common/`、`external/`、`external/glm/include`、`external/glfw/include`、`build_vs/generated`。
 
@@ -90,9 +90,9 @@ render_demo/
 │   │   ├── Geometry.h
 │   │   ├── RenderCommon.h
 │   │   ├── TextureLoader.h/.cpp
-│   │   ├── DescriptorLayoutConfig.h    # set0~set4 组件枚举与配置表 + subpass 输入附件表（见 16.4）
+│   │   ├── DescriptorLayoutConfig.h    # set0~set4 组件枚举与配置表 + subpass 输入附件表 + OIT 组件（见 16.4 / 20）
 │   │   ├── ComputeLayoutConfig.h       # compute set0 组件表 + 单层 layout 模板
-│   │   ├── AttachmentDetailConfig.h    # Simple/GBuffer/SubpassDeferred 附件配置 + DependencyPreset + StencilAttachmentSpec
+│   │   ├── AttachmentDetailConfig.h    # Simple/GBuffer/SubpassDeferred/Oit 附件配置 + DependencyPreset + StencilAttachmentSpec（见 16/17/20）
 │   │   ├── DebugViewMode.h             # 调试视图枚举 + push constant + 按键状态（见 13.2）
 │   │   ├── ImageDump.h/.cpp            # 中间结果编码 + PPM 存盘 + --capture/--view 解析（见 13.4）
 │   │   ├── ModelAsset.h/.cpp           # 加载器中立的数据层：MeshVertex/Material/Primitive/Mesh/ModelNode/Model（见 18）
@@ -114,7 +114,8 @@ render_demo/
 │   │                                                       # 纹理家族迁移（test14..test18，见 15）
 │   ├── subpasses/{test19.cpp,shader/}                       # 三 subpass 延迟+透明（见 16）
 │   ├── stencil/{test20.cpp,shader/}                         # stencil 描边（见 17）
-│   └── model_loading/{test21.cpp,shader/}                   # 模型加载 + 自动取景（见 19）
+│   ├── model_loading/{test21.cpp,shader/}                   # 模型加载 + 自动取景（见 19）
+│   └── oit/{test22.cpp,shader/}                             # 加权混合顺序无关透明（见 20）
 ├── tools/gltf2obj.py               # glTF -> OBJ 导出，用于生成往返验证资源（见 18.5）
 └── build_vs/                       # Visual Studio 构建目录（含各示例可执行程序）
 ```
@@ -855,6 +856,12 @@ dstAccess = MemoryRead | ColorRead | ColorWrite | DepthStencilAttachmentWrite
 | 资源 | `data/models/backpack/` | 背包资源入库（obj + mtl + diffuse.jpg），`source_attribution.txt` 记录来源 |
 | 构建 | 顶层 `CMakeLists.txt` + `examples/model_loading/CMakeLists.txt` | `RENDER_DEMO_ASSIMP_DIR` cache 变量（回退 `ASSIMP_DIR` 环境变量与自动探测），`external/assimp/include` 进 include，DLL 路径以 `RENDER_DEMO_ASSIMP_DLL_HINT` 编译期注入，POST_BUILD 拷 DLL 到 exe 目录；找不到时只提示不报错（见 19.2） |
 | 修复 | `examples/model_loading/test21.cpp` | 参考实现硬编码的 `scale(0.25)` 与相机 `(0,3,5)` 都会让模型落在视锥外或比例错误；改为 `normalizeSize` + `frameModel()`，并把取景距离加上 `0.5*size.z` 保证最近面不裁切（见 19.1） |
+| 扩展 | `src/GraphicsPipeline.h/.cpp` | **逐颜色附件混合**：`ColorBlendAttachment` + `GraphicsPipelineConfig::blendAttachments`（含 `alphaBlend/additive/revealage` 三个预设），列表短于附件数时重复末项；空列表保持老的 `blendEnable` 路径不变（见 20.2） |
+| 扩展 | `src/typedefs.h` + `PhysicalDeviceUtils.cpp` + `RenderManager.cpp` | `DeviceRequirement::independentBlend`（默认 **true**）：逐附件不同的 blend factor 必须先启用该特性，否则建管线报 VUID-00605（见 20.2） |
+| 结构 | `src/TextureSamplerCombine.h` | 新增 `setImageView()`：附件重建后重定向视图并配合 `RefreshDescriptors()` 重写描述符（与 `InputAttachmentView` 一致，见 20.6） |
+| 示例 | `examples/common/AttachmentDetailConfig.h` | 新增 `OitAttachmentDetail`：opaque RGBA16F + depth + accum RGBA16F + reveal R8 四附件、两 subpass 共用 depth、颜色附件集不相交且双向 `preserveAttachments`（见 20.4） |
+| 示例 | `examples/common/DescriptorLayoutConfig.h` | 新增 `OitObject`/`OitObjects` 顶点阶段 SSBO 与 `OitCompositeComponent` 三张采样纹理表（见 20.1） |
+| 示例 | `examples/oit/`（test22）+ 5 个 shader | 加权混合 OIT：solid/transparent 两 subpass + screen pass 一步合成，`--dump/--no-depth-test/--reversed/--resize-after` 用于验证顺序无关性（见 20.5） |
 
 ---
 
@@ -1027,6 +1034,15 @@ python tools/gltf2obj.py data/models/deer.gltf /tmp/deer.obj             # 用�
 #   cmake -S . -B build_vs -DRENDER_DEMO_ASSIMP_DIR=D:/LearnOpenGL
 #   set RENDER_DEMO_ASSIMP_DLL=D:/somewhere/assimp-vc140-mt.dll
 
+# 顺序无关透明（见 20）：加权混合 OIT，两个 subpass + 一步合成
+./build/examples/oit/oit                                # 默认：红被蓝覆盖，绿被深度测试拒绝
+./build/examples/oit/oit --dump                         # 打印 red/purple/green 计数与帧 hash
+./build/examples/oit/oit --dump --no-depth-test         # 三层同时参与，能看到加权平均的结果
+./build/examples/oit/oit --dump --no-depth-test --reversed
+                                                        # 交换绘制顺序，hash 必须与上一条完全相同
+./build/examples/oit/oit --dump --no-depth-test --resize-after 3 --dump-after 8
+                                                        # 附件重建 + 描述符刷新后再验一次顺序无关性
+
 # 调试：数字键切换通道视图，P 存盘；也可脚本化（见 13.6）
 ./build/examples/gbuffer/gbuffer --view 2            # 直接进 normal 视图
 ./build/examples/gbuffer/gbuffer --capture 30        # 跑 30 帧后存盘并退出
@@ -1096,6 +1112,9 @@ stencil 示例还会单独抓一张 `0001_stencil-mask.ppm`：它是 depth-stenc
 | assimp 依赖 | 运行期动态绑定 `assimp-vc140-mt.dll`，缺失时只有 assimp 格式不可用（异常里报出查找过的路径），其余 20 个示例不受影响；**不随仓库分发** DLL（14 MB），需自备并放到 exe 目录或设 `RENDER_DEMO_ASSIMP_DLL`（见 19.2） |
 | 模型示例着色 | `model_loading` 只做贴图着色，法线/高光贴图虽已解析进 `Material` 但未采样（见 19.6） |
 | 场景图烘焙 | `flattenScene` 一旦开启，节点变换被烘进顶点、层级被塌缩为 identity 根节点；需要逐节点绘制或做节点级动画时必须关掉它（见 19.4） |
+| 混合状态 | 逐附件混合需要 `independentBlend`（已默认请求）；MSAA 与逐附件混合的组合未验证，OIT 示例固定 1x（见 20.7） |
+| OIT 精度 | reveal 为 R8Unorm、accum 为 RGBA16F；超过约 256 层时 reveal 乘积量化到 0，上千层时 accum 可能溢出（已按参考实现做 `isinf` 兜底） |
+| 描述符时序 | 资源必须在 `CreatePipeline` **之前**加入 asset：描述符集在建管线时一次性写入，之后新增的资源不会进 `vkUpdateDescriptorSets`（见 20.6） |
 
 ---
 
@@ -1110,7 +1129,7 @@ stencil 示例还会单独抓一张 `0001_stencil-mask.ppm`：它是 depth-stenc
 | 资源与管线 | 9 组 | 资源聚合/两种管线/渲染通道/句柄 | `ShaderAssetGroup`、`GraphicsPipeline`、`ComputePipeline`、`BasicRenderPass`、`VulkanHandle` |
 | 设备资源 | 9 组 | 分配器/缓冲/纹理/输入附件/附件/工具 | `DeviceMemoryAllocator`、`BufferObject`、`TextureImage`、`TextureSamplerCombine`、`InputAttachmentView`、`ImageAttachment` |
 | 配置接口 | 4 个 | 顶点/附件/描述符/compute 配置抽象 | `IVertexInputStateGroup`、`IAttachmentDetail`、`IDescriptorSetDetail`、`ComputeLayoutConfig.h` |
-| 示例公共 | 21 个 | 窗口/相机/几何/纹理/KTX/配置表/模型数据层与加载器 | `examples/common/*`（含 `ModelAsset`、`ModelLoader`、`GltfModelLoader`、`ObjModelLoader`、`KtxLoader`） |
+| 示例公共 | 23 个 | 窗口/相机/几何/纹理/KTX/配置表/模型数据层与加载器 | `examples/common/*`（含 `ModelAsset`、`ModelLoader`、`GltfModelLoader`、`ObjModelLoader`、`AssimpModelLoader`、`KtxLoader`） |
 
 ### 9.2 已实施的优化
 
@@ -2213,7 +2232,7 @@ MTL → `Material` 的映射（MLT 是 Phong 模型，与 PBR 字段没有一一
 | 运行期校验 | 20 个示例逐个冒烟：**VUID = 0 / Validation Error = 0** |
 | 回归 | 原 19 个示例的渲染输出与重构前一致（改名未触碰渲染路径；`test19`/`test20` 换了遍历写法，dump 结果不变） |
 
-> 本轮之后新增了 `model_loading`（19 章），示例总数为 **21**，最新一次的构建与冒烟结果见 19.7。
+> 本轮之后新增了 `model_loading`（19 章）与 `oit`（20 章），示例总数为 **22**，最新一次的构建与冒烟结果见 20.8。
 
 ---
 
@@ -2331,4 +2350,143 @@ struct DrawRange {
 | 组合路径 | `--yaw 40 --resize-after 3 --dump-after 6`：resize 到 1024×600 后投影按新 aspect 重算，旋转与取景均正确，模型无拉伸、无裁切 |
 | 双通路一致性 | 见 19.5：拓扑完全一致，921600 像素中 24 个差 1/255 |
 | 跨格式 | `.obj`（tinyobj / assimp）与 `.dae`（assimp）三个用例均目视确认纹理与几何正确 |
+
+---
+
+## 20. 顺序无关透明（LearnOpenGL guest 2020/oit，加权混合 OIT）
+
+### 20.1 参考实现在做什么
+
+`8.guest/2020/oit/weighted_blended.cpp` 是 McGuire & Bavoil 的 weighted-blended OIT 最小复现：三个 quad（红不透明、绿/蓝 50% 透明）分四步画完。
+
+| 步骤 | 参考实现 | 目标 |
+| --- | --- | --- |
+| opaque | FBO-A = RGBA16F color + depth texture | 红 quad，写深度 |
+| transparent | FBO-B = accum RGBA16F + reveal R8，**复用 FBO-A 的 depth** | 绿/蓝 quad，不写深度 |
+| composite | 绑 FBO-A，采样 accum/reveal，`SRC_ALPHA` 混合 | 把透明层叠到不透明层上 |
+| final | 绑 backbuffer，采样 FBO-A | 显示 |
+
+两个关键点决定了它在 Vulkan 里的形状：
+
+* **两个颜色附件要不同的 blend factor**：accum 是加法（`ONE/ONE`），reveal 是乘法（`ZERO/ONE_MINUS_SRC_COLOR`）。这需要 `independentBlend` 设备和逐附件混合状态。
+* **FBO-B 复用 FBO-A 的 depth**：Vulkan 里没有"跨 framebuffer 共享附件"这种表达，等价写法是**一个 render pass 的两个 subpass**，subpass 0 用附件 {0}，subpass 1 用 {2,3}，两者都指向附件 1（depth）。
+
+于是本示例的 pass 是：4 个附件、2 个 subpass、颜色附件集**不相交**（disjoint）。
+
+### 20.2 引擎扩展：逐颜色附件混合
+
+原来 `GraphicsPipelineConfig` 只有 `bool blendEnable`，factor 写死 `SRC_ALPHA / ONE_MINUS_SRC_ALPHA`。加一个列表，保持老路径逐字节不变：
+
+```cpp
+struct ColorBlendAttachment {
+    bool enable = true;
+    vk::BlendFactor srcColor, dstColor; vk::BlendOp colorOp;
+    vk::BlendFactor srcAlpha, dstAlpha; vk::BlendOp alphaOp;
+    vk::ColorComponentFlags writeMask;
+    static ColorBlendAttachment alphaBlend(); // 老默认值
+    static ColorBlendAttachment additive();   // dst = src + dst
+    static ColorBlendAttachment revealage();  // dst = dst * (1 - src)
+};
+// config:
+std::vector<ColorBlendAttachment> blendAttachments; // 空 = 用 blendEnable
+```
+
+列表短于附件数时**重复最后一项**——调用方只关心第一个 target 时不必把其余的抄一遍。
+
+**`independentBlend` 必须显式启用**。它是 `VkPhysicalDeviceFeatures` 成员而不是 1.1+ 的提升特性，不请求就用逐附件不同的状态会直接踩：
+
+```
+VUID-VkPipelineColorBlendStateCreateStateInfo-pAttachments-00605:
+If the independentBlend feature is not enabled, all elements of pAttachments must be identical
+```
+
+`DeviceRequirement::independentBlend` 默认 **true**：桌面 GPU 几乎全部支持，把它做成 per-example 开关只会制造"本地能跑、换机器管线创建失败"的静默陷阱。代价是设备筛选多一个条件，而这个条件的通过率高到可以忽略。
+
+### 20.3 composite 的等价变换
+
+参考实现的 composite 与 final 是两步：先以 `SRC_ALPHA/ONE_MINUS_SRC_ALPHA` 把透明层混进 FBO-A，再把 FBO-A blit 到 backbuffer。本示例合成了一步——screen pass 采样三张 offscreen 纹理，在 fragment 里算完直接写交换链。
+
+原因是硬性的：composite 需要把 opaque 当 color attachment **写**、同时读 accum/reveal，而这三张都是上一个 pass 的附件。要在一个 pass 内做到，opaque 必须走 input attachment，accum/reveal 也得是同一 pass 的附件——那就得把 composite 做成第三个 subpass，且 opaque 作为 color + input 同时存在。能写，但复杂度和收益不成比例。
+
+两步合成一步是**严格等价**的，可以推：
+
+```
+reveal = Π(1 - aᵢ)                   每层 alpha 的"未被遮挡率"之积
+avg    = Σ(wᵢ·cᵢ·aᵢ) / Σ(wᵢ·aᵢ)     按权重与 alpha 加权的平均色
+
+参考：dst = avg·(1 - reveal) + opaque·reveal     （SRC_ALPHA 混合，src.a = 1-reveal）
+本实现：mix(opaque, avg, 1 - reveal) = opaque·reveal + avg·(1 - reveal)
+```
+
+两式恒等。因此 screen pass 不需要开混合，`blendEnable = false`。
+
+顺带一个性质：`reveal == 1` 表示该像素从未被任何透明片元覆盖，此时直接输出 opaque 并跳过除法（参考实现里是 `discard`）。这里不能 discard——screen pass 的 clear 色会露出来——所以改成提前 `return`。
+
+### 20.4 不相交附件集为什么必须 preserve
+
+这是本示例唯一"看起来能跑但规范上是错的"的地方。两个 subpass 用的颜色附件完全不相交，于是：
+
+* 附件 0（opaque）由 subpass 0 写，subpass 1 不用它
+* 附件 2/3（accum/reveal）由 subpass 1 写，subpass 0 不用它们
+
+Vulkan 的规则是：**一个 subpass 不使用的附件，其内容在该 subpass 执行后未定义**，除非列入 `preserveAttachments`。同时 `loadOp/storeOp` 是**整个 pass 级**的，只在 pass 开始/结束各生效一次，不是每 subpass。
+
+于是两处 preserve 缺一不可：
+
+```cpp
+solid.preserveAttachments       = {2, 3}; // 否则 pass 开始时的 clear 被 subpass 0 抹掉
+transparent.preserveAttachments = {0};    // 否则 subpass 0 写的 opaque 被 subpass 1 抹掉
+```
+
+漏掉的后果不是崩溃，而是**画面随机正确或全黑**——取决于驱动是否恰好把内容留在原处。桌面驱动通常"看起来没问题"，这正是这类 bug 最难查的原因。
+
+### 20.5 顺序无关性：从断言到逐字节证明
+
+OIT 的卖点是"不用排序"，但只写一句"两个 blend 操作可交换"是断言，不是验证。为此加了 `--reversed`：交换两个透明 quad 的 SSBO 顺序（等价于交换绘制顺序）。
+
+`--no-depth-test` 同样是必需的：按参考实现的坐标，绿 quad（z=0，距离 5）在红 quad（z=1，距离 4）**后面**，会被深度测试整片拒绝。也就是说默认状态下只有一个透明层参与，无从验证"多层累积"。关掉深度测试后三层才同时可见。
+
+| 场景 | 参数 | 结果 |
+| --- | --- | --- |
+| 默认（深度测试开） | `--dump` | 红被蓝全覆盖 → 品红；蓝超出红的边 → 蓝；绿被拒 → 不可见。`purple=188356`，均值 `(0.150, 0, 0.268)` |
+| 关深度测试 | `--dump --no-depth-test` | 三层：蓝框 → 品红环 → 三层混合的灰绿区。`purple=67252 green=121104`，hash `0x756bb90821cd8703` |
+| 关深度测试 + 反序 | `--dump --no-depth-test --reversed` | **hash 完全相同**，`cmp` 逐字节一致 |
+| resize 后反序 | 再加 `--resize-after 3 --dump-after 8` | 614400 texels，两序 hash 仍相同（`0xe671d967d6d804df`） |
+
+均值可以手算校验：品红区 188356 px、纯蓝区 148000 px，合计 336356 px 占 921600 的 36.5%；sRGB 下 linear 0.5 → 0.735，`0.735 × 0.365 ≈ 0.268`，正是测到的 B 均值；R 只在品红区出现，`0.735 × 0.204 ≈ 0.150`。数字对得上说明混合与 gamma 通路都没有暗中的偏差。
+
+### 20.6 三个真实踩过的坑
+
+| 症状 | 根因 | 修法 |
+| --- | --- | --- |
+| 管线创建报 VUID-00605 | `independentBlend` 未启用，逐附件混合被判定为非法 | `DeviceRequirement` 请求该特性（20.2） |
+| 画面全黑 + `vkCmdDraw` 报 "descriptor never been updated" | 描述符集在 `CreatePipeline` 时**一次性写入**；三张纹理是在建管线**之后**才 `addDescriptorResource` 的，`vkUpdateDescriptorSets` 从未看到它们 | 把资源绑定挪到建管线之前（20.3 的前置条件） |
+| resize 后同样的 descriptor 报错 | 附件重建换了 image view，`TextureSamplerCombine` 仍指向已销毁的旧 view | 给 `TextureSamplerCombine` 补 `setImageView()`（与 `InputAttachmentView` 一致），靠 `attachmentGeneration()` 触发重定向 + `RefreshDescriptors()` |
+
+第二个坑值得单拎出来：`SyncDataToDevice()` 只做 staging→device 的**数据**拷贝，它不碰描述符。描述符的生命周期完全由 `CreatePipeline` / `RefreshDescriptors` 决定，所以"先加资源、再建管线"是这个框架里一条硬约束。
+
+另外 `dumpPending` 的初值必须是 `false`，让 `--dump-after` 的判断来决定何时抓帧；写成 `= options.dump` 会让第一帧就 dump 并退出，`--resize-after` 永远轮不到执行（本次实际踩到）。
+
+### 20.7 差异与限制
+
+| 项 | 现状 | 原因/后续 |
+| --- | --- | --- |
+| 几何 | 三个 quad，位置/颜色照抄参考实现 | 目的是验证混合而非场景复杂度 |
+| 绿 quad 默认不可见 | 深度测试按规范拒绝了它 | 参考实现同样如此；`--no-depth-test` 才能看到三层 |
+| accum 溢出 | 检测 `isinf` 后退化为 `vec3(accum.a)` | 与参考一致；16F 在几千层叠加后会溢出 |
+| 近平面衰减 | weight 用 `1 - gl_FragCoord.z*0.9`（参考的常数） | 与参考一致；物理上更合理的是 `1/depth` |
+| 单层精度 | reveal 是 R8Unorm（8 位） | 参考用 `GL_R8`；超过约 256 层时乘积会量化到 0 |
+| 采样器 | 线性过滤 + ClampToEdge | 全屏 quad 是 1:1 采样，过滤模式实际不起作用 |
+| MSAA | 不支持 | `independentBlend` 与 MSAA resolve 组合需要额外验证，暂不引入 |
+| 描述符共享 | OIT pass 的附件跨 in-flight frame 共用一套 | 与 subpasses 一致；同队列串行执行 + 每帧 clear 保证安全（见 16.2） |
+
+### 20.8 构建与验证状态
+
+| 项 | 结果 |
+| --- | --- |
+| 全量构建 | **22 个示例** + `myEngine` + `example_common`：**0 error / 0 warning** |
+| 运行期校验 | 22 个示例逐个冒烟：**VUID = 0 / Validation Error = 0**，原 21 个无回归 |
+| 顺序无关性 | 交换绘制顺序后 dump **逐字节一致**（1280×720 与 1024×600 两种分辨率各验一次） |
+| 像素级校验 | 混合区域面积与 sRGB 均值可手算复现（见 20.5） |
+| resize | 附件重建后描述符刷新，投影按新 aspect 重算，0 校验错误 |
 

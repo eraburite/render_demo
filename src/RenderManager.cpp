@@ -257,6 +257,7 @@ void RenderManager::createDevice(const DeviceRequirement &req)
     deviceFeatures.geometryShader = req.geometryShader ? VK_TRUE : VK_FALSE;
     deviceFeatures.tessellationShader = req.tessellationShader ? VK_TRUE : VK_FALSE;
     deviceFeatures.fillModeNonSolid = req.fillModeNonSolid ? VK_TRUE : VK_FALSE;
+    deviceFeatures.independentBlend = req.independentBlend ? VK_TRUE : VK_FALSE;
 
     vk::DeviceCreateInfo createInfo{};
     createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());

@@ -2,6 +2,7 @@
 
 #include "IRenderPass.h"
 
+#include <algorithm>
 #include <array>
 #include <functional>
 #include <stdexcept>
@@ -353,6 +354,31 @@ void GraphicsPipeline::createPipeline(const std::shared_ptr<IRenderPass> &render
     const uint32_t colorAttachmentCount = renderPass ? renderPass->colorAttachmentCount(subpass) : 1;
     std::vector<vk::PipelineColorBlendAttachmentState> colorAttachments(
         colorAttachmentCount == 0 ? 1 : colorAttachmentCount, colorBlendAttachment);
+
+    // Per-attachment overrides (weighted-blended OIT needs an additive target and
+    // a multiplicative one in the same subpass).  A short list repeats its last
+    // entry, so callers that only care about the first target do not have to
+    // duplicate it.
+    if (!m_config.blendAttachments.empty()) {
+        const auto toVk = [](const ColorBlendAttachment &state) {
+            vk::PipelineColorBlendAttachmentState result{};
+            result.blendEnable = state.enable ? VK_TRUE : VK_FALSE;
+            result.srcColorBlendFactor = state.srcColor;
+            result.dstColorBlendFactor = state.dstColor;
+            result.colorBlendOp = state.colorOp;
+            result.srcAlphaBlendFactor = state.srcAlpha;
+            result.dstAlphaBlendFactor = state.dstAlpha;
+            result.alphaBlendOp = state.alphaOp;
+            result.colorWriteMask = state.writeMask;
+            return result;
+        };
+        const vk::PipelineColorBlendAttachmentState fallback = toVk(m_config.blendAttachments.back());
+        std::fill(colorAttachments.begin(), colorAttachments.end(), fallback);
+        const size_t specified = std::min(colorAttachments.size(), m_config.blendAttachments.size());
+        for (size_t i = 0; i < specified; ++i) {
+            colorAttachments[i] = toVk(m_config.blendAttachments[i]);
+        }
+    }
 
     vk::PipelineColorBlendStateCreateInfo colorBlending{};
     colorBlending.logicOpEnable = VK_FALSE;

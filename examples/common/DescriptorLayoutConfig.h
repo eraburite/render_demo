@@ -108,6 +108,38 @@ inline constexpr auto InputAttachmentComponentTable = std::make_tuple(
     InputAttachmentConfig{InputAttachmentComponent::eAlbedo, vk::DescriptorType::eCombinedImageSampler, 1,
                           vk::ShaderStageFlagBits::eFragment});
 
+// ---- weighted-blended OIT ---------------------------------------------------
+// One quad instance: its model matrix and its RGBA color.  The reference
+// re-uploads a `mat4 mvp` + a color uniform per draw and issues three separate
+// draws; here the three quads live in one static SSBO and the draw is instanced
+// with gl_InstanceIndex selecting the entry, which keeps the per-frame CPU work
+// at "two uniform writes".
+struct OitObject {
+    alignas(16) glm::mat4 model;
+    alignas(16) glm::vec4 color;
+};
+static_assert(sizeof(OitObject) == 80, "OitObject must be model(64) + color(16)");
+struct OitObjects {
+    OitObject objects[3];
+};
+enum class OitComponent { eObjects };
+using OitConfig = DescriptorComponentSpec<OitComponent>;
+inline constexpr auto OitComponentTable = std::make_tuple(OitConfig{
+    OitComponent::eObjects, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eVertex});
+
+// Screen pass of the OIT pipeline: the three offscreen targets as plain
+// sampled textures.  Distinct from InputAttachmentComponent because these are
+// attachment 0/2/3 of the *previous* pass, read after the pass ended.
+enum class OitCompositeComponent { eOpaque, eAccum, eReveal };
+using OitCompositeConfig = DescriptorComponentSpec<OitCompositeComponent>;
+inline constexpr auto OitCompositeComponentTable = std::make_tuple(
+    OitCompositeConfig{OitCompositeComponent::eOpaque, vk::DescriptorType::eCombinedImageSampler, 1,
+                       vk::ShaderStageFlagBits::eFragment},
+    OitCompositeConfig{OitCompositeComponent::eAccum, vk::DescriptorType::eCombinedImageSampler, 1,
+                       vk::ShaderStageFlagBits::eFragment},
+    OitCompositeConfig{OitCompositeComponent::eReveal, vk::DescriptorType::eCombinedImageSampler, 1,
+                       vk::ShaderStageFlagBits::eFragment});
+
 // ---- subpass inputs: read inside the pass that wrote them -------------------
 // Different from the table above: those entries are *sampled* views of a
 // resolved offscreen image, these are VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT and

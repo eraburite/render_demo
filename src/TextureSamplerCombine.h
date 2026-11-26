@@ -30,6 +30,12 @@ public:
     vk::ImageView imageView() const { return m_view; }
     vk::Sampler sampler() const { return m_sampler; }
 
+    // Attachment views die with the framebuffer, so a resize replaces them.
+    // Re-point and rewrite the descriptors (GraphicsPipeline::RefreshDescriptors);
+    // constructWriteDescriptorSet() rebuilds the image info from m_view, so no
+    // cached state has to be invalidated here.
+    void setImageView(vk::ImageView view) { m_view = view; }
+
 private:
     vk::ImageView m_view;
     vk::Sampler m_sampler;

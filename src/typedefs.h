@@ -83,6 +83,11 @@ struct DeviceRequirement {
     bool tessellationShader = false;
     bool fillModeNonSolid = false;
     bool samplerAnisotropy = true;
+    // Per-color-attachment blend factors.  Enabled by default: it is required by
+    // weighted-blended OIT (an additive target next to a multiplicative one in
+    // the same subpass) and virtually every desktop GPU reports it, so gating it
+    // behind a per-example switch would only create a silent failure mode.
+    bool independentBlend = true;
     std::vector<const char *> extensions;
 };
 

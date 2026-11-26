@@ -25,6 +25,52 @@ struct GraphicsPipelineStage {
     vk::ShaderStageFlagBits stage = vk::ShaderStageFlagBits::eVertex;
 };
 
+// Per-color-attachment blend state.  Plain alpha blending is one flag
+// (GraphicsPipelineConfig::blendEnable), but weighted-blended OIT writes two
+// targets that need *different* factors in the same subpass: the accumulation
+// target adds (ONE, ONE) while the revealage target multiplies
+// (ZERO, ONE_MINUS_SRC_COLOR).  Vulkan has always allowed per-attachment state;
+// this struct is what lets a caller express it.
+struct ColorBlendAttachment {
+    bool enable = true;
+    vk::BlendFactor srcColor = vk::BlendFactor::eSrcAlpha;
+    vk::BlendFactor dstColor = vk::BlendFactor::eOneMinusSrcAlpha;
+    vk::BlendOp colorOp = vk::BlendOp::eAdd;
+    vk::BlendFactor srcAlpha = vk::BlendFactor::eOne;
+    vk::BlendFactor dstAlpha = vk::BlendFactor::eOneMinusSrcAlpha;
+    vk::BlendOp alphaOp = vk::BlendOp::eAdd;
+    vk::ColorComponentFlags writeMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG
+                                       | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+
+    // The plain "src alpha over" case, spelled out so examples can start from a
+    // known state instead of the struct defaults.
+    static ColorBlendAttachment alphaBlend()
+    {
+        ColorBlendAttachment state;
+        return state;
+    }
+    // dst = src + dst, for accumulation targets.
+    static ColorBlendAttachment additive()
+    {
+        ColorBlendAttachment state;
+        state.srcColor = vk::BlendFactor::eOne;
+        state.dstColor = vk::BlendFactor::eOne;
+        state.srcAlpha = vk::BlendFactor::eOne;
+        state.dstAlpha = vk::BlendFactor::eOne;
+        return state;
+    }
+    // dst = dst * (1 - src), for revealage targets.
+    static ColorBlendAttachment revealage()
+    {
+        ColorBlendAttachment state;
+        state.srcColor = vk::BlendFactor::eZero;
+        state.dstColor = vk::BlendFactor::eOneMinusSrcColor;
+        state.srcAlpha = vk::BlendFactor::eZero;
+        state.dstAlpha = vk::BlendFactor::eOneMinusSrcAlpha;
+        return state;
+    }
+};
+
 // Optional construction settings for GraphicsPipeline.  The default value is
 // deliberately identical to the legacy hard-coded behaviour (vert+frag,
 // triangle list, fill, no culling, depth less/write on), so existing examples
@@ -60,6 +106,11 @@ struct GraphicsPipelineConfig {
     bool dynamicStencilCompareMask = false;
     bool dynamicStencilWriteMask = false;
     bool blendEnable = false;
+    // Optional per-attachment override.  When non-empty, entry i describes
+    // color attachment i of this pipeline's subpass; a list shorter than the
+    // attachment count repeats its last entry.  Empty keeps the legacy single
+    // `blendEnable` state, so every existing example is byte-for-byte unchanged.
+    std::vector<ColorBlendAttachment> blendAttachments;
     bool primitiveRestartEnable = false;
     // Specialization constants, grouped by the stage key they apply to.  Each
     // group becomes a VkSpecializationInfo attached to that stage.  Kept as a
@@ -88,6 +139,12 @@ struct GraphicsPipelineConfig {
         dynamicStencilReference = reference;
         dynamicStencilCompareMask = compareMask;
         dynamicStencilWriteMask = writeMask;
+        return *this;
+    }
+    // Per-attachment blend, in subpass color-attachment order.
+    GraphicsPipelineConfig &addBlendAttachment(ColorBlendAttachment state)
+    {
+        blendAttachments.push_back(state);
         return *this;
     }
 };
