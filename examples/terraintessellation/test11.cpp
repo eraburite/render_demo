@@ -215,19 +215,23 @@ void test(int argc, char **argv)
         if (!sequence->prepareFrame()) {
             continue;
         }
+        const uint32_t frame = sequence->getFrameInFlight();
         const auto extent = mgr->getSwapChain()->getExtent2D();
         const CameraMatrix matrices = MakeCameraMatrix(*camera, static_cast<float>(extent->width),
                                                        static_cast<float>(extent->height));
         TerrainUBO ubo;
         ubo.viewProj = matrices.proj * matrices.view;
         ubo.eye = glm::vec4(camera->Position, 1.0f);
-        for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; ++frame) {
-            fillDraw->OnUpdateRawData(ResourceId(0, 0), frame, ubo);
-            lineDraw->OnUpdateRawData(ResourceId(0, 0), frame, ubo);
-        }
+        fillDraw->OnUpdateRawData(ResourceId(0, 0), frame, ubo);
+        lineDraw->OnUpdateRawData(ResourceId(0, 0), frame, ubo);
 
         auto draw = wireframe ? lineDraw : fillDraw;
         sequence->beginRecording();
+        // The uniform block is a per-frame resource: updateRawData only marks it
+        // dirty, and CmdSyncDevice is what emits the staging -> device copy.
+        // Without it the GPU keeps the values from the one-shot upload, so a
+        // camera move or a window resize never reaches the shader.
+        sequence->record(syncOp);
         sequence->recordPass(renderPass, [&]() { sequence->record(draw); });
         sequence->endRecording();
         sequence->submitFrame();

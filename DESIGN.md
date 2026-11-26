@@ -2723,3 +2723,214 @@ vampire 一个样本会把若干条路径掩盖成"恰好成立"，因为它同�
 | 截断诊断 | 告警附带最坏顶点的保留权重比：vampire 94.53%（6 对）、FBX 76.99%（3783 对）（21.4 / 21.6） |
 | resize | 1024 × 600 下角色完整、0 校验错误（两个样本都验过） |
 
+## 22. LearnOpenGL guest 2021 之一（场景图 + 视锥剔除、高度图地形）
+
+`D:/LearnOpenGL/src/8.guest/2021` 下四个目录、六个可执行。逐个读过之后的结论：
+
+| 参考目录 | 内容 | 处置 |
+| --- | --- | --- |
+| `1.scene/1.scene_graph` | 11 级嵌套行星，逐帧合成父子矩阵 | 并入 `examples/scene_graph`（`--mode chain`） |
+| `1.scene/2.frustum_culling` | 400 个实体 + AABB 视锥剔除 | 并入 `examples/scene_graph`（`--mode grid`） |
+| `2.csm` | 5 级联阴影 | 第 23 章（引擎缺数组深度附件 / 可采样深度视图 / GS 分层） |
+| `3.tessellation/terrain_cpu_src` | 高度图在 CPU 端位移 | 并入 `examples/heightmap_terrain`（`--mode cpu`） |
+| `3.tessellation/terrain_gpu_dist` | 高度图在 TES 里位移 + 距离自适应细分 | 并入 `examples/heightmap_terrain`（`--mode gpu`） |
+| `4.dsa` | OpenGL 4.5 Direct State Access | **不迁移**，理由见 22.7 |
+
+两个场景图程序合成一个示例，两个地形程序合成一个示例，因为它们各自只差**一个变量**——合并之后那个变量变成命令行开关，可以直接对拍。这是本批迁移唯一有意义的组织方式：分成四个独立示例就只能靠眼睛比。
+
+### 22.1 场景图：层次是索引，实例化是压紧
+
+参考实现把整棵树的每个结点都做成一个独立的 `Entity`：
+
+```cpp
+struct Entity { std::list<std::unique_ptr<Entity>> children; Model ourModel; Transform transform; };
+```
+
+`Model` 是**顶点、索引、纹理**的全套拷贝，所以每个结点一次 `glDrawElements`，400 个实体的场景就是 400 份 VBO 和 400 次绑定。这份火星模型 1 mesh / 3.5 万三角形，400 份拷贝是 1.1 GB 显存——它能跑起来只是因为示例里 400 个实体共用同一个 `Model` 的副本被驱动去重了（几何内容相同），换成每个实体几何不同就会立刻炸。
+
+本移植把层次和绘制彻底分开：
+
+```cpp
+struct SceneNode { int parent; glm::vec3 localPosition; float localScale; bool hasMesh; };
+```
+
+* 层次是**扁平数组 + 父索引**，且装载期强制"父索引 < 子索引"，所以世界矩阵是一次前向遍历，无递归、无分配：
+  ```cpp
+  for (size_t i = 0; i < nodes.size(); ++i) world[i] = world[parent(i)] * locals[i];
+  ```
+  这条不变量用异常兜住（`node N precedes its parent`），未来改场景时不会静默错。
+* 绘制是**一次实例化 draw**：每个可见结点的世界矩阵写进 set3 的实例表，`gl_InstanceIndex` 选一行。400 个实体 = 1 次绑定 + 1 次 `vkCmdDrawIndexed`。
+
+### 22.2 视锥平面从 viewProj 提取，而不是从相机基向量
+
+参考实现在 `includes/learnopengl/entity.h` 里有 `createFrustumFromCamera(const Camera&, ...)`，用相机的 `Front/Right/Up`、`aspect`、`fovY`、`near/far` 手搓六个平面。
+
+它隐含三个前提：投影对称、无 roll、`fovY` 与真正的投影矩阵一致。第一条在本移植里就不成立——`MakeCameraMatrix` 把 `proj[1][1]` 取了负（Vulkan 的 Y 向下 NDC），第二条一旦有人给相机加 roll 就崩。
+
+所以走矩阵：`examples/common/Frustum.h` 只从 `viewProj` 拿平面。
+
+```cpp
+// 行向量记号下，裁剪空间不等式 -w <= x <= w 展开成六个平面
+plane[0] = row3 + row0;   // left
+plane[1] = row3 - row0;   // right
+plane[2] = row3 + row1;   // bottom
+plane[3] = row3 - row1;   // top
+plane[4] = row3 + row2;   // near
+plane[5] = row3 - row2;   // far
+```
+
+这样 CPU 端的剔除测试与 GPU 端的裁剪**用的是同一套数学**：只要测试说"在视锥外"，硬件就一定也认为在视锥外。
+
+有一个细节必须写清楚：`glm::perspective` 给的是 OpenGL 的 `[-1, 1]` 深度，而 Vulkan 只裁 `[0, 1]`。近平面取 `row3 + row2`（对应 z = -w）比 Vulkan 实际保留的范围**更宽松**，所以是保守剔除——多画不会错，这是可以接受的方向。反过来取 `[0,1]` 的平面才是危险的。
+
+包围盒变换用 `|M| · extent`：
+
+```cpp
+const glm::mat3 absolute(glm::abs(linear[0]), glm::abs(linear[1]), glm::abs(linear[2]));
+WorldBox box{ mat * vec4(localCenter, 1), absolute * localExtent };
+```
+
+逐分量取绝对值再乘，得到的正是世界空间 AABB 的半长——缩放、旋转、非均匀缩放一起覆盖，不需要单独判断。
+
+### 22.3 剔除的判据：逐字节相同
+
+"看起来对"不足以证明剔除正确。平面提取错一个符号、包围盒少算一次缩放、`instanceCount` 传错，画面都可能只是"少了一点点"。
+
+所以这个示例的验收标准是：**`--cull` 与 `--no-cull` 的 dump 必须逐字节相同**。剔除只允许改变"画几个"，不允许改变"画成什么样"。剔除的实现方式正好让这一点可证——存活实体被压紧到实例表头部，draw 的实例数设成存活数：
+
+```cpp
+pipeline->setInstanceCount(static_cast<uint32_t>(visibleMatrices.size()));
+```
+
+一个 draw 参数、一张表，没有第二条代码路径可以出错。
+
+实测（1280 × 720，`cmp` 判定）：
+
+| 场景 | 剔除 | 存活 | coverage | uniqueColors | 与 no-cull 对比 |
+| --- | --- | --- | --- | --- | --- |
+| grid（20 × 20 = 400） | on | **93 / 400** | 0.452869 | 3180 | **逐字节相同** |
+| chain（11 级）t = 0 | on | **11 / 11** | 0.0494314 | 871 | **逐字节相同** |
+| chain t = 9（根已转 180°） | on | **2 / 11** | 0.0232064 | 284 | **逐字节相同** |
+
+三行合起来说明三件不同的事：grid 证明"剔掉了 77% 而画面不变"；chain t=0 证明"没有该剔的剔错"（全部存活）；chain t=9 证明"根旋转 180° 后确实只剩两个在框内，而画面依然不变"——如果平面提反了，t = 9 会剔掉本该留下的。
+
+`--time` 冻结动画，两次运行 dump 完全一致（0.0366048 / 533 色），所以上面这些数字是可复现的。
+
+### 22.4 高度图地形：两条位移路的共同基准
+
+参考实现的两个地形程序差的**不止**"谁来位移"：
+
+| 维度 | `terrain_cpu_src` | `terrain_gpu_dist` |
+| --- | --- | --- |
+| 位移位置 | CPU，逐 texel 建顶点 | TES，逐细分顶点采样高度图 |
+| 网格 | 2624 × 1756 顶点全分辨率 | 20 × 20 个四边形面片（80 个控制点/行） |
+| 索引 | 1755 条 triangle strip | 无 |
+| 自适应细分 | 无 | TCS 按边到相机距离，4 .. 64 级 |
+| 着色 | 灰度 `(h+16)/32`，无法线 | 灰度 `(h+16)/64`，无法线 |
+
+这两个程序的教学价值就在这张表的对比上，所以 `heightmap_terrain` 把两者**各自保真**地合并，`--mode` 选路，`--step` 控制 CPU 路抽稀，`--patches` 控制 GPU 路面片数。
+
+让对拍成立的关键决定：**两条路输出完全相同的三个 varying**，跑同一个 fragment shader。
+
+```glsl
+// terrain_cpu.vert 与 terrain_gpu.tese 都写这三个
+layout (location = 0) out vec3 outNormal;
+layout (location = 1) out vec3 outWorldPos;
+layout (location = 2) out float outHeight;
+```
+
+于是 dump 之间的差异只可能是几何差异，不可能来自着色。实测（1280 × 720，同机位、同参数）：
+
+| 对比 | meanAbsDiff | max | RGB 完全相同的 texel |
+| --- | --- | --- | --- |
+| gpu vs cpu（`--step 1`，460 万顶点） | **1.54 / 255** | 146 | 25.1% |
+| gpu vs cpu（`--step 2`，115 万顶点） | **1.99 / 255** | 141 | 20.2% |
+
+两条完全独立的位移路径（一条在主机上算，一条在硬件细分器里算）平均差 0.5%～0.7%，差异集中在山脊的亚像素轮廓上。这个量级同时证明了两件事：高度图采样一致、法线重建一致。
+
+几何规模的对比是另一个结论：
+
+| | 控制点/顶点 | 上传量 | 三角形 |
+| --- | --- | --- | --- |
+| cpu `--step 2` | 1 151 936 顶点 | 61.5 MB 顶点 + 8.8 MB 索引 | 2 299 494 |
+| cpu `--step 1` | 4 607 744 顶点 | 246.1 MB 顶点 + 35.1 MB 索引 | 9 206 730 |
+| gpu `--patches 32` | **4 096 控制点** | **224 KB** | 由细分级别决定（上限 838 万） |
+
+### 22.5 主机侧采样必须复刻采样器行为
+
+CPU 路要在主机上算高度和法线，就必须和 GPU 路的 `textureLod(heightMap, uv, 0.0)` 给出同一个数，否则两条路永远对不上。`HeightField::sample()` 是照 `CLAMP_TO_EDGE` + linear + LOD 0 的语义手写的：
+
+```cpp
+const float fx = u * width - 0.5f;      // u = 0.5/w 正好落在第一个 texel 中心
+const int x0 = static_cast<int>(std::floor(fx));
+const float tx = fx - x0;
+// 四个 texel 双线性，索引 clamp 到 [0, w-1]
+```
+
+三处细节：
+
+* **-0.5 偏移**。归一化坐标 `u = 0` 是第一个 texel 的**左边缘**，而双线性插值的锚点是 texel 中心，所以必须先减 0.5 再取整。少了这一句，整张高度图会偏移半个 texel，同时山脊的法线出现一格宽的错位。
+* **只有一级 mip**。高度图是数据不是照片：盒式滤波生成的 mip 是"更平滑的高度"而不是"更低分辨率的高度"，远处地形会随着 mip 选择悄悄变形。同理在 TES 里必须用 `textureLod(..., 0.0)`——TES 里的隐式 LOD 由**细分域**的导数决定，会随细分级别变化，几何量会跟着 LOD 跳。
+* **UNORM，不是 sRGB**。`TextureImageSpec::format` 若给 `eR8G8B8A8Srgb`，字节会被解一次 ~2.2 的 gamma，同一张图在同一个坐标上给出不同的高度。这一条写进了 `data/heightmaps/source_attribution.txt`。
+
+### 22.6 参考实现里修掉的两处
+
+**高度归一化不一致。** CPU 路 `(Height+16)/32`、GPU 路 `(Height+16)/64`，而两条路的世界高度其实都是 `byte/255·64 - 16`（CPU 的 `64/256` 与 GPU 的 `64.0` 是同一个比例）。所以 CPU 路的灰度峰值到 2.0，整片高地被截白；GPU 路的灰度只到 1.0。这里两条路统一成 `span = 64, shift = 16`，fragment 除以 span，`--grayscale` 的取值因此严格落在 `[0, 1]`——实测 GPU 路 256 个灰阶、均值 0.528，没有任何截白区域。
+
+**面片角点顺序。** 参考实现按 `(i,j) (i+1,j) (i,j+1) (i+1,j+1)` 发四个控制点，而四边形细分器规定 0、1、2、3 沿**周长**排列，且 `gl_TessCoord = (u,v)` 里 u 沿 0→1、v 沿 0→3。于是控制点 2 被当成 `(u=1,v=1)`、控制点 3 被当成 `(u=0,v=1)`，而参考实现自己又按 `p00=c0, p01=c1, p10=c2, p11=c3` 做双线性——两套约定不一致，结果是一个在 u 方向**镜像**的面片。它之所以看起来还行，是因为高度图 UV 也被同一个镜像关系插值了，几何和纹理一起镜像。本移植按周长顺序发点，u 沿 +x、v 沿 +z，TCS 的外边级别也就落在了正确的边上（外边 i 连接控制点 i 与 i+1）。
+
+用 `--patches 4 --wireframe` 把这 16 个面片放大到整屏，可以直接看到细分网格跨面片边界连续、无 T 形裂缝：
+
+```
+[heightmap_terrain] mode gpu: 4 x 4 = 16 patches, 64 control points (3.5 KB), ...
+```
+
+顺带修掉的一处旧缺陷：`examples/terraintessellation`（第 14 章的 test11）从来没有把 `CmdSyncDevice` 录进帧循环，`updateRawData` 只是把数据写进 staging 并置脏，真正的 staging → device 拷贝只在一次性的 `UploadSequence` 里发生过。相机不动时看不出问题，一动就会发现 `viewProj` 永远停在首帧的值。本批把它补进了 `sequence->record(syncOp)`（并顺手改成只写当前 frame 的 UBO）。
+
+### 22.7 `4.dsa` 为什么没有 Vulkan 对应
+
+`hello_triangle_dsa.cpp`（147 行）讲的是 OpenGL 4.5 的 Direct State Access：
+
+```cpp
+glCreateBuffers(1, &vbo);
+glNamedBufferStorage(vbo, sizeof(vertices), vertices, 0);
+glVertexArrayAttribFormat(vao, 0, 3, GL_FLOAT, GL_FALSE, 0);
+glTextureStorage2D(tex, 1, GL_RGB8, 1, 1);
+```
+
+它解决的问题是**状态机**：GL 的对象默认"先绑定、再操作"，DSA 让每个函数带上对象名，省掉绑定。这是一个纯 API 风格的收益，没有渲染技术。
+
+Vulkan 里不存在这个问题的前提——**没有任何隐式绑定状态**。每个 `vkCmd*` 都显式带 `vkCommandBuffer`，每次拷贝都带源和目标，创建 `VkImage` 时格式/尺寸/usage 一次性写进 create-info 且之后不可变。GL 的"绑定"在 Vulkan 里对应的是一次描述符集写入 + 一次 `vkCmdBindDescriptorSets`，而那是**显式的**、由引擎的 `DescriptorLayoutAtlas` 统一生成的。
+
+也就是说：`4.dsa` 想教的东西，Vulkan 在设计上就已经是了。硬要迁移只能写出一个"Vulkan 里做同一个三角形"的示例，那和 `examples/simplest` 重复，且会误导读者以为 DSA 是一个可以"移植"的技术。所以不迁移，只在此记录理由。
+
+### 22.8 差异与限制
+
+| 项 | 现状 | 原因/后续 |
+| --- | --- | --- |
+| 场景图取景 | grid `eye(0,14,90)` pitch −8°、chain `eye(27,7,28)` pitch −13°，都落在 `MakeCameraMatrix` 的 0.1..100 远平面内 | 有意不改远平面：这样"剔除是否出错"不会和"远平面是否截断"混在一起 |
+| chain 可见度 | t=0 时 11/11 全在框内，coverage 仅 0.049 | 链条本身细长（37 单位宽），相机拉远才能装下，所以它只适合证明"没多剔"，不适合证明"少画" |
+| 实例表容量 | set3 `GBufferSpec{meshNodeCount, sizeof(mat4)}` | 400 个实体 = 6.4 KB；上万实体应换 SSBO |
+| 地形取景 | `eye(0,627.5,800)`、yaw −90°、pitch −45° | 高度图是有限平板：从任何同时看得见长轴的机位出发，远角只有约 1800 单位，一定在框内。沿 1755 单位短轴看、相机离远边界 800 单位时，画面顶端到 1515 单位、边界在 1677，整帧才落在图内（coverage 0.99） |
+| 地形远平面 | 自建投影 `near 1 / far 20000`，不用 `MakeCameraMatrix`（far = 100） | 地图 2623 单位跨距，far = 100 会把整片地形裁掉 |
+| CPU 路内存 | `--step 1` 需 246 MB 顶点 + 35 MB 索引（+ 同尺寸 staging） | 这是"CPU 位移的代价"，故意保留；要省就 `--step 2`（61 MB）或走 GPU 路（224 KB） |
+| CPU 路网格格式 | `sizeof(Vertex)` = 56 B，其中 color/tangent 未使用 | 引擎的 `VertexInputAtlas` 把 stride 固定成 `sizeof(Vertex)`；要按属性压紧需要自定义 `IVertexInputStateGroup` |
+| CPU 路 draw 数 | 875 … 1755 次 `vkCmdDrawIndexed`（每条 strip 一次） | 相邻行不能拼成一条 strip（会把行间顶点连起来），要压成一次 draw 只能改成 triangle list，索引量翻三倍 |
+| 高度图资源 | 2624 × 1756 RGBA8，1.5 MB，只读 R 通道 | 保持与参考实现同一个文件；换成单通道 R8 可省 3/4，但那样就不是"迁移同一份资源"了 |
+| 首帧确定性 | `--dump-after` 默认 2 | 冷启动首帧偶发沿用了旧的 swapchain extent（投影差一点）；两个稳定帧之后 dump 才可复现 |
+| 阴影 | 无 | 参考的 `2.csm` 是第 23 章 |
+
+### 22.9 构建与验证状态
+
+| 项 | 结果 |
+| --- | --- |
+| 全量构建 | **25 个示例** + `myEngine` + `example_common`：**0 error / 0 warning** |
+| 场景图剔除等价 | grid / chain t=0 / chain t=9 三组 `--cull` 与 `--no-cull` 的 dump **逐字节相同**（`cmp`） |
+| 场景图剔除数 | grid 93/400 存活；chain t=0 11/11；chain t=9 **2/11** |
+| 场景图可复现 | 同 `--time` 两次运行 coverage / uniqueColors / mean 完全一致 |
+| 地形双路等价 | gpu vs cpu(step1) meanAbsDiff **1.54/255**；gpu vs cpu(step2) **1.99/255** |
+| 地形灰度 | GPU 路 257 个灰阶、均值 0.5279、无截白；CPU 路 256 / 0.5281 |
+| 地形面片连续性 | `--patches 4 --wireframe` 下 16 个面片跨边界连续，无裂缝 |
+| 地形规模 | cpu step2：1 151 936 顶点 / 2 299 494 三角形；cpu step1：4 607 744 / 9 206 730；gpu：4096 控制点 |
+| 运行期校验 | `heightmap_terrain` 两种模式、`terraintessellation`（改动后）冒烟：**VUID = 0 / Validation Error = 0** |
+| 回归 | `terraintessellation` 补上逐帧 `CmdSyncDevice` 后仍 0 校验错误，画面与改动前一致 |

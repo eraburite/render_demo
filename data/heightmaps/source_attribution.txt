@@ -1,0 +1,16 @@
+iceland_heightmap.png
+====================
+
+Source: LearnOpenGL repository, resources/textures/heightmaps/
+  https://github.com/JoeyDeVries/LearnOpenGL
+
+Used by: examples/heightmap_terrain (both the CPU matrix and the GPU tessellation path)
+
+Size: 2624 x 1756, 8-bit RGBA, 1.5 MB.
+
+Only the red channel is read.  The image has to be sampled as UNORM, never as
+sRGB: an sRGB decode would apply a ~2.2 gamma to the stored byte and turn a
+linear height ramp into a curve, so the same PNG would produce a different
+mountain range depending on the view format.  The example keeps one mip level
+for the same reason -- a box-filtered mip chain is a *smoothed* copy of the
+heights, not a lower-resolution one.
