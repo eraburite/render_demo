@@ -1,0 +1,14 @@
+dancing_vampire.dae — the animated character shipped with the LearnOpenGL
+skeletal-animation example:
+  https://learnopengl.com/Guest-Articles/2020/Skeletal-Animation
+  https://github.com/JoeyDeVries/LearnOpenGL/tree/master/resources/objects/vampire
+
+Taken verbatim from that repository's resources/objects/vampire (dae plus its
+four textures).  Kept as .dae because the point of examples/skeletal_animation is
+to load the same file the reference loads: the .dae root node carries a 0.01
+scale, which is what makes the "normalise with a model matrix, not in vertex
+space" rule in DESIGN.md §21.3 observable at all.
+
+It is a large asset for a repository (32 MB .dae, 11 MB of PNGs) — Collada is
+verbose XML and every keyframe is stored in decimal, which is also why it is a
+useful importer test.

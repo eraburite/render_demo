@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 // ---------------------------------------------------------------------------
 // Loader-neutral model data.
@@ -100,6 +101,67 @@ struct TextureImage {
     std::string name;
 };
 
+// ---------------------------------------------------------------------------
+// Skinning
+//
+// A skinned vertex is positioned by up to kMaxJointInfluences joint matrices
+// instead of by its node's world matrix:
+//
+//     p' = sum_i w_i * (world(joint_i.node) * joint_i.inverseBind) * p
+//
+// The inverse bind matrix maps a vertex from bind-pose world space into that
+// joint's local space, so `world * inverseBind` is the identity at bind pose and
+// a pure deformation while animating.  Both halves live here so a loader does
+// not have to invent its own representation: assimp fills this from
+// aiBone::mOffsetMatrix plus the node hierarchy, glTF would fill it from
+// POSITION_0/JOINTS_0/WEIGHTS_0 plus inverseBindMatrices.
+// ---------------------------------------------------------------------------
+inline constexpr uint32_t kMaxJointInfluences = 4;
+
+struct Joint {
+    std::string name;
+    // Node this joint's world matrix comes from; -1 if the file named a joint
+    // the node tree does not contain (the loader then keeps the bind matrix).
+    int nodeIndex = -1;
+    glm::mat4 inverseBindMatrix{1.0f};
+};
+
+struct Skin {
+    std::string name;
+    std::vector<Joint> joints; // vertex bone indices index this list
+};
+
+// One keyframe track.  Time is in ticks, matching the file; AnimationClip owns
+// the tick rate that converts it to seconds.
+struct VectorKey {
+    float time = 0.0f;
+    glm::vec3 value{0.0f};
+};
+
+struct QuaternionKey {
+    float time = 0.0f;
+    glm::quat value{1.0f, 0.0f, 0.0f, 0.0f}; // glm::quat is (w, x, y, z)
+};
+
+// The tracks that replace one node's static transform while a clip plays.  A
+// channel may carry any subset of the three: files routinely animate rotation
+// only, and a missing track means "keep the bind value", not "identity".
+struct AnimationChannel {
+    int nodeIndex = -1;
+    std::vector<VectorKey> positions;
+    std::vector<QuaternionKey> rotations;
+    std::vector<VectorKey> scales;
+};
+
+struct AnimationClip {
+    std::string name;
+    float duration = 0.0f;         // ticks
+    float ticksPerSecond = 25.0f;  // 0 in the file means "unspecified"
+    std::vector<AnimationChannel> channels;
+
+    float durationSeconds() const { return ticksPerSecond > 0.0f ? duration / ticksPerSecond : duration; }
+};
+
 struct Model {
     std::vector<MeshVertex> vertices;
     std::vector<uint32_t> indices;
@@ -111,7 +173,28 @@ struct Model {
     glm::vec3 minBounds{0.0f};
     glm::vec3 maxBounds{0.0f};
 
+    // Skinning, empty for static geometry.  boneIndices/boneWeights are
+    // parallel to `vertices`; a joint index is an index into skins[0].joints.
+    // Unused influence slots carry index 0 with weight 0, which contributes
+    // nothing, so a shader can sum all four unconditionally.
+    //
+    // One skin per model: assimp's aiMesh::mBones describes a single joint set,
+    // and no file in this repo uses more.  Per-primitive skins (glTF's
+    // `skin` on a mesh) would need Primitive::skinIndex and a loop here.
+    std::vector<Skin> skins;
+    std::vector<glm::uvec4> boneIndices;
+    std::vector<glm::vec4> boneWeights;
+
+    std::vector<AnimationClip> clips;
+
     bool valid() const { return !vertices.empty() && !indices.empty(); }
+
+    // True when every vertex carries joint indices and weights.
+    bool isSkinned() const
+    {
+        return !skins.empty() && !skins[0].joints.empty() && boneWeights.size() == vertices.size()
+               && boneIndices.size() == vertices.size();
+    }
 
     uint64_t triangleCount() const { return indices.size() / 3; }
 
@@ -126,6 +209,20 @@ struct Model {
 // parents are handled (each node is visited once); orphans that no root
 // reaches keep the identity.
 std::vector<glm::mat4> computeNodeWorldMatrices(const Model &model);
+
+// Same traversal, but with caller-supplied local matrices instead of each
+// node's static ModelNode::transform.  An animator needs this: sampling a clip
+// produces one local matrix per animated node, and the world matrices have to
+// be rebuilt from those without touching the model.
+std::vector<glm::mat4> computeNodeWorldMatrices(const Model &model, const std::vector<glm::mat4> &localTransforms);
+
+// Bounds of the geometry in the space the renderer draws it in: every
+// primitive's vertices are transformed by the world matrix of the node that
+// references them.  Model::minBounds/maxBounds only cover mesh space, so they
+// are wrong for any file whose nodes carry a scale or translation -- which
+// includes most .dae/.fbx exports and is why a bind-pose skinned mesh needs
+// this too (its vertices are in mesh space as well).
+void computeWorldBounds(const Model &model, glm::vec3 &outMin, glm::vec3 &outMax);
 
 // Visits every drawing (node, mesh, primitive) triple depth-first in scene
 // order, so callers do not re-implement hierarchy traversal.  `world` is the

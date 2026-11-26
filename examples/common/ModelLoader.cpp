@@ -100,6 +100,13 @@ void flattenScene(Model &model)
 {
     if (model.meshes.empty() || model.indices.empty()) return;
 
+    // Baking node matrices into vertices is incompatible with skinning: the
+    // joint hierarchy is exactly what a skinned draw needs, and collapsing the
+    // nodes to identity would leave the animator nothing to walk.  A skinned
+    // model is flattened by its own GPU path instead -- the joint matrices
+    // already carry the node transform.
+    if (model.isSkinned()) return;
+
     std::vector<MeshVertex> outVertices;
     std::vector<uint32_t> outIndices;
     std::vector<Mesh> outMeshes;
@@ -224,6 +231,15 @@ void flattenScene(Model &model)
 void deduplicateVertices(Model &model)
 {
     if (model.meshes.empty() || model.indices.empty()) return;
+
+    // Merging skinned vertices is not a size optimisation, it is a bug: the
+    // VertexKey compares position/normal/UV/tangent/colour, so two vertices that
+    // agree on all of those but are bound to different joints would collapse
+    // into one and inherit whichever bone set was seen first.  The parallel
+    // boneIndices/boneWeights arrays would also have to be permuted in lockstep,
+    // and they are not.  Skinned meshes are dense (every vertex usually has its
+    // own weights), so there is nothing to win here anyway.
+    if (model.isSkinned()) return;
 
     std::vector<MeshVertex> outVertices;
     std::vector<uint32_t> outIndices;
@@ -518,7 +534,13 @@ Model ModelLoaderRegistry::load(const std::string &path, const ModelLoadOptions 
     //   flip V     before tangents, which are derived from UV derivatives.
     //   normals    before tangents, which are orthogonalised against them.
     //   transforms last, they move positions but keep topology.
-    if (options.flattenScene) model_post::flattenScene(model);
+    if (options.flattenScene) {
+        if (options.log && model.isSkinned()) {
+            std::cout << "[model] not flattening '" << path
+                      << "': it is skinned, and baking node matrices would destroy the joint hierarchy" << std::endl;
+        }
+        model_post::flattenScene(model);
+    }
     if (plan.deduplicate) model_post::deduplicateVertices(model);
     if (plan.flipTexCoordV) model_post::flipTexCoordV(model);
     if (plan.generateNormals) {

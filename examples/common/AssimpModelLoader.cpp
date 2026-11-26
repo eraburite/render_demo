@@ -36,6 +36,7 @@
 #include <cstring>
 #include <filesystem>
 #include <functional>
+#include <iostream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -346,7 +347,94 @@ Material convertMaterial(const aiMaterial *source, const aiScene *scene, const s
 }
 
 // Appends one aiMesh as a primitive of the shared vertex/index buffers.
-Primitive appendPrimitive(Model &model, const aiMesh *mesh)
+// One joint id per bone name, shared across all meshes of the file: a file may
+// split one skeleton over several aiMeshes, and the weights in each of them have
+// to point at the same joint.
+struct SkinBuilder {
+    std::vector<Joint> joints;
+    std::unordered_map<std::string, int> jointIndexByName;
+
+    int jointFor(const char *name, const aiMatrix4x4 &offset)
+    {
+        const std::string jointName = name ? name : "";
+        const auto existing = jointIndexByName.find(jointName);
+        if (existing != jointIndexByName.end()) {
+            return existing->second;
+        }
+        const int index = static_cast<int>(joints.size());
+        Joint joint;
+        joint.name = jointName;
+        joint.inverseBindMatrix = toGlm(offset);
+        joints.push_back(joint);
+        jointIndexByName.emplace(jointName, index);
+        return index;
+    }
+};
+
+// Binds this mesh's vertices to their joints.
+//
+// aiVertexWeight hands out (vertexId, weight) pairs bone by bone, so the slots
+// are filled in whatever order the bones appear.  A vertex with more than
+// kMaxJointInfluences weights keeps the first four it is offered; the reference
+// implementation does the same (it stops at MAX_BONE_INFLUENCE), but it does not
+// renormalise, which silently shrinks those vertices.  Renormalising keeps the
+// bind pose exactly equal to the unskinned one, which is what makes the static
+// cross-check in DESIGN.md §21.5 meaningful.
+void appendSkinData(Model &model, const aiMesh *mesh, uint32_t vertexStart, SkinBuilder &builder)
+{
+    if (mesh->mNumBones == 0) {
+        return;
+    }
+
+    std::vector<uint8_t> used(mesh->mNumVertices, 0);
+    uint32_t truncated = 0;
+
+    for (unsigned b = 0; b < mesh->mNumBones; ++b) {
+        const aiBone *bone = mesh->mBones[b];
+        const int joint = builder.jointFor(bone->mName.C_Str(), bone->mOffsetMatrix);
+        for (unsigned w = 0; w < bone->mNumWeights; ++w) {
+            const aiVertexWeight &weight = bone->mWeights[w];
+            if (weight.mVertexId >= mesh->mNumVertices || weight.mWeight <= 0.0f) {
+                continue;
+            }
+            const uint32_t vertex = vertexStart + weight.mVertexId;
+            if (vertex >= model.boneWeights.size()) {
+                continue;
+            }
+            uint8_t &slot = used[weight.mVertexId];
+            if (slot >= kMaxJointInfluences) {
+                ++truncated;
+                continue;
+            }
+            model.boneIndices[vertex][slot] = static_cast<uint32_t>(joint);
+            model.boneWeights[vertex][slot] = weight.mWeight;
+            ++slot;
+        }
+    }
+
+    for (unsigned v = 0; v < mesh->mNumVertices; ++v) {
+        const uint32_t vertex = vertexStart + v;
+        if (vertex >= model.boneWeights.size()) {
+            break;
+        }
+        glm::vec4 &weights = model.boneWeights[vertex];
+        const float sum = weights.x + weights.y + weights.z + weights.w;
+        if (sum > 0.0f && std::abs(sum - 1.0f) > 1e-6f) {
+            weights /= sum;
+        }
+    }
+
+    if (truncated > 0) {
+        // Worth saying out loud: the file asked for more influences than the
+        // vertex format carries, so those vertices are slightly different from
+        // what a tool with 8 weights would produce.
+        std::cerr << "[model] assimp: dropped " << truncated << " influence(s) beyond " << kMaxJointInfluences
+                  << " per vertex in mesh '" << (mesh->mName.C_Str() ? mesh->mName.C_Str() : "") << "'"
+                  << std::endl;
+    }
+}
+
+Primitive appendPrimitive(Model &model, const aiMesh *mesh, SkinBuilder &builder)
 {
     Primitive primitive;
     primitive.firstIndex = static_cast<uint32_t>(model.indices.size());
@@ -399,6 +487,19 @@ Primitive appendPrimitive(Model &model, const aiMesh *mesh)
     if (hasTexCoord) primitive.attributes |= VertexAttribute::eTexCoord;
     if (hasColors) primitive.attributes |= VertexAttribute::eColor;
     if (hasTangents) primitive.attributes |= VertexAttribute::eTangent;
+
+    // The bone arrays are parallel to `vertices`, so the first mesh that carries
+    // bones back-fills every vertex appended before it with a zero influence.
+    if (mesh->mNumBones > 0) {
+        if (model.boneIndices.size() < model.vertices.size()) {
+            model.boneIndices.resize(model.vertices.size(), glm::uvec4(0u));
+            model.boneWeights.resize(model.vertices.size(), glm::vec4(0.0f));
+        }
+        appendSkinData(model, mesh, vertexStart, builder);
+    } else if (!model.boneIndices.empty()) {
+        model.boneIndices.resize(model.vertices.size(), glm::uvec4(0u));
+        model.boneWeights.resize(model.vertices.size(), glm::vec4(0.0f));
+    }
     return primitive;
 }
 
@@ -493,6 +594,7 @@ Model AssimpModelLoader::load(const std::string &path, const ModelLoadOptions &o
     // built depth first.  One Mesh per aiNode keeps the graph and the draw list
     // in step even when a node references several aiMeshes: each of them becomes
     // one Primitive, and a Primitive is exactly what a draw needs.
+    SkinBuilder skinBuilder;
     std::function<int(const aiNode *)> addNode = [&](const aiNode *source) -> int {
         ModelNode node;
         node.name = source->mName.C_Str();
@@ -506,7 +608,7 @@ Model AssimpModelLoader::load(const std::string &path, const ModelLoadOptions &o
                 if (!sourceMesh || (sourceMesh->mPrimitiveTypes & aiPrimitiveType_TRIANGLE) == 0) {
                     continue;
                 }
-                Primitive primitive = appendPrimitive(model, sourceMesh);
+                Primitive primitive = appendPrimitive(model, sourceMesh, skinBuilder);
                 if (primitive.indexCount > 0) {
                     mesh.primitives.push_back(primitive);
                 }
@@ -532,6 +634,88 @@ Model AssimpModelLoader::load(const std::string &path, const ModelLoadOptions &o
 
     if (model.meshes.empty()) {
         throw std::runtime_error("assimp: '" + path + "' contains no triangle geometry");
+    }
+
+    // Node names are the link between three separately stored things: aiBone /
+    // aiNodeAnim both name a node, and Model stores nodes by index.  The map is
+    // built after the tree exists because a bone can name a node in a subtree
+    // the depth-first build had not reached yet when its mesh was appended.
+    std::unordered_map<std::string, int> nodeIndexByName;
+    nodeIndexByName.reserve(model.nodes.size());
+    for (size_t i = 0; i < model.nodes.size(); ++i) {
+        // emplace keeps the first match: duplicate node names resolve the same
+        // way the reference implementation's name->bone map does.
+        nodeIndexByName.emplace(model.nodes[i].name, static_cast<int>(i));
+    }
+
+    if (!skinBuilder.joints.empty()) {
+        uint32_t unresolvedJoints = 0;
+        for (Joint &joint : skinBuilder.joints) {
+            const auto node = nodeIndexByName.find(joint.name);
+            joint.nodeIndex = node != nodeIndexByName.end() ? node->second : -1;
+            if (joint.nodeIndex < 0) {
+                ++unresolvedJoints;
+            }
+        }
+        Skin skin;
+        skin.name = "skin0";
+        skin.joints = std::move(skinBuilder.joints);
+        model.skins.push_back(std::move(skin));
+        if (unresolvedJoints > 0) {
+            std::cerr << "[model] assimp: " << unresolvedJoints << " joint(s) name no node in '" << path
+                      << "'; they stay at their bind matrix" << std::endl;
+        }
+    }
+
+    // Clips.  assimp keeps animation time in ticks and states the rate
+    // separately; a rate of 0 means "the file did not say", which every DCC tool
+    // fills in with 25 -- and a literal 0 would make the playback divide by zero.
+    for (unsigned a = 0; a < scene->mNumAnimations; ++a) {
+        const aiAnimation *source = scene->mAnimations[a];
+        AnimationClip clip;
+        clip.name = source->mName.C_Str() ? source->mName.C_Str() : "";
+        clip.duration = static_cast<float>(source->mDuration);
+        clip.ticksPerSecond =
+            source->mTicksPerSecond > 0.0 ? static_cast<float>(source->mTicksPerSecond) : 25.0f;
+
+        for (unsigned c = 0; c < source->mNumChannels; ++c) {
+            const aiNodeAnim *sourceChannel = source->mChannels[c];
+            const auto node = nodeIndexByName.find(sourceChannel->mNodeName.C_Str());
+            if (node == nodeIndexByName.end()) {
+                // A channel naming something that is not in the node tree cannot
+                // be applied; dropping it keeps the animator's lookup total.
+                continue;
+            }
+            AnimationChannel channel;
+            channel.nodeIndex = node->second;
+
+            channel.positions.reserve(sourceChannel->mNumPositionKeys);
+            for (unsigned k = 0; k < sourceChannel->mNumPositionKeys; ++k) {
+                const aiVectorKey &key = sourceChannel->mPositionKeys[k];
+                channel.positions.push_back({static_cast<float>(key.mTime),
+                                             glm::vec3(key.mValue.x, key.mValue.y, key.mValue.z)});
+            }
+            channel.rotations.reserve(sourceChannel->mNumRotationKeys);
+            for (unsigned k = 0; k < sourceChannel->mNumRotationKeys; ++k) {
+                const aiQuatKey &key = sourceChannel->mRotationKeys[k];
+                channel.rotations.push_back({static_cast<float>(key.mTime),
+                                             glm::quat(key.mValue.w, key.mValue.x, key.mValue.y, key.mValue.z)});
+            }
+            channel.scales.reserve(sourceChannel->mNumScalingKeys);
+            for (unsigned k = 0; k < sourceChannel->mNumScalingKeys; ++k) {
+                const aiVectorKey &key = sourceChannel->mScalingKeys[k];
+                channel.scales.push_back({static_cast<float>(key.mTime),
+                                          glm::vec3(key.mValue.x, key.mValue.y, key.mValue.z)});
+            }
+            clip.channels.push_back(std::move(channel));
+        }
+
+        if (clip.channels.empty()) {
+            continue;
+        }
+        // mNumMeshChannels (morph-target weights) is deliberately not read:
+        // MeshVertex has no blend shapes, so there is nothing to drive.
+        model.clips.push_back(std::move(clip));
     }
 
     model.recomputeBounds();

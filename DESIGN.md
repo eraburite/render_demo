@@ -16,7 +16,7 @@
 | 数学库 | GLM |
 | 资源加载 | `stb_image` 解码；`tinygltf`（glTF/GLB）、`tiny_obj_loader`（OBJ/MTL）、KTX 1.0 解析器、assimp（`.dae/.fbx` 等，运行期动态绑定，可选，见 19.2） |
 | 构建 | CMake ≥ 3.22，需 `glslangValidator` 编译着色器并转成 `*.hpp` 字节码头 |
-| 目标产物 | `myEngine` 静态库 + `example_common` + **22 个**可执行示例（simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb，迁移示例 test7..test22，见 14–20） |
+| 目标产物 | `myEngine` 静态库 + `example_common` + **23 个**可执行示例（simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb，迁移示例 test7..test23，见 14–21） |
 
 依赖约定（由根 `CMakeLists.txt` 的 `globalConfig` 接口目标统一提供）：`src/`、`examples/common/`、`external/`、`external/glm/include`、`external/glfw/include`、`build_vs/generated`。
 
@@ -41,7 +41,7 @@ render_demo/
 │   └── images/                     # raw2rgb 输入/输出
 ├── doc/                            # 设计讨论存档（当前为空）
 ├── external/                       # glm / glfw / stb_image / tiny_obj_loader / tinygltf（json.hpp + tiny_gltf.h） / assimp 头文件（仅头，见 19.2）
-├── data/models/                    # 迁移示例的 glTF 模型（suzanne / deer / sphere / armor / plane / cube / teapot / torusknot / samplebuilding + glass）；backpack/{obj,mtl,diffuse.jpg}（见 19）
+├── data/models/                    # 迁移示例的 glTF 模型（suzanne / deer / sphere / armor / plane / cube / teapot / torusknot / samplebuilding + glass）；backpack/{obj,mtl,diffuse.jpg}（见 19）；vampire/{dancing_vampire.dae,textures/}（见 21）
 ├── data/textures/                  # 迁移示例的 KTX 纹理（metalplate01 / yokohama cubemap / texturearray / rocks 颜色+法线高度 / colored_glass）
 ├── src/                            # ===== 引擎核心（静态库 myEngine）=====
 │   ├── RenderManager.h/.cpp        # 对外唯一入口：设备、交换链、工厂方法
@@ -95,11 +95,12 @@ render_demo/
 │   │   ├── AttachmentDetailConfig.h    # Simple/GBuffer/SubpassDeferred/Oit 附件配置 + DependencyPreset + StencilAttachmentSpec（见 16/17/20）
 │   │   ├── DebugViewMode.h             # 调试视图枚举 + push constant + 按键状态（见 13.2）
 │   │   ├── ImageDump.h/.cpp            # 中间结果编码 + PPM 存盘 + --capture/--view 解析（见 13.4）
-│   │   ├── ModelAsset.h/.cpp           # 加载器中立的数据层：MeshVertex/Material/Primitive/Mesh/ModelNode/Model（见 18）
+│   │   ├── ModelAsset.h/.cpp           # 加载器中立的数据层：MeshVertex/Material/Primitive/Mesh/ModelNode/Skin/AnimationClip/Model（见 18/21）
 │   │   ├── ModelLoader.h/.cpp          # IModelLoader + 注册表 + 统一后处理链（见 18.2）
 │   │   ├── GltfModelLoader.h/.cpp      # glTF/GLB 加载器（tinygltf + stb_image 的唯一实现 TU）
 │   │   ├── ObjModelLoader.h/.cpp       # OBJ/MTL 加载器（tiny_obj_loader，见 18.4）
-│   │   ├── AssimpModelLoader.h/.cpp    # assimp 加载器（运行期动态绑定 DLL，见 19.2）
+│   │   ├── AssimpModelLoader.h/.cpp    # assimp 加载器（运行期动态绑定 DLL，含骨骼/动画读取，见 19.2 / 21.2）
+│   │   ├── SkeletonAnimator.h/.cpp      # 动画采样 + 关节矩阵 + CPU 蒙皮包围盒（见 21.2）
 │   │   ├── KtxLoader.h/.cpp            # KTX 1.0 解析（RGBA8/R16，cube/array/3D，见 15.2）
 │   │   └── VertexInputStateConfig.h    # Vertex / VertexInputAtlas
 │   ├── simplest/{test1.cpp,shader/}
@@ -115,7 +116,8 @@ render_demo/
 │   ├── subpasses/{test19.cpp,shader/}                       # 三 subpass 延迟+透明（见 16）
 │   ├── stencil/{test20.cpp,shader/}                         # stencil 描边（见 17）
 │   ├── model_loading/{test21.cpp,shader/}                   # 模型加载 + 自动取景（见 19）
-│   └── oit/{test22.cpp,shader/}                             # 加权混合顺序无关透明（见 20）
+│   ├── oit/{test22.cpp,shader/}                             # 加权混合顺序无关透明（见 20）
+│   └── skeletal_animation/{test23.cpp,shader/}               # 骨骼动画 + 蒙皮（见 21）
 ├── tools/gltf2obj.py               # glTF -> OBJ 导出，用于生成往返验证资源（见 18.5）
 └── build_vs/                       # Visual Studio 构建目录（含各示例可执行程序）
 ```
@@ -862,6 +864,12 @@ dstAccess = MemoryRead | ColorRead | ColorWrite | DepthStencilAttachmentWrite
 | 示例 | `examples/common/AttachmentDetailConfig.h` | 新增 `OitAttachmentDetail`：opaque RGBA16F + depth + accum RGBA16F + reveal R8 四附件、两 subpass 共用 depth、颜色附件集不相交且双向 `preserveAttachments`（见 20.4） |
 | 示例 | `examples/common/DescriptorLayoutConfig.h` | 新增 `OitObject`/`OitObjects` 顶点阶段 SSBO 与 `OitCompositeComponent` 三张采样纹理表（见 20.1） |
 | 示例 | `examples/oit/`（test22）+ 5 个 shader | 加权混合 OIT：solid/transparent 两 subpass + screen pass 一步合成，`--dump/--no-depth-test/--reversed/--resize-after` 用于验证顺序无关性（见 20.5） |
+| 扩展 | `examples/common/ModelAsset.h/.cpp` | **蒙皮与动画进数据层**：`Joint/Skin/AnimationChannel/AnimationClip` + `Model::skins/clips/boneIndices/boneWeights` + `isSkinned()`；新增 `computeNodeWorldMatrices(model, locals)`（动画用外部局部矩阵重建世界矩阵）与 `computeWorldBounds()`（按节点世界矩阵求渲染空间包围盒）（见 21.2） |
+| 扩展 | `examples/common/AssimpModelLoader.cpp` | 读 `aiMesh::mBones` 生成 `Skin`（joint→nodeIndex 在树建完后按名字解析），逐顶点写 `uvec4` 索引/`vec4` 权重并按截断后权重**重新归一化**；读 `scene->mAnimations` 生成 `AnimationClip`（通道按 nodeIndex 索引关键帧，tick 率 0 时取 25）（见 21.2） |
+| 修复 | `examples/common/ModelLoader.cpp` | `deduplicateVertices` 与 `flattenScene` 对蒙皮模型直接返回：前者会把绑在不同骨骼上的同位置顶点合并、且不会同步置换骨骼数组，后者会摧毁关节层级；`flattenScene` 被要求用在蒙皮模型上时打印原因（见 21.6） |
+| 新增 | `examples/common/SkeletonAnimator.h/.cpp` | 动画采样器：TRS 分轨插值（位置/缩放线性、旋转 slerp 走短弧）、未驱动节点保留静态变换、`finalJoint = world(jointNode) * inverseBind`、`computeSkinnedBounds()`（CPU 蒙皮包围盒，见 21.3） |
+| 示例 | `examples/skeletal_animation/`（test23）+ 2 个 shader | 骨骼动画：局部 `SkinnedVertex` + 顶点输入组（位置/UV/骨骼索引/权重）、set1 UBO 含 64 个关节矩阵、按动画包络逐轴取景、`--time/--static/--bind-mesh/--clip/--dump/--resize-after`（见 21.1 / 21.5） |
+| 资源 | `data/models/vampire/` | `dancing_vampire.dae` + 4 张贴图入库（42 MB），`source_attribution.txt` 记录来源与体积原因 |
 
 ---
 
@@ -1025,7 +1033,7 @@ python tools/gltf2obj.py data/models/deer.gltf /tmp/deer.obj             # 用�
 
 # 模型加载 + 自动取景（见 19）：按包围盒取景，不依赖某个特定资源的比例
 ./build/examples/model_loading/model_loading                            # 默认 data/models/backpack/backpack.obj
-./build/examples/model_loading/model_loading --model data/models/dancing_vampire.dae   # assimp 接管 .dae
+./build/examples/model_loading/model_loading --model data/models/vampire/dancing_vampire.dae   # assimp 接管 .dae
 ./build/examples/model_loading/model_loading --loader assimp            # 强制 assimp 走 .obj，与 tinyobj A/B
 ./build/examples/model_loading/model_loading --yaw 40 --dump            # 绕 Y 轴旋转后抓帧
 ./build/examples/model_loading/model_loading --yaw 40 --resize-after 3 --dump-after 6 --dump
@@ -1042,6 +1050,17 @@ python tools/gltf2obj.py data/models/deer.gltf /tmp/deer.obj             # 用�
                                                         # 交换绘制顺序，hash 必须与上一条完全相同
 ./build/examples/oit/oit --dump --no-depth-test --resize-after 3 --dump-after 8
                                                         # 附件重建 + 描述符刷新后再验一次顺序无关性
+
+# 骨骼动画（见 21）：默认 data/models/vampire/dancing_vampire.dae
+./build/examples/skeletal_animation/skeletal_animation                # 实时播放剪辑（时长 3.43 s，循环）
+./build/examples/skeletal_animation/skeletal_animation --time 1.14 --dump
+                                                        # 冻结在 1.14 s 抓帧，可复现（打印 jointFingerprint）
+./build/examples/skeletal_animation/skeletal_animation --static --dump
+                                                        # 不套剪辑，只用文件自带的节点姿态
+./build/examples/skeletal_animation/skeletal_animation --bind-mesh --dump
+                                                        # 测试钩子：关节矩阵=网格节点世界矩阵，
+                                                        # 结果应与 model_loading 的 dump 仅差浮点末位
+./build/examples/skeletal_animation/skeletal_animation --time 2 --resize-after 3 --dump-after 8 --dump
 
 # 调试：数字键切换通道视图，P 存盘；也可脚本化（见 13.6）
 ./build/examples/gbuffer/gbuffer --view 2            # 直接进 normal 视图
@@ -1108,13 +1127,17 @@ stencil 示例还会单独抓一张 `0001_stencil-mask.ppm`：它是 depth-stenc
 | 交换链图像回读 | ✅ 已实现（见 16.2 / 17）：swapchain 申请了 `eTransferSrc`，`LoopSequence::getImageIndex()` 定位当前帧，`--dump` 可抓合成后的交换链帧；S8 平面回读见 17.4 |
 | 深度通道导出 | G-Buffer 与 offscreen 的深度 `storeOp = DontCare`，内容不留存，因此没有深度 PPM；深度用 position 通道反推（`eLinearDepth`） |
 | 回读阻塞 | `ImageReadback::capture()` 提交后同步等 fence，一次 capture 会停顿一个 copy 的时长（2048² RGBA32F 约 64 MB），仅适合手动/脚本触发的调试 |
-| 模型格式 | 已支持 glTF/GLB 与 OBJ/MTL，新格式只需一个 `IModelLoader` 实现 + 一次注册（见 18）；`.dae/.fbx/.3ds` 等经 assimp 覆盖（见 19）；`Model` 目前**没有蒙皮/形变字段**，骨骼动画类示例（skinning/morph）暂不可迁移 |
-| assimp 依赖 | 运行期动态绑定 `assimp-vc140-mt.dll`，缺失时只有 assimp 格式不可用（异常里报出查找过的路径），其余 20 个示例不受影响；**不随仓库分发** DLL（14 MB），需自备并放到 exe 目录或设 `RENDER_DEMO_ASSIMP_DLL`（见 19.2） |
+| 模型格式 | 已支持 glTF/GLB 与 OBJ/MTL，新格式只需一个 `IModelLoader` 实现 + 一次注册（见 18）；`.dae/.fbx/.3ds` 等经 assimp 覆盖（见 19）；蒙皮与动画片段已在数据层（见 21），**形变目标/形变动画（morph）仍无字段**，assimp 的 `mNumMeshChannels` 目前被忽略 |
+| assimp 依赖 | 运行期动态绑定 `assimp-vc140-mt.dll`，缺失时只有 assimp 格式不可用（异常里报出查找过的路径），其余 22 个示例不受影响；**不随仓库分发** DLL（14 MB），需自备并放到 exe 目录或设 `RENDER_DEMO_ASSIMP_DLL`（见 19.2） |
 | 模型示例着色 | `model_loading` 只做贴图着色，法线/高光贴图虽已解析进 `Material` 但未采样（见 19.6） |
 | 场景图烘焙 | `flattenScene` 一旦开启，节点变换被烘进顶点、层级被塌缩为 identity 根节点；需要逐节点绘制或做节点级动画时必须关掉它（见 19.4） |
 | 混合状态 | 逐附件混合需要 `independentBlend`（已默认请求）；MSAA 与逐附件混合的组合未验证，OIT 示例固定 1x（见 20.7） |
 | OIT 精度 | reveal 为 R8Unorm、accum 为 RGBA16F；超过约 256 层时 reveal 乘积量化到 0，上千层时 accum 可能溢出（已按参考实现做 `isinf` 兜底） |
 | 描述符时序 | 资源必须在 `CreatePipeline` **之前**加入 asset：描述符集在建管线时一次性写入，之后新增的资源不会进 `vkUpdateDescriptorSets`（见 20.6） |
+| 骨骼数量 | 关节矩阵放 set1 的 UBO（`kMaxJoints = 64`，67 个 mat4 = 4288 B）；超过 64 根骨骼的模型需要换 SSBO，示例会直接报错而不是截断（见 21.6） |
+| 每顶点影响数 | 固定 4 个（`kMaxJointInfluences`）；第 5 个及以后的影响被丢弃并按剩余权重重新归一化（vampire 有 6 个这样的影响），与支持 8 权重的工具会有微小姿态差异（见 21.4） |
+| 蒙皮与后处理 | 蒙皮模型跳过顶点去重（合并会混淆骨骼绑定）与 `flattenScene`（会摧毁关节层级）；`normalizeSize` 也不适用，归一化必须走 `model` 矩阵（见 21.3 / 21.6） |
+| 动画播放 | `SkeletonAnimator` 是单剪辑、线性时间轴：无混合树、无事件、无根运动重定向；`--time` 冻结姿态用于可复现 dump（见 21.6） |
 
 ---
 
@@ -1129,7 +1152,7 @@ stencil 示例还会单独抓一张 `0001_stencil-mask.ppm`：它是 depth-stenc
 | 资源与管线 | 9 组 | 资源聚合/两种管线/渲染通道/句柄 | `ShaderAssetGroup`、`GraphicsPipeline`、`ComputePipeline`、`BasicRenderPass`、`VulkanHandle` |
 | 设备资源 | 9 组 | 分配器/缓冲/纹理/输入附件/附件/工具 | `DeviceMemoryAllocator`、`BufferObject`、`TextureImage`、`TextureSamplerCombine`、`InputAttachmentView`、`ImageAttachment` |
 | 配置接口 | 4 个 | 顶点/附件/描述符/compute 配置抽象 | `IVertexInputStateGroup`、`IAttachmentDetail`、`IDescriptorSetDetail`、`ComputeLayoutConfig.h` |
-| 示例公共 | 23 个 | 窗口/相机/几何/纹理/KTX/配置表/模型数据层与加载器 | `examples/common/*`（含 `ModelAsset`、`ModelLoader`、`GltfModelLoader`、`ObjModelLoader`、`AssimpModelLoader`、`KtxLoader`） |
+| 示例公共 | 28 个 | 窗口/相机/几何/纹理/KTX/配置表/模型数据层与加载器/动画采样 | `examples/common/*`（含 `ModelAsset`、`ModelLoader`、`GltfModelLoader`、`ObjModelLoader`、`AssimpModelLoader`、`SkeletonAnimator`、`KtxLoader`） |
 
 ### 9.2 已实施的优化
 
@@ -2489,4 +2512,159 @@ OIT 的卖点是"不用排序"，但只写一句"两个 blend 操作可交换"�
 | 顺序无关性 | 交换绘制顺序后 dump **逐字节一致**（1280×720 与 1024×600 两种分辨率各验一次） |
 | 像素级校验 | 混合区域面积与 sRGB 均值可手算复现（见 20.5） |
 | resize | 附件重建后描述符刷新，投影按新 aspect 重算，0 校验错误 |
+
+---
+
+## 21. 骨骼动画（LearnOpenGL guest 2020/skeletal_animation）
+
+对应 `D:\LearnOpenGL\src\8.guest\2020\skeletal_animation`：`skeletal_animation.cpp`（203 行）+ `anim_model.vs/fs`（41 + 11 行）只是外壳，真正的系统在 `includes/learnopengl/` 的五个头文件里——`model_animation.h`（282 行）、`bone.h`（188）、`animation.h`（111）、`animator.h`（80）、`animdata.h`（14）。
+
+### 21.1 参考实现：同一份文件被导入两次
+
+它把一件事拆成了两条互不知情的导入路径：
+
+```cpp
+Model ourModel(path);                       // Assimp::Importer #1：几何 + 骨骼权重
+Animation danceAnimation(path, &ourModel);  // Assimp::Importer #2：节点树 + 关键帧
+Animator animator(&danceAnimation);
+```
+
+* 第一次导入（`Model::loadModel`）请求 `Triangulate | GenSmoothNormals | CalcTangentSpace`，然后**丢弃每个 `aiNode::mTransformation`**：`processNode` 只读 `node->mMeshes`，从不把节点矩阵作用到顶点。骨骼信息落进 `m_BoneInfoMap{name → {id, offsetMatrix}}` 和每顶点 4 个 `m_BoneIDs/m_Weights` 槽。
+* 第二次导入（`Animation` 构造函数）重新 `aiImportFile`，用 `ReadHeirarchyData` 递归复制一棵 `AssimpNodeData` 树——这次**保留**了 `mTransformation`——再用 `ReadMissingBones` 给每个 `aiNodeAnim` 造一个 `Bone`。
+
+代价是三份数据（几何、节点树、骨骼表）各自维护、只能靠**节点名字**对齐；那句
+
+```cpp
+aiMatrix4x4 globalTransformation = scene->mRootNode->mTransformation;
+globalTransformation = globalTransformation.Inverse();
+```
+
+算完再没被用过，是"节点矩阵被丢弃"那个缺陷留下的补丁残骸。此外 `Bone::GetPositionIndex` 系列在 `animationTime` 超过末帧时 `assert(0)` 后**没有 return**（release 下即未定义行为），只能靠 `Animator` 的 `fmod` 保证时间不越界。
+
+移植后的形态：一次导入同时产出几何、骨骼、剪辑，三者在同一个 `Model` 里用**索引**而不是名字互指。
+
+### 21.2 数据层：`Skin` 与 `AnimationClip` 落在 ModelAsset
+
+| 项 | 参考实现 | 本移植 |
+| --- | --- | --- |
+| 关节表 | `std::map<string, BoneInfo{id, offset}>` + `Bone` 数组 | `Skin{joints}`，`Joint{name, nodeIndex, inverseBindMatrix}`；顶点里存的是 `joints` 的下标 |
+| 顶点属性 | `ivec4 m_BoneIDs`（`-1` 表示空槽）+ `vec4 m_Weights` | `uvec4 boneIndices` + `vec4 boneWeights`，空槽为 `(0, 0)`——权重 0 对结果无贡献，着色器不必判哨兵 |
+| 关键帧 | `Bone{KeyPosition/KeyRotation/KeyScale}` 三个 vector | `AnimationChannel{nodeIndex, positions, rotations, scales}`，缺哪条轨道就沿用绑定值 |
+| 时间 | `mTicksPerSecond` 逐帧乘加后 `fmod` | 同（`AnimationClip::durationSeconds()` 提供秒） |
+| 关节矩阵 | `Animator::CalculateBoneTransform` 递归 | `finalJoint[j] = world(joint.nodeIndex) * inverseBind[j]`，直接复用 `computeNodeWorldMatrices(model, locals)` |
+
+加载器侧（`AssimpModelLoader`）新增两段读取：
+
+* **骨骼**：遍历 `aiMesh::mBones`，首个遇见的骨骼名分配 joint id（跨 mesh 共享，一个骨架可以被拆进多个 `aiMesh`），`mOffsetMatrix` 转成 `inverseBindMatrix`。`nodeIndex` 在**节点树建完之后**才按名字解析——DFS 建树时尚未访问到的子树里的关节名这时还查不到，所以不能边建边查。逐顶点写入时用每 mesh 的局部计数器找空槽。
+* **剪辑**：`scene->mAnimations` 逐个转成 `AnimationClip`，通道按 `nodeIndex` 索引；`mTicksPerSecond == 0` 表示文件没写，按 25 处理（否则播放时会除零）。`mNumMeshChannels`（morph 目标权重）**不读**：`MeshVertex` 没有形变字段，读了也没有去处。
+
+采样器 `examples/common/SkeletonAnimator` 做四件事：把秒换成 tick、分轨插值（位置/缩放线性，旋转 `slerp` 走短弧）、用插值结果重建局部矩阵、再走一遍世界矩阵与关节矩阵。它有一条容易写错的前提：
+
+```cpp
+// 先铺底，再让剪辑覆盖它驱动的节点
+for (size_t i = 0; i < m_locals.size(); ++i) m_locals[i] = m_model->nodes[i].transform;
+```
+
+漏掉这一句，**所有没被剪辑驱动的节点**都会变成单位阵——包括骨架根节点，而这份 `.dae` 的根节点带着 `0.01` 缩放。第一次跑出来的姿态比正常大 100 倍、横向偏出画面 200 个单位，原因就在这里。
+
+### 21.3 归一化：只能走 `model` 矩阵，不能烘进顶点
+
+蒙皮顶点位置是
+
+```
+p' = Σ_i w_i · (world(joint_i.node) · inverseBind_i) · p
+```
+
+`world(joint.node)` 已经包含文件自己的层级缩放（这份 `.dae` 把 `0.01` 放在 `RootNode` 上），所以 **`p'` 已经是渲染空间坐标**，而 `Model::vertices` 里是网格空间坐标。两者差 100 倍：
+
+| 坐标空间 | 数值 | 谁在用 |
+| --- | --- | --- |
+| 网格空间 | `-135.19,-1.61,-31.26 .. 135.19,209.77,36.55`（270 × 211 × 68） | `Model::minBounds`，对蒙皮模型无意义 |
+| 世界空间 | `-1.352,-0.016,-0.313 .. 1.352,2.098,0.366` | `computeWorldBounds()`（节点矩阵作用后） |
+| 当前姿态 | `-1.968,-0.012,-0.795 .. -0.198,1.688,0.984` | `SkeletonAnimator::computeSkinnedBounds()`（**实际画出来的**） |
+| 整段剪辑包络 | `-1.984,-0.028,-1.164 .. 1.691,1.767,1.244` | 取景与归一化的依据 |
+
+注意第三行：这份文件的**场景姿态和绑定姿态不是一回事**（52 根骨骼里 `world·inverseBind` 等于网格节点世界矩阵的有 **0** 根），角色被摆在网格左侧整整一个单位。所以拿 `Model::minBounds` 取景会偏、拿 `computeWorldBounds` 取景会偏得更少但依然偏——只有 CPU 蒙皮算出来的包围盒是像素真正落下的位置。
+
+归一化本身必须写成矩阵：
+
+```cpp
+modelMatrix = scale(2 / longest) * translate(-center);   // 传给 shader 的 u.model
+```
+
+把它烘进顶点是错的，理由分两层：
+
+* **平移**烘进去一定错。`Σ w M_j (v − c) = Σ w M_j v − Σ w M_j c`，只要各关节的 `M_j` 不同（动画播放时必然不同），第二项就不是一个统一的平移，形体会被剪切。
+* **缩放**烘进去恰好等价（`Σ w M_j (s·v) = s · Σ w M_j v`），但这是巧合而非性质——它依赖于 `inverseBind` 与顶点空间解耦。既然平移必须走矩阵，缩放也一并走矩阵，不留两种规则。
+
+`longest`/`center` 取自**剪辑包络**（在剪辑上采 24 个时间点，把 `computeSkinnedBounds` 取并集），这样播放时相机不必移动、也不会裁切；`--bind-mesh` 例外，见 21.5。
+
+### 21.4 四个影响之外：截断与重新归一化
+
+参考实现的 `MAX_BONE_INFLUENCE` 是 4，本移植同样是 4（`kMaxJointInfluences`）。这份 vampire 实测单顶点最多 **5** 个影响，`aiBone` 顺序下共有 **6 个（顶点, 影响）对** 溢出：
+
+```
+[model] assimp: dropped 6 influence(s) beyond 4 per vertex in mesh 'VampireMesh'
+```
+
+差别在于截断之后做什么。参考实现直接丢掉第 5 个权重，那些顶点的权重和小于 1，蒙皮结果会朝关节原点收缩；本移植按剩余权重重新归一化，于是**绑定姿态下蒙皮结果与未蒙皮几何严格相等**——这正是 21.5 那个逐像素对照能成立的前提。
+
+### 21.5 验证：绑定态逐像素对照 + 逐时间点姿态
+
+**像素级对照。** `--bind-mesh` 把每个关节矩阵强行设成网格节点的世界矩阵。此时
+
+```
+Σ w_i · W_mesh · v = W_mesh · v · Σ w_i = W_mesh · v
+```
+
+即蒙皮退化成"按节点变换"，而这正是 `model_loading` 对同一文件画出来的几何（它把节点矩阵烘进顶点）。两边用同一套归一化算术与同一个球拟合相机，dump 应当一致：
+
+| 指标 | 帧缓冲像素 |
+| --- | --- |
+| 分辨率 | 1280 × 720（921600 像素） |
+| `skeletal_animation --bind-mesh --dump` vs `model_loading --model data/models/vampire/dancing_vampire.dae --dump` | **12 个像素差 1/255** |
+| 相机与统计 | 完全一致（eye `(0,0.45,3.32508)`、pitch `-7.7073°`、coverage `0.0547038`、uniqueColors `404`、mean `(0.250283,0.267325,0.327648)`） |
+
+那 12 个像素是两条归一化路径的浮点末位（`S·(0.01v − 0.01c)` 对 `S'·(v − c)`）。这一条同时证明了顶点布局、属性 location、`uvec4/vec4` 权重、std140 UBO 布局与矩阵乘序全部正确——任何一处转置或偏移都会让整张图崩掉，而不只是 12 个像素。
+
+**逐时间点。** 打印所有关节矩阵元素之和作为姿态指纹，`--time` 固定后两次运行必须完全相同：
+
+| `--time` | jointFingerprint | 像素质心 x（1280 宽） |
+| --- | --- | --- |
+| 0（= 3.43，一个循环回到起点） | 38.7349 / 38.2062 | 542 |
+| 0.57 | 52.2684 | 563 |
+| 1.14 | 57.9867 | 655 |
+| 1.72 | 42.6672 | 756 |
+| 2.29 | 45.8336 | 756 |
+| 2.86 | 17.3904 | 665 |
+
+指纹各异 → 剪辑确实在采样；质心 542 → 756 → 542 → 说明这段舞蹈有约一个身宽的横向位移，也解释了为什么取景要用整段包络（球拟合会浪费画面，因此改用逐轴包围盒拟合：距离从 3.73 降到 2.25，coverage 0.019 → 0.068）。同一 `--time 1.14` 连跑两次指纹都是 `57.9867`。
+
+**resize。** `--time 2 --resize-after 3 --dump-after 8 --dump` → dump 为 1024 × 600，0 校验错误，角色完整在框内。
+
+### 21.6 差异与限制
+
+| 项 | 现状 | 原因/后续 |
+| --- | --- | --- |
+| 顶点属性 | 只上传位置/UV/骨骼索引/权重，法线不传 | 参考实现的 fragment 只 `texture(texture_diffuse1, ...)`；它虽然算了 `localNormal` 却从未使用，是死代码。贴图光照类示例需要法线时再加两个 location |
+| 关节矩阵 | set1 UBO，`kMaxJoints = 64`（4288 B） | 超过 64 根骨骼直接报错而非截断；更多骨骼应换 SSBO |
+| 播放能力 | 单剪辑、单时间轴，`setTime/update/playing` | 无混合树、无动画事件、无根运动重定向 |
+| 蒙皮与去重 | 蒙皮模型跳过 `deduplicateVertices` | 顶点键不含骨骼数据，合并会让顶点继承先遇到的骨骼绑定；且骨骼数组不会被同步置换（见 18.2） |
+| 蒙皮与扁平化 | 蒙皮模型跳过 `flattenScene` | 烘进顶点会把关节层级塌缩成 identity，动画器无树可走。静态浏览蒙皮模型要么先丢蒙皮，要么自己按 `forEachMeshInstance` 变换 |
+| 归一化 | 不走 `normalizeSize`，改传 `model` 矩阵（21.3） | 平移烘进顶点对多关节形变是错的 |
+| 取景 | 按整段剪辑包络逐轴拟合（`frameBox`） | 相机不随姿态移动；代价是横向位移大的剪辑会让角色在单帧里显得偏小 |
+| 姿态对照 | `--bind-mesh` 用 `frameSphere`（与 model_loading 同式） | 只为让两条路径的 dump 可逐像素比对；正常路径用 `frameBox` |
+| 大资源 | `data/models/vampire/` 42 MB（dae 32 MB + 4 张贴图 11 MB） | Collada 是逐行 XML、每个关键帧都用十进制展开；换成 glTF 会小一个量级，但那样就不再是"迁移同一个资源文件"了 |
+| morph | `mNumMeshChannels` 未读 | `MeshVertex` 无形变字段 |
+
+### 21.7 构建与验证状态
+
+| 项 | 结果 |
+| --- | --- |
+| 全量构建 | **23 个示例** + `myEngine` + `example_common`：**0 error / 0 warning** |
+| 运行期校验 | 23 个示例逐个冒烟：**VUID = 0 / Validation Error = 0**，原 22 个无回归 |
+| 加载结果 | 45066 顶点 / 45066 索引 / 15022 三角形 / 1 mesh / 1 material / 3 image / 67 节点 / 52 关节 / 1 剪辑（3.4333 s @ 1 tick/s，52 通道 × 104 关键帧） |
+| 蒙皮等价性 | `--bind-mesh` 与 `model_loading` 的 921600 像素仅 12 个差 1/255（21.5） |
+| 姿态可复现 | 同一 `--time` 两次运行 `jointFingerprint` 完全一致；6 个时间点各不相同（21.5） |
+| resize | 1024 × 600 下角色完整、0 校验错误 |
 

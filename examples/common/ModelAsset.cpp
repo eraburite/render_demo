@@ -1,5 +1,6 @@
 #include "ModelAsset.h"
 
+#include <algorithm>
 #include <limits>
 
 uint32_t Model::instanceCount() const
@@ -32,6 +33,16 @@ void Model::recomputeBounds()
 
 std::vector<glm::mat4> computeNodeWorldMatrices(const Model &model)
 {
+    std::vector<glm::mat4> locals;
+    locals.reserve(model.nodes.size());
+    for (const ModelNode &node : model.nodes) {
+        locals.push_back(node.transform);
+    }
+    return computeNodeWorldMatrices(model, locals);
+}
+
+std::vector<glm::mat4> computeNodeWorldMatrices(const Model &model, const std::vector<glm::mat4> &localTransforms)
+{
     std::vector<glm::mat4> world(model.nodes.size(), glm::mat4(1.0f));
     std::vector<bool> visited(model.nodes.size(), false);
 
@@ -53,13 +64,49 @@ std::vector<glm::mat4> computeNodeWorldMatrices(const Model &model)
         if (visited[frame.index]) continue;
         visited[frame.index] = true;
         const ModelNode &node = model.nodes[frame.index];
-        world[frame.index] = frame.parent * node.transform;
+        // A caller that animates a subset of nodes passes a list that may be
+        // shorter than the node array; the rest keep their static transform.
+        const glm::mat4 local =
+            frame.index < static_cast<int>(localTransforms.size()) ? localTransforms[frame.index] : node.transform;
+        world[frame.index] = frame.parent * local;
         for (auto it = node.children.rbegin(); it != node.children.rend(); ++it) {
             stack.push_back({*it, world[frame.index]});
         }
     }
     return world;
 }
+
+void computeWorldBounds(const Model &model, glm::vec3 &outMin, glm::vec3 &outMax)
+{
+    outMin = glm::vec3(0.0f);
+    outMax = glm::vec3(0.0f);
+    if (model.vertices.empty()) {
+        return;
+    }
+
+    glm::vec3 lo(std::numeric_limits<float>::max());
+    glm::vec3 hi(std::numeric_limits<float>::lowest());
+    uint32_t counted = 0;
+    forEachMeshInstance(model, [&](const glm::mat4 &world, int, const Mesh &, const Primitive &primitive) {
+        const uint32_t end = std::min<uint32_t>(primitive.firstIndex + primitive.indexCount,
+                                                static_cast<uint32_t>(model.indices.size()));
+        for (uint32_t i = primitive.firstIndex; i < end; ++i) {
+            const uint32_t index = model.indices[i];
+            if (index >= model.vertices.size()) continue;
+            const glm::vec3 position = glm::vec3(world * glm::vec4(model.vertices[index].position, 1.0f));
+            lo = glm::min(lo, position);
+            hi = glm::max(hi, position);
+            ++counted;
+        }
+    });
+
+    if (counted == 0) {
+        return;
+    }
+    outMin = lo;
+    outMax = hi;
+}
+
 
 void forEachMeshInstance(const Model &model, const MeshInstanceCallback &fn)
 {
