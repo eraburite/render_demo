@@ -68,7 +68,7 @@ const std::unordered_map<std::string, std::vector<uint32_t>> &emptyShaderCodes()
 } // namespace
 
 GraphicsPipeline::GraphicsPipeline(std::shared_ptr<vk::Device> device, DeviceFeatureProperty feature,
-                                   std::shared_ptr<const IVertexInputStateGroup> vertexInput,
+                                   std::shared_ptr<IVertexInputStateGroup> vertexInput,
                                    std::shared_ptr<const IDescriptorSetLayoutGroup> descriptorLayout,
                                    std::shared_ptr<ShaderAssetGroup> asset,
                                    const std::shared_ptr<IRenderPass> &renderPass, uint32_t subpass,

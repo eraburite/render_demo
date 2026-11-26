@@ -114,7 +114,8 @@ public:
     bool isEmptyInputState() const override { return false; }
     uint32_t getVertexCount() const override { return m_vertexCount; }
     uint32_t drawInstanceCount() const override { return 1; }
-    std::shared_ptr<const IVertexInputStateGroup> sharedClone() const override
+    void setDrawInstanceCount(uint32_t) override {}
+    std::shared_ptr<IVertexInputStateGroup> sharedClone() const override
     {
         return std::make_shared<SkinnedVertexInputAtlas>(*this);
     }

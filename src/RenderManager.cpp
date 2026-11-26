@@ -478,7 +478,7 @@ RenderManager::CreatePipeline(std::shared_ptr<const IVertexInputStateGroup> vert
                               std::shared_ptr<ShaderAssetGroup> asset, const std::shared_ptr<IRenderPass> &renderPass,
                               uint32_t subpass, GraphicsPipelineConfig config)
 {
-    const std::shared_ptr<const IVertexInputStateGroup> vertexInputClone =
+    const std::shared_ptr<IVertexInputStateGroup> vertexInputClone =
         vertexInput ? vertexInput->sharedClone() : nullptr;
     const std::shared_ptr<const IDescriptorSetLayoutGroup> descriptorLayoutClone =
         descriptorLayout ? descriptorLayout->sharedClone() : nullptr;

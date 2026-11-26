@@ -69,8 +69,17 @@ public:
     bool hasIndexBuffer() const override { return m_indexCount > 0; }
     bool isEmptyInputState() const override { return m_emptyInput; }
     uint32_t getVertexCount() const override { return m_drawVertexCount; }
-    uint32_t drawInstanceCount() const override { return m_instanceCount == 0 ? 1u : m_instanceCount; }
-    std::shared_ptr<const IVertexInputStateGroup> sharedClone() const override
+    // Zero means zero: culling can legitimately cut the scene down to nothing,
+    // and a draw with instanceCount 0 is the cheapest way to say that.  The
+    // constructor's default of 1 is what keeps a plain single-instance draw
+    // working without every caller spelling it out.
+    uint32_t drawInstanceCount() const override { return m_instanceCount; }
+
+    // The vertex input state does not encode the instance count (it is a draw
+    // parameter), so no rebuild is needed here.
+    void setDrawInstanceCount(uint32_t count) override { m_instanceCount = count; }
+
+    std::shared_ptr<IVertexInputStateGroup> sharedClone() const override
     {
         return std::make_shared<VertexInputAtlas>(*this);
     }

@@ -21,5 +21,13 @@ public:
     // Number of instances per draw (gl_InstanceIndex driven); always >= 1.
     virtual uint32_t drawInstanceCount() const = 0;
 
-    virtual std::shared_ptr<const IVertexInputStateGroup> sharedClone() const = 0;
+    // Per-frame override of the draw instance count.  Culling decides how many
+    // instances survive, so the count is dynamic state, not pipeline state: the
+    // pipeline owns a clone of this object and adjusts *that*, which is why the
+    // setter lives on the interface instead of on one concrete atlas.
+    virtual void setDrawInstanceCount(uint32_t count) = 0;
+
+    // Fresh, uniquely owned copy.  Non-const on purpose: the pipeline mutates the
+    // clone (instance count) while readers only ever need the const view.
+    virtual std::shared_ptr<IVertexInputStateGroup> sharedClone() const = 0;
 };

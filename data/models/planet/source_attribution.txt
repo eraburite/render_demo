@@ -1,0 +1,17 @@
+planet.obj / planet.mtl / mars.png
+=================================
+
+Source: LearnOpenGL repository, resources/objects/planet/
+  https://github.com/JoeyDeVries/LearnOpenGL
+
+Original model: "Realistic Mars (photorealistic 2k)" by Gerhald3D, from TurboSquid
+  https://www.turbosquid.com/3d-models/realistic-mars-photorealistic-2k-3d-1277433
+
+Modifications by Joey de Vries (as recorded by the upstream source.txt): only the
+planet layer was kept, the diffuse texture was assigned to the material slot, and
+the texture was desaturated somewhat.
+
+Used by: examples/scene_graph (both the chain and the grid scene)
+
+Size: obj 59 KB, mtl 238 B, mars.png 2.8 MB.  Only the diffuse map is needed; the
+example samples it with a single directional light.

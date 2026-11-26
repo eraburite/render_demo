@@ -165,7 +165,7 @@ struct DrawRange {
 class GraphicsPipeline {
 public:
     GraphicsPipeline(std::shared_ptr<vk::Device> device, DeviceFeatureProperty feature,
-                     std::shared_ptr<const IVertexInputStateGroup> vertexInput,
+                     std::shared_ptr<IVertexInputStateGroup> vertexInput,
                      std::shared_ptr<const IDescriptorSetLayoutGroup> descriptorLayout,
                      std::shared_ptr<ShaderAssetGroup> asset,
                      const std::shared_ptr<IRenderPass> &renderPass, uint32_t subpass,
@@ -186,6 +186,18 @@ public:
     // declares the same state dynamic.
     using AfterBindHook = std::function<void(const vk::CommandBuffer &)>;
     void setAfterBindHook(AfterBindHook hook) { m_afterBindHook = std::move(hook); }
+
+    // Overrides the draw's instance count.  Frustum culling writes this every
+    // frame: the surviving instances are compacted to the front of the instance
+    // table and only the first N are drawn.  The pipeline owns its own clone of
+    // the vertex input, so the caller's atlas is intentionally not affected.
+    void setInstanceCount(uint32_t count)
+    {
+        if (m_vertexInput) {
+            m_vertexInput->setDrawInstanceCount(count);
+        }
+    }
+    uint32_t instanceCount() const { return m_vertexInput ? m_vertexInput->drawInstanceCount() : 1u; }
 
     vk::PipelineLayout pipelineLayout() const { return m_pipelineLayout ? *m_pipelineLayout : vk::PipelineLayout{}; }
     const std::shared_ptr<ShaderAssetGroup> &asset() const { return m_asset; }
@@ -214,7 +226,7 @@ private:
 private:
     std::shared_ptr<vk::Device> m_device;
     DeviceFeatureProperty m_feature;
-    std::shared_ptr<const IVertexInputStateGroup> m_vertexInput;
+    std::shared_ptr<IVertexInputStateGroup> m_vertexInput;
     std::shared_ptr<const IDescriptorSetLayoutGroup> m_descriptorLayout;
     std::shared_ptr<ShaderAssetGroup> m_asset;
     std::shared_ptr<IRenderPass> m_renderPass; // kept alive for pipeline creation / sample count
