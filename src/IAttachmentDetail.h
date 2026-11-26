@@ -60,6 +60,12 @@ struct OffscreenTargetSpec {
     bool fixedSize = true;
     uint32_t width = 0;
     uint32_t height = 0;
+    // Array layers of the allocated image.  > 1 turns it into a 2D array whose
+    // single view covers every layer, which is what layered rendering writes to
+    // through gl_Layer and what a sampler2DArray reads back.  Consumed for depth
+    // attachments too (a cascaded shadow map is a depth array with no colour
+    // target at all).
+    uint32_t layers = 1;
 };
 
 struct RenderPassBlueprint {
@@ -75,6 +81,11 @@ struct RenderPassBlueprint {
     vk::SampleCountFlagBits sampleCount = vk::SampleCountFlagBits::e1;
     bool swapChainSized = false; // framebuffers depend on swapchain images -> must rebuild on resize
     uint32_t framebufferCount = 0; // for offscreen passes: number of framebuffers (0 = one)
+    // Layer count of every framebuffer created from this blueprint.  Must match
+    // the arrayLayers of the attachments that carry them: layered rendering
+    // addresses a layer through gl_Layer, which is only legal when the
+    // framebuffer declares more than one layer.
+    uint32_t layers = 1;
 };
 
 class IAttachmentDetail {

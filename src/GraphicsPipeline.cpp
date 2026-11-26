@@ -350,16 +350,19 @@ void GraphicsPipeline::createPipeline(const std::shared_ptr<IRenderPass> &render
 
     // Attachment count is per subpass: a 3-subpass pass may write 4 colour
     // targets in subpass 0 and only 1 in the later ones, and Vulkan requires
-    // the blend state to match the pipeline's own subpass.
+    // the blend state to match the pipeline's own subpass.  A depth-only
+    // subpass (shadow map) has 0 colour attachments and must therefore declare
+    // 0 blend attachments -- one entry would trip
+    // VUID-VkGraphicsPipelineCreateInfo-renderPass-06055.
     const uint32_t colorAttachmentCount = renderPass ? renderPass->colorAttachmentCount(subpass) : 1;
-    std::vector<vk::PipelineColorBlendAttachmentState> colorAttachments(
-        colorAttachmentCount == 0 ? 1 : colorAttachmentCount, colorBlendAttachment);
+    std::vector<vk::PipelineColorBlendAttachmentState> colorAttachments(colorAttachmentCount,
+                                                                       colorBlendAttachment);
 
     // Per-attachment overrides (weighted-blended OIT needs an additive target and
     // a multiplicative one in the same subpass).  A short list repeats its last
     // entry, so callers that only care about the first target do not have to
     // duplicate it.
-    if (!m_config.blendAttachments.empty()) {
+    if (!m_config.blendAttachments.empty() && !colorAttachments.empty()) {
         const auto toVk = [](const ColorBlendAttachment &state) {
             vk::PipelineColorBlendAttachmentState result{};
             result.blendEnable = state.enable ? VK_TRUE : VK_FALSE;

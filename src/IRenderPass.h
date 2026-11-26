@@ -38,6 +38,15 @@ public:
         (void)set;
         return vk::Image{};
     }
+    // Array view of that same image, for a descriptor that samples it.  A pass
+    // whose depth attachment is an array (layers > 1) exposes one view covering
+    // every layer.
+    virtual vk::ImageView depthStencilView(uint32_t set = 0) const
+    {
+        (void)set;
+        return vk::ImageView{};
+    }
+    virtual uint32_t depthStencilLayers() const { return 1; }
     virtual vk::Format depthStencilFormat() const { return vk::Format::eUndefined; }
 
     virtual void createFramebuffers(const std::vector<vk::ImageView> &swapChainViews, vk::Extent2D swapChainExtent) = 0;

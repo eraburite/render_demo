@@ -43,7 +43,7 @@ vk::ImageAspectFlags aspectOf(vk::Format format)
 // When the image is currently UNDEFINED its contents are undefined by
 // definition, so no write scope may be declared (VUID-vkImageMemoryBarrier-oldLayout).
 vk::ImageMemoryBarrier makeTransferSrcBarrier(vk::Image image, vk::ImageAspectFlags aspect,
-                                              vk::ImageLayout oldLayout)
+                                              vk::ImageLayout oldLayout, uint32_t layer)
 {
     const bool undefinedSource = oldLayout == vk::ImageLayout::eUndefined;
 
@@ -56,14 +56,15 @@ vk::ImageMemoryBarrier makeTransferSrcBarrier(vk::Image image, vk::ImageAspectFl
     barrier.subresourceRange.aspectMask = aspect;
     barrier.subresourceRange.baseMipLevel = 0;
     barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.baseArrayLayer = layer;
     barrier.subresourceRange.layerCount = 1;
     barrier.srcAccessMask = undefinedSource ? vk::AccessFlags{} : vk::AccessFlagBits::eMemoryWrite;
     barrier.dstAccessMask = vk::AccessFlagBits::eTransferRead;
     return barrier;
 }
 
-vk::ImageMemoryBarrier makeRestoreBarrier(vk::Image image, vk::ImageAspectFlags aspect, vk::ImageLayout newLayout)
+vk::ImageMemoryBarrier makeRestoreBarrier(vk::Image image, vk::ImageAspectFlags aspect, vk::ImageLayout newLayout,
+                                          uint32_t layer)
 {
     vk::ImageMemoryBarrier barrier{};
     barrier.oldLayout = vk::ImageLayout::eTransferSrcOptimal;
@@ -74,7 +75,7 @@ vk::ImageMemoryBarrier makeRestoreBarrier(vk::Image image, vk::ImageAspectFlags 
     barrier.subresourceRange.aspectMask = aspect;
     barrier.subresourceRange.baseMipLevel = 0;
     barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.baseArrayLayer = layer;
     barrier.subresourceRange.layerCount = 1;
     barrier.srcAccessMask = vk::AccessFlagBits::eTransferRead;
     barrier.dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
@@ -179,7 +180,7 @@ void ImageReadback::ensureStaging(vk::DeviceSize size)
 
 ImageReadback::Capture ImageReadback::capture(vk::Image image, vk::Format format, vk::Extent2D extent,
                                               vk::ImageLayout layout, vk::ImageAspectFlags aspect,
-                                              vk::ImageAspectFlags barrierAspect)
+                                              vk::ImageAspectFlags barrierAspect, uint32_t layer)
 {
     if (!image) {
         throw std::runtime_error("ImageReadback::capture called with a null image");
@@ -216,7 +217,7 @@ ImageReadback::Capture ImageReadback::capture(vk::Image image, vk::Format format
     const vk::CommandBuffer &cmd = *m_commandBuffer;
     cmd.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
 
-    const vk::ImageMemoryBarrier toTransfer = makeTransferSrcBarrier(image, transitionAspect, layout);
+    const vk::ImageMemoryBarrier toTransfer = makeTransferSrcBarrier(image, transitionAspect, layout, layer);
     const vk::PipelineStageFlags sourceStage = (layout == vk::ImageLayout::eUndefined)
                                                    ? vk::PipelineStageFlagBits::eTopOfPipe
                                                    : vk::PipelineStageFlagBits::eAllCommands;
@@ -229,7 +230,7 @@ ImageReadback::Capture ImageReadback::capture(vk::Image image, vk::Format format
     region.bufferImageHeight = 0;
     region.imageSubresource.aspectMask = resolvedAspect;
     region.imageSubresource.mipLevel = 0;
-    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.baseArrayLayer = layer;
     region.imageSubresource.layerCount = 1;
     region.imageOffset = vk::Offset3D(0, 0, 0);
     region.imageExtent = vk::Extent3D(extent.width, extent.height, 1);
@@ -238,7 +239,7 @@ ImageReadback::Capture ImageReadback::capture(vk::Image image, vk::Format format
     // Restoring UNDEFINED makes no sense: the caller declared the contents
     // undefined, and the next render pass discards them anyway.
     if (layout != vk::ImageLayout::eUndefined) {
-        const vk::ImageMemoryBarrier restore = makeRestoreBarrier(image, transitionAspect, layout);
+        const vk::ImageMemoryBarrier restore = makeRestoreBarrier(image, transitionAspect, layout, layer);
         cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands,
                             vk::DependencyFlags{}, 0, nullptr, 0, nullptr, 1, &restore);
     }

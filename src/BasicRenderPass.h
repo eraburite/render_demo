@@ -31,6 +31,16 @@ public:
     {
         return set < m_depthStencilImages.size() ? m_depthStencilImages[set] : vk::Image{};
     }
+    // Array view of the same image (one view over every layer).  Sampling a
+    // depth array as a texture needs the view, not the image, and it has to be
+    // the *same* view the framebuffer was built from -- a second view of the
+    // same image would be a fresh subresource range that the render pass' final
+    // layout transition does not cover.
+    vk::ImageView depthStencilView(uint32_t set = 0) const override
+    {
+        return set < m_depthStencilViews.size() ? m_depthStencilViews[set] : vk::ImageView{};
+    }
+    uint32_t depthStencilLayers() const override { return m_blueprint.layers; }
     vk::Format depthStencilFormat() const override { return m_depthStencilFormat; }
 
     void createFramebuffers(const std::vector<vk::ImageView> &swapChainViews, vk::Extent2D swapChainExtent) override;
@@ -82,8 +92,10 @@ private:
     // per-slot formats; used by the debug image dump.
     std::vector<vk::Image> m_offscreenImages;
     std::vector<vk::Format> m_offscreenFormats;
-    // Depth-stencil attachment of each set, kept for the stencil debug capture.
+    // Depth-stencil attachment of each set, kept for the stencil debug capture
+    // and for sampling a depth array (cascaded shadow maps).
     std::vector<vk::Image> m_depthStencilImages;
+    std::vector<vk::ImageView> m_depthStencilViews;
     vk::Format m_depthStencilFormat = vk::Format::eUndefined;
     uint32_t m_colorCountPerSet = 0;
     // Colour attachment count of each subpass, so a pipeline can be created for

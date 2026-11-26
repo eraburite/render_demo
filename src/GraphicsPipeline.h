@@ -122,6 +122,18 @@ struct GraphicsPipelineConfig {
         stages.push_back({std::move(key), stage});
         return *this;
     }
+    // Geometry stage.  The invocation count is *not* a pipeline field -- it is
+    // the SPIR-V execution mode OpExecutionMode Invocations, which glslang
+    // derives from the shader's `layout(invocations = N) in;`.  One invocation
+    // per array layer is what turns a single draw into N gl_Layer writes (see
+    // examples/csm).  It has to match renderPass->depthStencilLayers(); a
+    // mismatch is not a pipeline error, it just leaves part of the depth array
+    // untouched.
+    GraphicsPipelineConfig &addGeometryStage(std::string key)
+    {
+        stages.push_back({std::move(key), vk::ShaderStageFlagBits::eGeometry});
+        return *this;
+    }
     GraphicsPipelineConfig &addSpecialization(std::string stageKey, std::vector<SpecializationConstant> constants)
     {
         specializations.emplace_back(std::move(stageKey), std::move(constants));

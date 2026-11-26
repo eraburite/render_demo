@@ -42,8 +42,15 @@ public:
     // depth-stencil image must name DEPTH|STENCIL (VUID 03320), while the copy
     // region must name exactly one aspect (VUID 00188) -- so the two differ.
     // Empty means "same as aspect".
+    //
+    // `layer` selects the array layer of a 2D array (one cascade of a shadow
+    // map).  Only that layer is transitioned at the start and restored at the
+    // end, so capturing layer 3 of a 5-layer depth array leaves the other four
+    // in eDepthReadOnlyOptimal and the next frame's render pass still sees the
+    // layout it expects.
     Capture capture(vk::Image image, vk::Format format, vk::Extent2D extent, vk::ImageLayout layout,
-                    vk::ImageAspectFlags aspect = {}, vk::ImageAspectFlags barrierAspect = {});
+                    vk::ImageAspectFlags aspect = {}, vk::ImageAspectFlags barrierAspect = {},
+                    uint32_t layer = 0);
 
     // Bytes per texel for the formats this path understands; throws otherwise.
     // Shared with the PPM writer so both agree on the memory layout.

@@ -144,7 +144,8 @@ std::vector<DumpResult> DumpImages(ImageReadback &readback, const std::vector<Du
         }
 
         const ImageReadback::Capture capture =
-            readback.capture(request.image, request.format, request.extent, request.layout);
+            readback.capture(request.image, request.format, request.extent, request.layout,
+                             vk::ImageAspectFlags{}, vk::ImageAspectFlags{}, request.layer);
         const TexelLayout texelLayout = layoutOf(request.format);
         const uint32_t texelSize = ImageReadback::texelSize(request.format);
 

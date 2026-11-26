@@ -16,7 +16,7 @@
 | 数学库 | GLM |
 | 资源加载 | `stb_image` 解码；`tinygltf`（glTF/GLB）、`tiny_obj_loader`（OBJ/MTL）、KTX 1.0 解析器、assimp（`.dae/.fbx` 等，运行期动态绑定，可选，见 19.2） |
 | 构建 | CMake ≥ 3.22，需 `glslangValidator` 编译着色器并转成 `*.hpp` 字节码头 |
-| 目标产物 | `myEngine` 静态库 + `example_common` + **23 个**可执行示例（simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb，迁移示例 test7..test23，见 14–21） |
+| 目标产物 | `myEngine` 静态库 + `example_common` + **26 个**可执行示例（simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb，迁移示例 test7..test26，见 14–23） |
 
 依赖约定（由根 `CMakeLists.txt` 的 `globalConfig` 接口目标统一提供）：`src/`、`examples/common/`、`external/`、`external/glm/include`、`external/glfw/include`、`build_vs/generated`。
 
@@ -117,7 +117,10 @@ render_demo/
 │   ├── stencil/{test20.cpp,shader/}                         # stencil 描边（见 17）
 │   ├── model_loading/{test21.cpp,shader/}                   # 模型加载 + 自动取景（见 19）
 │   ├── oit/{test22.cpp,shader/}                             # 加权混合顺序无关透明（见 20）
-│   └── skeletal_animation/{test23.cpp,shader/}               # 骨骼动画 + 蒙皮（见 21）
+│   ├── skeletal_animation/{test23.cpp,shader/}               # 骨骼动画 + 蒙皮（见 21）
+│   ├── scene_graph/{test24.cpp,shader/}                     # 场景图 + 视锥剔除（见 22）
+│   ├── heightmap_terrain/{test25.cpp,shader/}               # 高度图地形 CPU/GPU 双位移路（见 22）
+│   └── csm/{test26.cpp,shader/}                             # 5 级联阴影 + 分层深度数组（见 23）
 ├── tools/gltf2obj.py               # glTF -> OBJ 导出，用于生成往返验证资源（见 18.5）
 └── build_vs/                       # Visual Studio 构建目录（含各示例可执行程序）
 ```
@@ -438,6 +441,7 @@ graph LR
 - `createFramebuffers` 负责创建深度附件、MSAA 颜色附件，并按「交换链图像数量（或 frame-in-flight 数量）」创建 framebuffer。
 - **framebuffer 索引规则（重要）**：`begin(cmd, frameIndex, ...)` 的 `frameIndex` 由调用方决定。对 swapchain-sized pass，framebuffer 数量等于交换链图像数，必须用 `acquireNextImage` 返回的 `imageIndex` 选择；对离屏 pass，framebuffer 按 frame-in-flight 数量创建，用帧号选择。`LoopSequence::recordPass()` 已按 `renderPass->isSwapChainSized()` 区分处理（见 4.14）。
 - **附件暴露**：除采样用的 `offscreenViews()` 外，`IRenderPass` 还提供 `offscreenImages()` 与 `offscreenColorFormat(colorSlot)`（与视图同索引的 `vk::Image`、按 slot 重复的格式），供调试回读使用（见 13.3）。单采样颜色附件创建时统一带 `eTransferSrc`，因此可以被 copy 到 staging；MSAA transient 附件会去掉该用途（它只用于 resolve，不参与回读）。
+- **层数组**：`RenderPassBlueprint::layers` 声明 framebuffer 层数，`OffscreenTargetSpec::layers` 声明附件数组层数，创建期校验二者相等；`framebufferInfo.layers` 取前者，`gl_Layer` 才合法。深度附件另由 `depthStencilView()/depthStencilLayers()` 暴露**覆盖所有层**的单一数组视图，既作为 framebuffer 附件也作为 `sampler2DArray` 的描述符源（见 23.2）。
 
 **重构点**
 
@@ -445,6 +449,7 @@ graph LR
 - 重建 framebuffer 前显式 `clear()`，避免重建期新旧句柄并存。
 - 移除 framebuffer 删除器里多余的 `targetContext` 捕获。
 - 修复 `ImageAttachment::multiSampleCreateInfo` 中 `extent.height` 误用宽度的赋值错误。
+- blend attachment 数跟随当前 subpass 的颜色附件数（深度-only subpass 为 0），不再是"至少 1 个"（见 23.2）。
 
 ### 4.6 资源层（IDeviceResource 体系）
 
@@ -1063,6 +1068,21 @@ python tools/gltf2obj.py data/models/deer.gltf /tmp/deer.obj             # 用�
                                                         # 结果应与 model_loading 的 dump 仅差浮点末位
 ./build/examples/skeletal_animation/skeletal_animation --time 2 --resize-after 3 --dump-after 8 --dump
 
+# guest/2021（见 22/23）：场景图 / 高度图地形 / 级联阴影
+./build/examples/scene_graph/scene_graph --mode grid --cull --dump
+./build/examples/scene_graph/scene_graph --mode chain --time 9 --cull --dump
+./build/examples/heightmap_terrain/heightmap_terrain --mode gpu --dump
+./build/examples/heightmap_terrain/heightmap_terrain --mode cpu --step 2 --dump
+./build/examples/csm/csm --dump                         # 5 层深度 PPM + 主帧，逐层打印覆盖率和平均深度
+./build/examples/csm/csm --no-shadow --dump             # 关阴影对照，主帧 hash 必须不同
+./build/examples/csm/csm --debug-cascade --dump         # 按级联染色
+./build/examples/csm/csm --debug-shadow --dump          # 只看 shadow 项
+./build/examples/csm/csm --debug-map --dump             # 阴影图深度（--no-shadow 下也有效）
+./build/examples/csm/csm --debug-diff --dump            # R=片元深度、G=图中深度，0.5 灰=相等
+./build/examples/csm/csm --far 500 --shadow-res 512 --dump  # 换 split 定律的基准与分辨率
+
+> `csm` 通过 `DeviceRequirement::geometryShader = true` 请求设备能力；不支持几何着色器的设备会在 `RenderManager::Create()` 阶段明确报错，而不是在管线创建时给出一个难懂的 VUID。
+
 # 调试：数字键切换通道视图，P 存盘；也可脚本化（见 13.6）
 ./build/examples/gbuffer/gbuffer --view 2            # 直接进 normal 视图
 ./build/examples/gbuffer/gbuffer --capture 30        # 跑 30 帧后存盘并退出
@@ -1139,6 +1159,10 @@ stencil 示例还会单独抓一张 `0001_stencil-mask.ppm`：它是 depth-stenc
 | 每顶点影响数 | 固定 4 个（`kMaxJointInfluences`）；第 5 个及以后的影响被丢弃并按剩余权重重新归一化（vampire 有 6 个这样的影响），与支持 8 权重的工具会有微小姿态差异（见 21.4） |
 | 蒙皮与后处理 | 蒙皮模型跳过顶点去重（合并会混淆骨骼绑定）与 `flattenScene`（会摧毁关节层级）；`normalizeSize` 也不适用，归一化必须走 `model` 矩阵（见 21.3 / 21.7） |
 | 动画播放 | `SkeletonAnimator` 是单剪辑、线性时间轴：无混合树、无事件、无根运动重定向；`--time` 冻结姿态用于可复现 dump（见 21.7） |
+| 级联数量 | `csm` 固定 5 层，同时写死在 `kMaxCascades`、三个 shader 的 `lightSpaceMatrices[5]` 与 `depth.geom` 的 `invocations = 5`；SPIR-V 执行模式无法在运行期查询，改层数要改三处（见 23.2 / 23.7） |
+| 阴影 dump 格式 | `csm --dump` 要求 `D32Sfloat`；其它深度格式可正常渲染，但回读路径按 32-bit float 解码，程序会直接报错而不是输出错误图像（见 23.4） |
+| 阴影稳定性 | 光空间 AABB 未做 texel snapping，相机连续移动时级联边界会轻微游走；当前示例以固定机位的可复现 dump 为目标（见 23.7） |
+| 阴影滤波 | 3×3 手写 PCF + 白色 clamp-to-border，未用 `sampler2DArrayShadow` 硬件比较或更大半径；bias 按参考实现的世界尺度公式，未做 normal-offset / receiver-plane bias（见 23.3） |
 
 ---
 
@@ -1179,6 +1203,9 @@ stencil 示例还会单独抓一张 `0001_stencil-mask.ppm`：它是 depth-stenc
 | P3 | 多线程录制 | 单份绑定缓存 | per-thread secondary command buffer + 聚合 |
 | P3 | 间接绘制/dispatch | 未实现 | `vkCmdDrawIndirect` / `vkCmdDispatchIndirect` |
 | P3 | async compute 收益 | 队列已独立，但示例 compute 与图形共用同一 SSBO | 双缓冲资源 + 拆分互不相关的负载 |
+| P2 | CSM 层数配置 | `kMaxCascades`、三个 shader 的数组长度、`depth.geom` 的 `invocations = 5` 三处手工同步 | 由同一份常量生成 shader 宏，或在启动时从 SPIR-V 读出 Invocations 与 `depthStencilLayers()` 比对 |
+| P2 | CSM 稳定级联 | 光空间 AABB 未吸附到 texel 网格，移动相机会抖 | 按 cascade 的 world-per-texel 取整光空间平移 |
+| P3 | 阴影滤波 | 固定 3×3 手写 PCF | 换 `sampler2DArrayShadow` 硬件比较，开放半径 / PCSS |
 
 ### 9.4 代码卫生
 
@@ -1274,6 +1301,8 @@ ReadBack() → PrepareReadback(key) → OnReadbackRequested() → 重建 staging
 | `DependencyPreset` | `eSwapChain`/`eMultiSubpass`/`eOffscreen` | 单 pass / 0→1 / 0→external 的 subpass 依赖 |
 | `SubpassDeferredAttachmentDetail` | 5 附件 / 3 subpass / 4 条自写依赖 | 输入附件版延迟渲染（见 16.3） |
 | `StencilAttachmentSpec` | `attachmentIndex`/`loadOp`/`storeOp`/`clearValue`/`finalLayout`/`hostReadable` | 声明式 stencil 附件（见 17.2），挂在 `RenderPassBlueprint::stencil` 上 |
+| `OffscreenTargetSpec::layers` | 默认 1；>1 时 `ImageAttachment` 分配 2D 数组并创建一个覆盖全部层的数组视图 | 分层阴影图（见 23.2） |
+| `RenderPassBlueprint::layers` | 默认 1；写入 `framebufferInfo.layers`，与附件数组层数必须一致 | 分层渲染时 `gl_Layer` 合法的前提（见 23.2） |
 
 > 预设只是常用组合；`makeDependencies(preset, withStencil=true)` 只给**含 early/late fragment tests 阶段**的依赖补 `DEPTH_STENCIL_ATTACHMENT_READ`（stencil test 发生在这两个阶段）。给 `BOTTOM_OF_PIPE` / `FRAGMENT_SHADER` 的作用域补这个 access 会触发 VUID-VkSubpassDependency-dstAccessMask-00869。`RenderPassBlueprint::dependencies` 是公开字段，需要精确控制时（例如 subpass 间输入附件读取、layout 转换的写语义）直接填自己的依赖数组，`SubpassDeferredAttachmentDetail` 就是这么做的。
 
@@ -1515,6 +1544,10 @@ P6
 写入器 `WritePpmRgb8(path, w, h, rgb8, comments)` 是公开的：调试存盘与 raw2rgb 共用它，
 所以两处的头部格式、行序约定一致（`# source:` 里是 `vk::to_string` 的格式名，不带
 `VK_FORMAT_` 前缀）。
+
+**数组附件**：`DumpRequest::layer` 默认 0；非 0 时 `ImageReadback` 只对目标层做
+layout 转换与 `vkCmdCopyImageToBuffer`，其它层保持原布局。一个 PPM 只能装一张 2D 图，
+所以深度数组要逐层抓多张文件——`csm --dump` 就是这么把五层级联分别存盘的（见 23.2 / 23.4）。
 
 **三个容易踩的点**：
 
@@ -2731,7 +2764,7 @@ vampire 一个样本会把若干条路径掩盖成"恰好成立"，因为它同�
 | --- | --- | --- |
 | `1.scene/1.scene_graph` | 11 级嵌套行星，逐帧合成父子矩阵 | 并入 `examples/scene_graph`（`--mode chain`） |
 | `1.scene/2.frustum_culling` | 400 个实体 + AABB 视锥剔除 | 并入 `examples/scene_graph`（`--mode grid`） |
-| `2.csm` | 5 级联阴影 | 第 23 章（引擎缺数组深度附件 / 可采样深度视图 / GS 分层） |
+| `2.csm` | 5 级联阴影 | 并入 `examples/csm`（见 23；补齐数组深度附件 / 可采样深度视图 / GS 分层） |
 | `3.tessellation/terrain_cpu_src` | 高度图在 CPU 端位移 | 并入 `examples/heightmap_terrain`（`--mode cpu`） |
 | `3.tessellation/terrain_gpu_dist` | 高度图在 TES 里位移 + 距离自适应细分 | 并入 `examples/heightmap_terrain`（`--mode gpu`） |
 | `4.dsa` | OpenGL 4.5 Direct State Access | **不迁移**，理由见 22.7 |
@@ -2918,13 +2951,13 @@ Vulkan 里不存在这个问题的前提——**没有任何隐式绑定状态**
 | CPU 路 draw 数 | 875 … 1755 次 `vkCmdDrawIndexed`（每条 strip 一次） | 相邻行不能拼成一条 strip（会把行间顶点连起来），要压成一次 draw 只能改成 triangle list，索引量翻三倍 |
 | 高度图资源 | 2624 × 1756 RGBA8，1.5 MB，只读 R 通道 | 保持与参考实现同一个文件；换成单通道 R8 可省 3/4，但那样就不是"迁移同一份资源"了 |
 | 首帧确定性 | `--dump-after` 默认 2 | 冷启动首帧偶发沿用了旧的 swapchain extent（投影差一点）；两个稳定帧之后 dump 才可复现 |
-| 阴影 | 无 | 参考的 `2.csm` 是第 23 章 |
+| 阴影 | 有，5 级 CSM（见 23） | 参考的 `2.csm` 已并入 `examples/csm` |
 
 ### 22.9 构建与验证状态
 
 | 项 | 结果 |
 | --- | --- |
-| 全量构建 | **25 个示例** + `myEngine` + `example_common`：**0 error / 0 warning** |
+| 全量构建 | **25 个示例**（本批结束时）+ `myEngine` + `example_common`：**0 error / 0 warning** |
 | 场景图剔除等价 | grid / chain t=0 / chain t=9 三组 `--cull` 与 `--no-cull` 的 dump **逐字节相同**（`cmp`） |
 | 场景图剔除数 | grid 93/400 存活；chain t=0 11/11；chain t=9 **2/11** |
 | 场景图可复现 | 同 `--time` 两次运行 coverage / uniqueColors / mean 完全一致 |
@@ -2934,3 +2967,116 @@ Vulkan 里不存在这个问题的前提——**没有任何隐式绑定状态**
 | 地形规模 | cpu step2：1 151 936 顶点 / 2 299 494 三角形；cpu step1：4 607 744 / 9 206 730；gpu：4096 控制点 |
 | 运行期校验 | `heightmap_terrain` 两种模式、`terraintessellation`（改动后）冒烟：**VUID = 0 / Validation Error = 0** |
 | 回归 | `terraintessellation` 补上逐帧 `CmdSyncDevice` 后仍 0 校验错误，画面与改动前一致 |
+
+## 23. LearnOpenGL guest 2021 之二（级联阴影，2.csm）
+
+参考 `2.csm` 用 5 级级联把 `near=0.1 / far=500` 的视锥切成 10 / 20 / 50 / 250 / 500 五段，每段在光空间拟合一张 4096² 深度图，片元按视空间深度选层，再做 3×3 PCF。它的核心不是"多画几遍"，而是**把一个三角形同时写进五张图**：
+
+```cpp
+layout(triangles, invocations = 5) in;
+gl_Position = lightSpaceMatrices[gl_InvocationID] * gl_in[i].gl_Position;
+gl_Layer = gl_InvocationID;
+```
+
+本移植把它落进 `examples/csm`（test26）。引擎为此补的正是上一章末尾留下的三个缺口：数组深度附件、可被采样的深度视图、几何阶段分层渲染。
+
+### 23.1 一次 draw 写五层：从 GL 状态机到 layered framebuffer
+
+GL 侧是一个只挂深度附件的 FBO + 一张 `GL_TEXTURE_2D_ARRAY`（4096²×5），五层由 `gl_Layer` 分发；Vulkan 侧对应的是**五层的 `VkImage` + 覆盖所有层的 2D 数组视图 + 声明 `framebuffer.layers = 5` 的 framebuffer**。三者少一个都会静默出错：视图只覆盖第 0 层时 `gl_Layer` 写入是未定义行为，framebuffer 只声明 1 层时分层渲染非法，两者都不一定报 validation error。
+
+示例的三个描述符层：
+
+| set | 内容 | 频率 | 消费阶段 |
+| --- | --- | --- | --- |
+| 0 | `CsmUBO`：5 个光空间矩阵 + view/viewProj + split / lightDir / eye / flags，512 B | 每帧 | VS / GS / FS |
+| 1 | `Instance[]`：model + material，一次 instanced draw | 每实例 | VS |
+| 2 | `sampler2DArray`：阴影 pass 的深度数组 | 每帧 | FS |
+
+阴影 pass 自己只要 set0 / set1，所以它的 atlas 只声明两层——若照搬主 pass 的三层布局，引擎会为没人用的 set2 分配一张占位纹理。深度数组在 `CreatePipeline` **之前**由 `addDescriptorResource(ResourceId(2,0), frame, combine)` 手动塞进 asset：描述符集是建管线时一次性写入的（见 20.6），每个 in-flight frame 采样自己那一组阴影图。
+
+### 23.2 框架层：把"层"变成附件的一等属性
+
+本批落在 `src/` 的改动，全部由 csm 一个示例消费：
+
+* `OffscreenTargetSpec::layers` / `RenderPassBlueprint::layers`：一个说图像有几层，一个说 framebuffer 有几层。`BasicRenderPass::createAttachments()` 现在会校验两者相等，不一致直接抛异常——否则一个 `layers=5` 的 blueprint 配上 1 层纹理，轻则 validation error，重则只写第 0 层。
+* `ImageAttachment`：`arrayLayers = layers`，并在 `layers > 1` 时创建 `e2DArray` 视图、`layerCount = layers`。**一个视图同时给 framebuffer 和 sampler 用**；再建一个同图像的新视图会得到新的 subresource range，而 render pass 的布局转换只覆盖前者。
+* `IRenderPass::depthStencilView()` / `depthStencilLayers()`：深度附件不再只有裸 `VkImage`。stencil 回读只需要 image，采样深度数组必须拿到 view。
+* `GraphicsPipeline::createPipeline()`：color attachment 为 0 时不再硬塞一个 blend state。深度-only subpass 若声明 1 个 blend attachment，会触发 `VUID-VkGraphicsPipelineCreateInfo-renderPass-06055`。
+* `GraphicsPipelineConfig::addGeometryStage(key)`：几何阶段只是一笔 stage 注册。`invocations = 5` 是 SPIR-V 的 `OpExecutionMode`，由 glslang 从 shader 字面量生成，不是 `VkGraphicsPipelineCreateInfo` 的字段；示例额外断言 `depthStencilLayers() == kMaxCascades`，但 SPIR-V 里的 5 无法在运行期查询，改层数仍需同步三处。
+* `ImageReadback::capture(..., layer)` 与 `DumpRequest::layer`：两条 barrier 和 `VkBufferImageCopy::baseArrayLayer` 都带上层号。只切换目标层的布局，抓第 3 层不会把另外四层从 `eDepthStencilReadOnlyOptimal` 拽走；PPM 只存一张 2D 图，所以逐层抓六张。
+
+### 23.3 光空间矩阵：Vulkan 深度范围是主要差异
+
+split 定律照抄参考：`far/{50,25,10,2}`，片元按 `abs((view * worldPos).z)` 选层，不用到相机的距离。每层用 `inverse(projection * view)` 反投影出 8 个视锥角点，再 `lookAt(center + lightDir, center, up)` 转到光空间求 AABB，深度范围乘 10 扩张以容纳级联外的遮挡物。这里的反投影仍按 GL 的 NDC z∈[-1,1] 取 `2z-1`——它只是用来定义世界空间子视锥，和最终输出的深度范围无关。
+
+真正的差异在正交投影：
+
+```cpp
+projection[0][0] =  2.0f / (maxX - minX);
+projection[2][2] = -1.0f / (maxZ - minZ);   // 光空间 z 越大离光越远
+projection[3][2] =  maxZ / (maxZ - minZ);   // depth = (maxZ - z) / span
+projection[1][1] *= -1.0f;                  // Vulkan NDC y 向下
+projection[3][1] *= -1.0f;                  // 平移必须跟着翻
+```
+
+三个容易踩的坑：
+
+1. **深度不能做 `0.5*z + 0.5`**。参考的 `projCoords = lightClip.xyz / w * 0.5 + 0.5` 是 GL 深度 [-1,1] 的写法；Vulkan 光空间投影已经输出 [0,1]，`csm.frag` 只 remap xy，z 原样用。照抄会在所有级联上把深度砍半，画面变成一片亮。
+2. **y 翻转要连平移一起翻**。只把 `[1][1]` 取负是绕 `y=0` 镜像，光空间 AABB 恰好以原点为中心时才正确；正确的翻法是关于 AABB 中心镜像，所以 `[3][1]` 也要取负。
+3. **z 的符号反了不会报错**。`eLess` 的深度测试会把离光最远的表面留下来，结果是整片无阴影，validation 完全沉默。
+
+还有一处属于"把参考的脆弱写法收紧"：AABB 的 `max` 种子用 `std::numeric_limits<float>::lowest()`，参考用 `::min()`（最小正数），后者的 `maxZ` 在坐标全负时不会更新，级联范围悄悄变大。首次实现用了 `finalLayout = DEPTH_READ_ONLY_OPTIMAL`，validation 报 `VUID-VkAttachmentDescription-separateDepthStencilLayouts-03285`；改成 `DEPTH_STENCIL_READ_ONLY_OPTIMAL` 后归零——纯深度格式用组合的 read-only 布局同样可采样，且不依赖可选特性。
+
+### 23.4 Bias、PCF 与调试视图
+
+bias 与参考逐字一致：`max(0.05 * (1 - dot(n, lightDir)), 0.005)`，再按当前级联的深度尺度归一化（非末层除以 `split * 0.5`，末层除以 `farPlane * 0.5`）。9-tap PCF 在同一层用 1 texel 偏移，手写 `currentDepth - bias > sampledDepth`；采样器是 NEAREST + CLAMP_TO_BORDER + 白色 border，与参考相同——越出 XY 边界的片元采到 1.0，因而判为无遮挡。`csm.frag` 同时提供六种 `flags.x` 视图：lit / 级联染色 / shadow 项 / 片元深度 / 图中深度 / 两者对照（R=片元、G=图，0.5 灰=相等）。`--no-shadow` 只跳过比较，级联与投影仍然计算，所以深度类视图在关阴影后依然有效（早期版本把它们一并跳过，结果是整屏黑）。
+
+`--dump` 会在主帧之后逐层抓 5 张 2048² 深度 PPM，并打印每层区间、覆盖率与平均深度。回读要求 `D32Sfloat`：其它深度格式能正常渲染，但 `ImageReadback::texelSize()` / `ImageDump::layoutOf()` 按 32-bit float 解码，示例在启动阶段就给出可读错误，而不是输出一张错误图像。
+
+### 23.5 与参考的差异
+
+| 项 | 参考 2.csm | 本移植 | 原因 |
+| --- | --- | --- | --- |
+| 场景 | 地板 + 10 个 `random_device` 立方体 + wood.png | 地面 + 12 个固定盒子 + 程序棋盘 | 两次运行必须逐字节相同，`--dump` 才能当回归产物 |
+| 阴影图 | 4096² × 5，单组 | 2048² × 5 × 2 in-flight = **160 MiB** | 显存与抓帧成本降 4 倍；可用 `--shadow-res 512` 再降到 10 MiB |
+| far | 500 | 默认 120 | split 为 `far/{50,25,10,2}`；far=500 时前四级全落在地板上，看不到级联差异。`--far 500` 可复现参考 |
+| 深度 Pass | `glCullFace(GL_FRONT)`（但未 `glEnable(GL_CULL_FACE)`，实际无效） | `eNone` | 显式记录真实行为；前剔会让接触阴影离开物体 |
+| 调试 | 独立 quad（深度测试仍开，显示不全）+ 每帧重建 8 个线框盒体 | fragment 内六种视图，无逐帧资源抖动 | 调试信号更直接，也不引入参考里的资源抖动 |
+| 死代码 | `linearizeDepth()` / `near_plane` / `far_plane` 从未生效 | 无 | 正交深度本来就是线性的 |
+
+参考的 `4.dsa` 仍不迁移，理由见 22.7：Vulkan 没有"先绑定、后操作"的隐式状态，DSA 在这里没有对应技术。
+
+### 23.6 验证：层内容、画面与回归
+
+| 项 | 结果 |
+| --- | --- |
+| 全量构建 | **26 个示例** + `myEngine` + `example_common`：0 error；链接阶段仍有仓库原有的 `LNK4098` 警告，与本次改动无关 |
+| Validation | csm 默认 / `--far 500` / `--shadow-res 512` / `--no-shadow --debug-map`：VUID = 0 / Validation Error = 0（强制加载 `VK_LAYER_KHRONOS_validation`） |
+| 可复现 | 两次 `--dump --dump-after 3` 的主帧 SHA-256 均为 `d028fb00…bc103`，逐字节相同 |
+| 阴影确实生效 | 开/关阴影主帧 meanAbsDiff = **0.233/255**，max = 49，15129 / 2764800 像素不同；其中 12492 像素差值 ≥32。差异集中在盒子接触处的短阴影——光源方向 `(20,50,20)` 接近顶光，阴影本来就短 |
+| 层内容（far=120） | 覆盖率 1.000 / 1.000 / 1.000 / 0.9246 / 0.3198；平均深度 0.2003 / 0.3168 / 0.3455 / 0.3305 / 0.3751。近三层全被地面填满，远层只留下有限地面板的多边形轮廓，说明五层确实写入了不同的子视锥 |
+| 层内容（far=500） | 覆盖率 1.000 / 1.000 / 0.9963 / 0.0847 / 0.0140；对应参考的 10/20/50/250/500 分段，远处四级基本看不到这个 140 单位见方的场景 |
+| 调试视图 | `--debug-diff` 地面与盒面呈 R≈G 的黄色（片元与图中深度一致），没有整片偏移；`--no-shadow --debug-map` 深度视图均值 (121,124,130)，不再是黑屏 |
+| 回归 | simplest / stencil / subpasses / oit / gbuffer / scene_graph / heightmap_terrain 逐个 `--dump` + validation：全部 0 error / 0 Validation Error |
+
+### 23.7 差异与限制
+
+| 项 | 现状 | 原因/后续 |
+| --- | --- | --- |
+| 层数同步 | `kMaxCascades`、三个 shader 的 `lightSpaceMatrices[5]`、`depth.geom` 的 `invocations = 5` 三处手工同步 | `BasicRenderPass` 只能校验 attach 层数与 blueprint 一致；SPIR-V 执行模式无法在运行期读取，见 9.3 |
+| dump 格式 | 仅 `D32Sfloat` 可回读 | `texelSize()` / `layoutOf()` 按 32-bit float 解码；其它格式渲染正常但拒绝 dump |
+| 显存 | 2048² × 5 × 2 = 160 MiB | 集显/移动端可用 `--shadow-res 512`（10 MiB），代价是 PCF 更粗 |
+| 稳定性 | 无 texel snapping | 相机移动时级联边界会抖；固定机位的可复现 dump 是本例目标 |
+| 滤波 | 固定 3×3、手动比较 | 未用 `sampler2DArrayShadow` 硬件比较，也未实现 PCSS；bias 按参考的世界尺度公式，未做 normal-offset |
+| 光源 | 单个方向光 | 多光源需要多个深度数组或 atlas，超出参考范围 |
+| 级联线框 | 未提供 | 用 `--debug-cascade` 的片元染色代替；参考的线框盒体每帧重建，且颜色只有 3 种、5 层会重复 |
+
+### 23.8 构建与验证状态
+
+| 项 | 结果 |
+| --- | --- |
+| 可执行文件 | `build_vs/examples/csm/Release/csm.exe` |
+| 新增文件 | `examples/csm/{CMakeLists.txt,test26.cpp,shader/{csm.vert,csm.frag,depth.vert,depth.geom,depth.frag}}` + 5 个生成的 `.hpp` |
+| 改动文件 | `src/{BasicRenderPass,GraphicsPipeline,IAttachmentDetail,IRenderPass,ImageAttachment,ImageReadback}.*`、`examples/common/ImageDump.*`、`examples/CMakeLists.txt` |
+| 构建 | Release 全量 26 示例 0 error；csm 单独增量重建 0 error |
+| 运行 | 默认 / 无阴影 / 六种调试视图 / `--far 500` / `--shadow-res 512` 全部 0 validation error，均正常退出 |

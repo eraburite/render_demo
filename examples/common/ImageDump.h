@@ -48,6 +48,9 @@ struct DumpRequest {
     // colour targets end their pass in SHADER_READ_ONLY_OPTIMAL.
     vk::ImageLayout layout = vk::ImageLayout::eShaderReadOnlyOptimal;
     DumpEncoding encoding = DumpEncoding::eColor;
+    // Array layer to capture.  A depth array (cascaded shadow map) needs one
+    // dump per cascade because a PPM holds a single 2D slice.
+    uint32_t layer = 0;
     // Only read by ePosition (world scale of the colour coding) and
     // eLinearDepth (eye position and the near/far range).
     float referenceScale = 5.0f;

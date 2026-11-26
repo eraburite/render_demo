@@ -175,6 +175,7 @@ void BasicRenderPass::createAttachments(vk::Extent2D extent)
     m_offscreenImages.clear();
     m_offscreenFormats.clear();
     m_depthStencilImages.clear();
+    m_depthStencilViews.clear();
     m_colorCountPerSet = 0;
     m_extent = extent;
 
@@ -188,6 +189,7 @@ void BasicRenderPass::createAttachments(vk::Extent2D extent)
                                   : (m_blueprint.framebufferCount == 0 ? 1 : m_blueprint.framebufferCount);
     m_attachmentSets.resize(setCount);
     m_depthStencilImages.resize(setCount);
+    m_depthStencilViews.resize(setCount);
 
     // Iterate set-major so m_offscreenViews comes out frame-major:
     // [setIndex * colorCountPerSet + colorSlot].
@@ -201,6 +203,17 @@ void BasicRenderPass::createAttachments(vk::Extent2D extent)
             // target) is supplied externally as an image view.
             if (isSwapChainTarget(m_blueprint, description)) {
                 continue;
+            }
+
+            // A layered framebuffer can only be built from views covering the
+            // same number of layers.  Without this check a blueprint that says
+            // `layers = 5` but allocates a 1-layer texture produces either a
+            // VkFramebuffer validation error or (worse) a shadow map whose
+            // upper layers are never written.
+            if (spec && spec->layers != m_blueprint.layers) {
+                throw std::runtime_error("BasicRenderPass: attachment " + std::to_string(index) + " has " +
+                                         std::to_string(spec->layers) + " layers, blueprint declares " +
+                                         std::to_string(m_blueprint.layers));
             }
 
             const vk::Format format = (spec && spec->format != vk::Format::eUndefined) ? spec->format : description.format;
@@ -227,9 +240,19 @@ void BasicRenderPass::createAttachments(vk::Extent2D extent)
             }
 
             auto attachment = std::make_shared<ImageAttachment>(m_device, m_memProps, m_allocator, extent, format,
-                                                                samples, usage, aspectOf(format));
-            if (m_blueprint.stencil && index == m_blueprint.stencil->attachmentIndex && depthTarget) {
-                m_depthStencilImages[set] = attachment->image();
+                                                                samples, usage, aspectOf(format),
+                                                                spec ? spec->layers : 1u);
+            if (depthTarget) {
+                // Recorded for every depth pass (not only stencil ones): a depth
+                // array is also the thing a shadow-map descriptor samples.  A
+                // pass with several depth attachments keeps the one the stencil
+                // spec names, else the first.
+                const bool preferred = m_blueprint.stencil && index == m_blueprint.stencil->attachmentIndex;
+                if (preferred || !m_depthStencilImages[set]) {
+                    m_depthStencilImages[set] = attachment->image();
+                    m_depthStencilViews[set] = attachment->imageView();
+                    m_depthStencilFormat = format;
+                }
             }
             const vk::ImageView view = attachment->imageView();
             if (view && samples == vk::SampleCountFlagBits::e1 && !depthTarget) {
@@ -261,7 +284,10 @@ void BasicRenderPass::createFramebuffers(const std::vector<vk::ImageView> &swapC
         framebufferInfo.pAttachments = attachments.empty() ? nullptr : attachments.data();
         framebufferInfo.width = extent.width;
         framebufferInfo.height = extent.height;
-        framebufferInfo.layers = 1;
+        // Layer count of the framebuffer, not of the images: layered rendering
+        // (gl_Layer) is only legal when the framebuffer declares more than one
+        // layer, and every attachment view has to cover all of them.
+        framebufferInfo.layers = m_blueprint.layers;
 
         vk::Framebuffer framebuffer{};
         check(m_device->createFramebuffer(&framebufferInfo, nullptr, &framebuffer), "vkCreateFramebuffer");
