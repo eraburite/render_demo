@@ -26,6 +26,7 @@ enum class DumpEncoding {
     eNormal,      // unit normal: n * 0.5 + 0.5
     ePosition,    // world position: p / referenceScale * 0.5 + 0.5
     eLinearDepth, // world position + eye: distance in [near, far], near = bright
+    eToneMap,     // HDR colour: Reinhard v / (1 + v), clamped to [0, 1]
 };
 
 inline const char *DumpEncodingName(DumpEncoding encoding)
@@ -35,6 +36,7 @@ inline const char *DumpEncodingName(DumpEncoding encoding)
     case DumpEncoding::eNormal: return "normal (n*0.5+0.5)";
     case DumpEncoding::ePosition: return "position (p/ref*0.5+0.5)";
     case DumpEncoding::eLinearDepth: return "linear-depth (near=bright)";
+    case DumpEncoding::eToneMap: return "tone-map (v/(1+v), HDR -> LDR)";
     }
     return "unknown";
 }

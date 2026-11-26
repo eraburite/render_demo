@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -14,6 +16,7 @@ namespace {
 // Memory layout of one texel, for the formats the dump path understands.
 struct TexelLayout {
     bool floatFormat = false;
+    bool halfFormat = false;
     bool bgra = false;
     uint32_t channels = 4;
 };
@@ -22,19 +25,50 @@ TexelLayout layoutOf(vk::Format format)
 {
     switch (format) {
         case vk::Format::eR8G8B8A8Unorm:
-        case vk::Format::eR8G8B8A8Srgb: return TexelLayout{false, false, 4};
+        case vk::Format::eR8G8B8A8Srgb: return TexelLayout{false, false, false, 4};
         case vk::Format::eB8G8R8A8Unorm:
-        case vk::Format::eB8G8R8A8Srgb: return TexelLayout{false, true, 4};
-        case vk::Format::eR32G32B32A32Sfloat: return TexelLayout{true, false, 4};
+        case vk::Format::eB8G8R8A8Srgb: return TexelLayout{false, false, true, 4};
+        case vk::Format::eR32G32B32A32Sfloat: return TexelLayout{true, false, false, 4};
+        // HDR render targets.  The half-float texels are converted to float in
+        // readTexel; eToneMap is what makes values above 1.0 visible in a PPM.
+        case vk::Format::eR16G16B16A16Sfloat: return TexelLayout{false, true, false, 4};
         case vk::Format::eR32Sfloat:
-        case vk::Format::eD32Sfloat: return TexelLayout{true, false, 1};
+        case vk::Format::eD32Sfloat: return TexelLayout{true, false, false, 1};
         default: break;
     }
     throw std::runtime_error("ImageDump: unsupported format " + vk::to_string(format));
 }
 
+// IEEE-754 binary16 -> binary32, without relying on a compiler-specific
+// intrinsic.  HDR captures (RGBA16F) otherwise read as garbage when the raw
+// 16-bit patterns are interpreted as 32-bit floats.
+float halfToFloat(uint16_t value)
+{
+    const uint32_t sign = (value & 0x8000u) ? 0x80000000u : 0u;
+    const uint32_t exponent = (value >> 10) & 0x1fu;
+    const uint32_t mantissa = value & 0x03ffu;
+    if (exponent == 0u) {
+        // Subnormal half: no implicit leading 1.
+        const float result = std::ldexp(static_cast<float>(mantissa) / 1024.0f, -14);
+        return sign ? -result : result;
+    }
+    if (exponent == 31u) {
+        const float result = mantissa ? std::numeric_limits<float>::quiet_NaN()
+                                      : std::numeric_limits<float>::infinity();
+        return sign ? -result : result;
+    }
+    const float result = std::ldexp(1.0f + static_cast<float>(mantissa) / 1024.0f,
+                                    static_cast<int>(exponent) - 15);
+    return sign ? -result : result;
+}
+
 glm::vec4 readTexel(const uint8_t *texel, const TexelLayout &layout)
 {
+    if (layout.halfFormat) {
+        const auto *values = reinterpret_cast<const uint16_t *>(texel);
+        return glm::vec4(halfToFloat(values[0]), halfToFloat(values[1]), halfToFloat(values[2]),
+                         halfToFloat(values[3]));
+    }
     if (layout.floatFormat) {
         const float *values = reinterpret_cast<const float *>(texel);
         if (layout.channels == 1) {
@@ -56,6 +90,14 @@ glm::vec3 encodeColor(const glm::vec4 &sample, const DumpRequest &request)
 {
     switch (request.encoding) {
         case DumpEncoding::eColor: return glm::vec3(sample);
+        case DumpEncoding::eToneMap: {
+            // Reinhard, the simplest display transform that preserves the fact
+            // that HDR texels can exceed 1.0.  Exposure in the shader uses the
+            // exponential curve; this one is fixed so two captures can be
+            // compared byte for byte.
+            const glm::vec3 hdr = glm::max(glm::vec3(sample), glm::vec3(0.0f));
+            return hdr / (glm::vec3(1.0f) + hdr);
+        }
         case DumpEncoding::eNormal: return glm::vec3(sample) * 0.5f + 0.5f;
         case DumpEncoding::ePosition: return glm::vec3(sample) / request.referenceScale * 0.5f + 0.5f;
         case DumpEncoding::eLinearDepth: {

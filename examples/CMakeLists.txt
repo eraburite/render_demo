@@ -17,7 +17,7 @@ add_subdirectory(geometryshader)
 # directories are being populated; add the directory once its CMakeLists exists.
 foreach(example tessellation deferred terraintessellation gltfloading gltfscenerendering multithreading
                 texture texturecubemap texturearray parallaxmapping texture3d subpasses stencil model_loading oit
-                skeletal_animation scene_graph heightmap_terrain csm)
+                skeletal_animation scene_graph heightmap_terrain csm hdr bloom gamma)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${example}/CMakeLists.txt")
         add_subdirectory(${example})
     endif()

@@ -93,6 +93,9 @@ uint32_t ImageReadback::texelSize(vk::Format format)
         case vk::Format::eB8G8R8A8Srgb:
         case vk::Format::eR32Sfloat:
         case vk::Format::eD32Sfloat: return 4;
+        // Half-float HDR targets (RGBA16F) use the same byte size as four
+        // 16-bit channels; ImageDump handles the half -> float conversion.
+        case vk::Format::eR16G16B16A16Sfloat: return 8;
         case vk::Format::eR32G32B32A32Sfloat: return 16;
         case vk::Format::eS8Uint: return 1; // single stencil byte
         default: break;
