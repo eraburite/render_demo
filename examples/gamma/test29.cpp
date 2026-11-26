@@ -170,7 +170,7 @@ void test(int argc, char **argv)
     std::get<TextureImageSpec>(textureSet.specs[1]).format = vk::Format::eR8G8B8A8Srgb;
 
     auto instanceSet = DescriptorLayoutAtlas::makeSet<GammaInstanceComponent, GammaInstanceComponentTable>(
-        2, {GammaInstanceComponent::eInstances}, UpdateFrequency::eStatic, false);
+        2, {GammaInstanceComponent::eInstances}, UpdateFrequency::eStatic, true);
     instanceSet.specs[0] = GBufferSpec{instanceCount, static_cast<uint32_t>(sizeof(Instance)), DataTypes::eCustom};
     layout->setDetails({blockSet, textureSet, instanceSet});
 

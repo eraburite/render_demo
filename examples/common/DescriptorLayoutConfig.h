@@ -276,6 +276,15 @@ public:
     }
 
     // Convenience: build a SetLayoutDetail from a component table.
+    //
+    // `shared == false` makes the engine allocate one descriptor resource per
+    // in-flight frame, so the caller MUST upload each of them
+    // (`OnUpdateRawData(id, frame, ...)` for every frame).  Uploading only
+    // frame 0 leaves the other slots as zero-filled buffers: the scene silently
+    // disappears on every odd frame, with no validation error (the camera UBO
+    // or instance SSBO simply reads as all-zero matrices).  Data that never
+    // changes per frame should therefore be declared `eStatic, true`, which
+    // aliases every frame slot onto one resource.
     template <typename ComponentEnum, const auto &Table>
     static SetLayoutDetail makeSet(uint32_t setId, std::vector<ComponentEnum> components, UpdateFrequency freq,
                                    bool shared)

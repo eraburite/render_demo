@@ -16,7 +16,7 @@
 | 数学库 | GLM |
 | 资源加载 | `stb_image` 解码；`tinygltf`（glTF/GLB）、`tiny_obj_loader`（OBJ/MTL）、KTX 1.0 解析器、assimp（`.dae/.fbx` 等，运行期动态绑定，可选，见 19.2） |
 | 构建 | CMake ≥ 3.22，需 `glslangValidator` 编译着色器并转成 `*.hpp` 字节码头 |
-| 目标产物 | `myEngine` 静态库 + `example_common` + **30 个**可执行示例（simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb，迁移示例 test7..test30，见 14–24） |
+| 目标产物 | `myEngine` 静态库 + `example_common` + **32 个**可执行示例（simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb，迁移示例 test7..test32，见 14–24） |
 
 依赖约定（由根 `CMakeLists.txt` 的 `globalConfig` 接口目标统一提供）：`src/`、`examples/common/`、`external/`、`external/glm/include`、`external/glfw/include`、`build_vs/generated`。
 
@@ -124,7 +124,9 @@ render_demo/
 │   ├── hdr/{test27.cpp,shader/}                             # RGBA16F + 曝光色调映射（见 24）
 │   ├── bloom/{test28.cpp,shader/}                           # MRT 阈值 + 10-pass 高斯模糊 + 合成（见 24）
 │   ├── gamma/{test29.cpp,shader/}                           # sRGB 纹理 + gamma 编码对拍（见 24）
-│   └── shadow_mapping/{test30.cpp,shader/}                  # 单张 2D 深度图 + bias/PCF + depth quad（见 24）
+│   ├── shadow_mapping/{test30.cpp,shader/}                  # 单张 2D 深度图 + bias/PCF + depth quad（见 24）
+│   ├── point_shadow/{test31.cpp,shader/}                    # 点光源阴影：6 层深度数组 + 径向距离 + 软阴影（见 24）
+│   └── ssao/{test32.cpp,shader/}                            # G-Buffer + 64-sample kernel + 模糊 + 环境光合成（见 24）
 ├── tools/gltf2obj.py               # glTF -> OBJ 导出，用于生成往返验证资源（见 18.5）
 └── build_vs/                       # Visual Studio 构建目录（含各示例可执行程序）
 ```
@@ -1085,7 +1087,7 @@ python tools/gltf2obj.py data/models/deer.gltf /tmp/deer.obj             # 用�
 ./build/examples/csm/csm --debug-diff --dump            # R=片元深度、G=图中深度，0.5 灰=相等
 ./build/examples/csm/csm --far 500 --shadow-res 512 --dump  # 换 split 定律的基准与分辨率
 
-# 5.advanced_lighting（见 24）：HDR / Bloom / Gamma 三个尚未迁移的技术点
+# 5.advanced_lighting（见 24）：HDR / Bloom / Gamma / 阴影 / SSAO
 ./build/examples/hdr/hdr --dump                         # RGBA16F -> 曝光 1.0 -> 1/2.2
 ./build/examples/hdr/hdr --exposure 2 --dump            # 曝光对照，主帧 hash 必须不同
 ./build/examples/hdr/hdr --no-hdr --dump                # 参考的 "HDR off" 分支
@@ -1107,6 +1109,19 @@ python tools/gltf2obj.py data/models/deer.gltf /tmp/deer.obj             # 用�
 ./build/examples/shadow_mapping/shadow_mapping --debug-diff --dump            # R=片元深度，G=图中深度
 ./build/examples/shadow_mapping/shadow_mapping --no-shadow --debug-map --dump # 关阴影但深度视图仍有效
 ./build/examples/shadow_mapping/shadow_mapping --shadow-res 512 --dump        # 分辨率/PCF 纹素步长联动
+
+# 第三批：点光源阴影与 SSAO（见 24.10 / 24.11）
+./build/examples/point_shadow/point_shadow --dump                        # 3.2.1：硬阴影 + 6 层深度图逐层存盘
+./build/examples/point_shadow/point_shadow --soft --dump                 # 3.2.2：20 抽头圆盘 PCF
+./build/examples/point_shadow/point_shadow --no-shadow --dump            # 只留光照，用于算差值
+./build/examples/point_shadow/point_shadow --debug-map --dump            # 看某一层的径向深度
+./build/examples/point_shadow/point_shadow --debug-diff --dump           # R=片元距离，G=图中距离
+./build/examples/point_shadow/point_shadow --shadow-res 512 --soft --dump
+./build/examples/point_shadow/point_shadow --light 3 5 -2 --dump         # 换光位，六个面的覆盖率会变
+./build/examples/ssao/ssao --dump                                        # 四段式：G-Buffer -> AO -> 模糊 -> 合成
+./build/examples/ssao/ssao --no-ssao --dump                              # 关遮蔽，只差环境项
+./build/examples/ssao/ssao --debug-ao --dump                             # 把 AO 图直接贴到屏幕
+                                                                         # dump 同时给出 ssao-raw / ssao-blur / position / normal
 
 > `csm` 通过 `DeviceRequirement::geometryShader = true` 请求设备能力；不支持几何着色器的设备会在 `RenderManager::Create()` 阶段明确报错，而不是在管线创建时给出一个难懂的 VUID。
 
@@ -1234,8 +1249,8 @@ stencil 示例还会单独抓一张 `0001_stencil-mask.ppm`：它是 depth-stenc
 | P2 | CSM 层数配置 | `kMaxCascades`、三个 shader 的数组长度、`depth.geom` 的 `invocations = 5` 三处手工同步 | 由同一份常量生成 shader 宏，或在启动时从 SPIR-V 读出 Invocations 与 `depthStencilLayers()` 比对 |
 | P2 | CSM 稳定级联 | 光空间 AABB 未吸附到 texel 网格，移动相机会抖 | 按 cascade 的 world-per-texel 取整光空间平移 |
 | P3 | 阴影滤波 | 固定 3×3 手写 PCF | 换 `sampler2DArrayShadow` 硬件比较，开放半径 / PCSS |
-| P1 | 点光源阴影 | 未迁移（3.2.1 / 3.2.2） | GS 写 6 层数组可纯示例层完成；真 cubemap 深度附件需给 `ImageAttachment` 加 viewType 参数 |
-| P1 | SSAO | 未迁移（9.ssao） | 复用 MRT + SSBO kernel + 4×4 noise；需固定随机种子以保证 dump 可复现 |
+| P1 | 点光源阴影 | ✅ `examples/point_shadow` 已覆盖 3.2.1 / 3.2.2（见 24.10） | 6 层 2D 深度数组 + 手算面 UV；若要真 `samplerCubeShadow`，需给 `ImageAttachment` 加 viewType、给 `TextureImageSpec` 加 compareEnable |
+| P1 | SSAO | ✅ `examples/ssao` 已覆盖 9.ssao（见 24.11） | 复用 MRT + SSBO kernel + 4×4 noise；种子已固定，dump 可复现 |
 | P2 | Blinn 开关 | ✅ `multi-lighting --blinn` 已支持运行期切换与 A/B dump（见 24.8） | 若要逐像素复现参考 1，再补一块地板 + 单点光的专用场景 |
 | P2 | 单张阴影图 | ✅ `examples/shadow_mapping` 已覆盖 3.1.1–3.1.3（见 24.9） | 固定光盒不随视锥拟合；大场景继续用 CSM |
 | P3 | 延迟光照体 | `subpasses` 已有全屏合成，无球体 volume 几何 | 参考 8.2 实际只是半径剔除；若要真 volume 需 stencil/背面深度剔除 |
@@ -3116,19 +3131,19 @@ bias 与参考逐字一致：`max(0.05 * (1 - dot(n, lightDir)), 0.005)`，再�
 
 ---
 
-## 24. LearnOpenGL 5.advanced_lighting（HDR / Bloom / Gamma / Blinn / 单张阴影）
+## 24. LearnOpenGL 5.advanced_lighting（HDR / Bloom / Gamma / Blinn / 阴影 / SSAO）
 
-`D:/LearnOpenGL/src/5.advanced_lighting` 下 17 组例子逐个读完后的处置如下。上一批（14–23）已经覆盖了其中技术含量最高的几组；第一批补掉 HDR / Bloom / Gamma 三个"有独立渲染技术、且框架底座已经具备"的例子，第二批再把 Blinn 开关和单张 2D 阴影图这两个部分覆盖项补齐。
+`D:/LearnOpenGL/src/5.advanced_lighting` 下 17 组例子逐个读完后的处置如下。上一批（14–23）已经覆盖了其中技术含量最高的几组；第一批补掉 HDR / Bloom / Gamma 三个"有独立渲染技术、且框架底座已经具备"的例子，第二批补 Blinn 开关和单张 2D 阴影图这两个部分覆盖项，第三批把剩下两个真正的缺口（点光源阴影、SSAO）补齐，至此该目录全部有明确处置。
 
 | 参考目录 | 处置 | 落点 / 理由 |
 | --- | --- | --- |
-| `1.advanced_lighting` | **本轮补齐** | `multi-lighting`（test2）加 `--blinn` + 运行期高光指数，A/B dump 见 24.8 |
+| `1.advanced_lighting` | **已补齐** | `multi-lighting`（test2）加 `--blinn` + 运行期高光指数，A/B dump 见 24.8 |
 | `2.gamma_correction` | 已迁移 | `examples/gamma`（test29） |
-| `3.1.1.shadow_mapping_depth` | **本轮迁移** | `examples/shadow_mapping --debug-quad`：全屏深度 quad（见 24.9） |
-| `3.1.2.shadow_mapping_base` | **本轮覆盖** | `--no-bias --no-pcf` 复现无偏移硬阴影（见 24.9） |
-| `3.1.3.shadow_mapping` | **本轮迁移** | `examples/shadow_mapping`（test30）：单张 sampler2D + bias + 9-tap PCF；`csm` 仍是 5 层数组版（见 23） |
-| `3.2.1.point_shadows` | 未迁移 | 框架缺 cubemap 深度附件视图；见 24.10 |
-| `3.2.2.point_shadows_soft` | 未迁移 | 同上，且硬件比较采样器尚未接入 `TextureImageSpec` |
+| `3.1.1.shadow_mapping_depth` | **已迁移** | `examples/shadow_mapping --debug-quad`：全屏深度 quad（见 24.9） |
+| `3.1.2.shadow_mapping_base` | **已覆盖** | `--no-bias --no-pcf` 复现无偏移硬阴影（见 24.9） |
+| `3.1.3.shadow_mapping` | **已迁移** | `examples/shadow_mapping`（test30）：单张 sampler2D + bias + 9-tap PCF；`csm` 仍是 5 层数组版（见 23） |
+| `3.2.1.point_shadows` | **已迁移** | `examples/point_shadow`（test31）：6 层 2D 深度数组 + `gl_Layer` 一次写全（见 24.10） |
+| `3.2.2.point_shadows_soft` | **已迁移** | 同一示例 `--soft`：20 抽头圆盘 PCF + 世界单位 bias（见 24.10） |
 | `3.3.csm` | **不迁移** | 目录内容是错置的深度测试旧代码，引用不存在的 `depth_testing.vs/.frag`；真 CSM 在 `guest/2021/2.csm`，已由第 23 章覆盖 |
 | `4.normal_mapping` | 部分覆盖 | `parallaxmapping`（test17）的 TBN + 法线贴图已覆盖算法主体 |
 | `5.1.parallax_mapping` | 完整覆盖 | `parallaxmapping` 模式 1 |
@@ -3138,7 +3153,7 @@ bias 与参考逐字一致：`max(0.05 * (1 - dot(n, lightDir)), 0.005)`，再�
 | `7.bloom` | 已迁移 | `examples/bloom`（test28） |
 | `8.1.deferred_shading` | 完整/超额 | `gbuffer` / `deferred` / `subpasses` 三套实现 |
 | `8.2.deferred_shading_volumes` | 部分覆盖 | `subpasses` 有半径光的概念；参考本身仍是全屏 quad，并无真实 volume 几何 |
-| `9.ssao` | 未迁移 | 见 24.10 |
+| `9.ssao` | **已迁移** | `examples/ssao`（test32）：四段式 G-Buffer → AO → 模糊 → 合成（见 24.11） |
 
 ### 24.1 Gamma：同一张图，两种格式
 
@@ -3181,31 +3196,34 @@ HDR / Bloom 的中间结果都是 RGBA16F，而此前 `ImageDump` 只认识 RGBA
 | `6.hdr` | 隧道立方体法线朝外，从内部看必须翻转 | `params.w` 显式翻转 |
 | `5.3` | 注释称 binary search，实际是线性层步进 + 插值 | `parallaxmapping` 按真实算法实现，文档不沿用错误称谓 |
 | `8.2` | 名为 volumes，实际仍是全屏 quad + shader 半径剔除 | 不额外造 volume 几何；把真 volume 列为 P3 |
-| `9.ssao` | `default_random_engine` 未固定种子，dump 不可复现 | 未迁移；迁移时必须固定种子 |
+| `9.ssao` | `default_random_engine` 未固定种子，dump 不可复现 | `examples/ssao` 固定种子 12345（见 24.11） |
 | 多个例子 | 渲染循环内 `std::cout` 刷屏 | 新示例只在启动与 dump 时打印摘要 |
 
 ### 24.6 验证
 
 | 项 | 结果 |
 | --- | --- |
-| 全量构建 | **30 个示例** + `myEngine` + `example_common`：0 error；链接阶段仍有仓库原有的 `LNK4098` 警告，与本轮改动无关 |
-| Validation | hdr / bloom / gamma 默认及各自开关共 8 组，加上 multi-lighting 的 3 组、shadow_mapping 的 9 组，外加 11 个既有示例回归：全部 0 VUID / 0 Validation Error。回归中 `simplest` 是无自动退出的交互示例，按 8 s 超时终止，期间同样 0 error |
-| 可复现 | 各主帧两次 dump 的 SHA-256 完全相同：hdr `a2392afe7085…c006fe`、bloom `067c5b8a5433…ab0a52`、gamma `33fd25b730b0…7ca8`、multi-lighting `--blinn` `f7e7cae078ce…a9d75ea2476173edb`、shadow_mapping 默认 `e43d28183098…c913a09c77` |
+| 全量构建 | **32 个示例** + `myEngine` + `example_common`：0 error；链接阶段仍有仓库原有的 `LNK4098` 警告，与本轮改动无关 |
+| Validation | 16 个带 `--dump` 的示例各抓一帧（bloom / csm / deferred / gamma / hdr / heightmap_terrain / model_loading / multi-lighting / oit / point_shadow / scene_graph / shadow_mapping / skeletal_animation / ssao / stencil / subpasses），其余 16 个交互示例按 6 s 超时终止：**32/32 全部 0 VUID / 0 Validation Error**。点阴影另跑 9 组开关（默认 / `--soft` / `--no-shadow` / 四种调试视图 / `--shadow-res 512 --soft` / `--light 3 5 -2`）、SSAO 3 组、shadow_mapping 5 组，均 0 error |
+| 可复现 | 各主帧两次 dump 的 SHA-256 完全相同：hdr `a2392afe7085…c006fe`、bloom `067c5b8a5433…ab0a52`、gamma `33fd25b730b0…7ca8`、multi-lighting `--blinn` `f7e7cae078ce…a9d75ea2476173edb`、shadow_mapping 默认 `e43d28183098…c913a09c77`、point_shadow `--soft` `6bd9f1876d0c…`、ssao `369c44add3cd…` |
 | HDR 曝光 | exposure 1 → 2：meanAbsDiff **13.435/255**，max 24，99.62% 通道差 ≥8；`--no-hdr` 与默认仅 0.119/255 的差，符合参考"只 clamp"的弱语义 |
 | Gamma 开关 | 默认 vs `--no-gamma`：meanAbsDiff **7.089/255**，max 56，49.2% 通道差 ≥8；木纹亮度与四个光斑大小都明显不同 |
 | Bloom 开关 | 默认 vs `--no-bloom`：meanAbsDiff 0.372/255，但 **0.40%** 通道差 ≥8 且 max 255——差异集中在四个光源的半影环，正是阈值 >1 的区域；`--debug-bloom` 与默认差 64.528/255 |
 | Blinn 开关 | 默认 vs `--blinn`：meanAbsDiff **0.245/255**，max 82，1.16% 通道差 ≥8；按参考指数 `--blinn --phong-exp 8 --blinn-exp 32` 则为 0.636/255、max 91、2.19% ≥8（见 24.8） |
 | 单张阴影图 | 默认 vs `--no-shadow`：meanAbsDiff **0.901/255**，max 103，1.19% 通道差 ≥8；`--no-bias` / `--no-pcf` 与默认分别差 0.0565 / 0.0547，前者能看到条纹 acne。深度图覆盖率 0.591、几何区平均深度 0.487（见 24.9） |
+| 点光源阴影 | 默认 vs `--no-shadow`：meanAbsDiff **1.676/255**，max 58（阴影落在地板与盒子侧面）；硬 vs `--soft`：**0.512/255**，max 39——半影只在边缘，量级正确。六层覆盖率 `+X/-X/+Z/-Z = 0.25`、`-Y = 1.0`、`+Y = 0.0`（光在 y=4 上方，抬头看不见东西），符合场景几何（见 24.10） |
+| SSAO | 默认 vs `--no-ssao`：meanAbsDiff **14.689/255**，max 107；AO 原图均值 0.997、最暗 0.59、仅 0.77% 像素 < 0.9（暗部集中在盒子与地板/墙面的接触边），模糊后均值与范围一致（见 24.11） |
+| 帧槽位回归 | 修完 24.12 的共享标志后，ssao / point_shadow / bloom 在 `--dump-after 1..4` 下输出逐字节相同；bloom 帧均值回到 `(0.247958, 0.244486, 0.2749)` |
 | 回读格式 | RGBA16F PPM 的 `eToneMap` 输出正常：`hdr-color` / `scene-bright` / `bloom-final` 均有非零均值，证明 half→float 解码与固定 Reinhard 编码正确 |
 
 ### 24.7 构建与验证状态
 
 | 项 | 结果 |
 | --- | --- |
-| 可执行文件 | `build_vs/examples/{hdr,bloom,gamma,shadow_mapping}/Release/*.exe`；`multi-lighting` 在原 exe 上扩展 |
-| 新增文件 | 第一批：`examples/hdr/{CMakeLists.txt,test27.cpp,shader/{scene.vert,scene.frag,screen.vert,tonemap.frag}}`、`examples/bloom/{CMakeLists.txt,test28.cpp,shader/{scene.vert,scene.frag,blur_h.frag,blur_v.frag,screen.vert,composite.frag}}`、`examples/gamma/{CMakeLists.txt,test29.cpp,shader/{gamma.vert,gamma.frag}}` + 12 个生成的 `.hpp`；第二批：`examples/shadow_mapping/{CMakeLists.txt,test30.cpp,shader/{scene.vert,scene.frag,depth.vert,depth.frag,quad.vert,quad.frag}}` + 6 个生成的 `.hpp` |
-| 改动文件 | `src/ImageReadback.cpp`、`examples/common/ImageDump.{h,cpp}`、`examples/common/DescriptorLayoutConfig.h`、`examples/multi-lighting/{test2.cpp,shader/lighting.frag}`、`examples/CMakeLists.txt`、本设计书 |
-| 运行 | 支持 `--dump` 的示例一次抓帧后即停止；`simplest` 仍是交互式无限循环 |
+| 可执行文件 | `build_vs/examples/{hdr,bloom,gamma,shadow_mapping,point_shadow,ssao}/Release/*.exe`；`multi-lighting` 在原 exe 上扩展 |
+| 新增文件 | 第一批：`examples/hdr/{CMakeLists.txt,test27.cpp,shader/{scene.vert,scene.frag,screen.vert,tonemap.frag}}`、`examples/bloom/{CMakeLists.txt,test28.cpp,shader/{scene.vert,scene.frag,blur_h.frag,blur_v.frag,screen.vert,composite.frag}}`、`examples/gamma/{CMakeLists.txt,test29.cpp,shader/{gamma.vert,gamma.frag}}`；第二批：`examples/shadow_mapping/{CMakeLists.txt,test30.cpp,shader/{scene.vert,scene.frag,depth.vert,depth.frag,quad.vert,quad.frag}}`；第三批：`examples/point_shadow/{CMakeLists.txt,test31.cpp,shader/{depth.vert,depth.geom,depth.frag,point_shadow.vert,point_shadow.frag}}`、`examples/ssao/{CMakeLists.txt,test32.cpp,shader/{gbuffer.vert,gbuffer.frag,screen.vert,ssao.frag,blur.frag,composite.frag}}`（每支 shader 各生成一份 `.hpp` 字节码） |
+| 改动文件 | `src/ImageReadback.cpp`、`src/BasicRenderPass.cpp`、`src/GraphicsPipeline.h`、`src/IAttachmentDetail.h`、`src/IRenderPass.h`（分层深度附件与 0 颜色附件）、`examples/common/{ImageDump.h,ImageDump.cpp,DescriptorLayoutConfig.h,AttachmentDetailConfig.h}`、`examples/multi-lighting/{test2.cpp,shader/lighting.frag}`、`examples/{bloom/test28.cpp,hdr/test27.cpp,gamma/test29.cpp}`（静态集合改共享，见 24.12）、`examples/CMakeLists.txt`、本设计书 |
+| 运行 | 支持 `--dump` 的示例一次抓帧后即停止；`simplest` 等交互示例仍是无限循环 |
 
 ### 24.8 Blinn 开关：multi-lighting 的运行期 A/B
 
@@ -3232,14 +3250,51 @@ HDR / Bloom 的中间结果都是 RGBA16F，而此前 `ImageDump` 只认识 RGBA
 - 深度 pass 不剔除正面：对闭合地板盒做正面剔除会存下它的背面，接触阴影会脱离物体；acne 交给 bias 处理。
 - 调试视图 `--debug-shadow` / `--debug-map` / `--debug-diff` / `--debug-depth` 与 CSM 同语义；`--no-shadow` 只跳过比较，投影和深度视图依然有效。`--shadow-res` 同时更新 PCF 纹素步长（经 `eye.w` 传 1/分辨率）。
 
-### 24.10 剩余缺口与限制
+### 24.10 点光源阴影：6 层深度数组代替 cubemap
+
+`examples/point_shadow`（test31）把 3.2.1 与 3.2.2 合成一个示例。参考用 GL 的 cubemap 深度附件，一次 geometry shader 把每个三角形广播到 6 个面；Vulkan 侧没有给引擎接硬件 cubemap 深度视图，但"6 层 2D 深度数组 + `gl_Layer`"是等价物：
+
+- `ImageAttachment` 在 `layers > 1` 时本来就生成 `e2DArray` 视图（第 23 章为 CSM 加的），`BasicRenderPass` 也校验了 framebuffer `layers` 与附件层数一致，所以深度 pass 只需 `blueprint.layers = 6`，几何 shader 用 `invocations = 6` 把同一个三角形写到每一层。
+- 采样侧没有用 `samplerCubeShadow`：`TextureImageSpec` 目前不暴露 `compareEnable`，因此示例自己算"方向 → 面号 + 面内 UV"，用 `sampler2DArray` 采样。面序与 up 向量逐字照抄参考（`+X/-X/+Y/-Y/+Z/-Z`，`+Y/-Y` 用 z-up 避免 lookAt 退化），六个面矩阵的 90° 透视把 GL 的 `[-1,1]` 深度改成 Vulkan `[0,1]`。
+- 深度值存**径向距离 / far**（写 `gl_FragDepth`），不是 NDC 深度；这样六个面共用同一个比较口径，也直接对应参考的 `length(fragToLight) / far_plane`。
+- 硬阴影单抽头、bias 0.05；软阴影 20 抽头固定圆盘、bias 0.15、`diskRadius = (1 + viewDistance / far) / 25`。**bias 必须在世界距离上比较**：早期实现把 bias 与归一化深度相加，等于把阈值放大约 25 倍，软/硬两张图因此完全一样（差值 0.000/255），改成世界距离后才有可见的半影。
+- 光源固定（参考让它随 `sin(time)` 移动），场景换成地板 + 6 个盒子；这样 `--dump` 可复现，同时六个面都有内容。
+- 开关：`--soft` / `--no-shadow` / `--shadow-res N` / `--debug-shadow`（阴影项）/ `--debug-depth`（径向深度）/ `--debug-map`（图中深度）/ `--debug-diff`（两者相减）/ `--light x y z`。dump 会把 6 层深度图**逐层**写成 `shadow-face0..5.ppm`，比参考的"贴一个面到 quad"更能暴露层写错。
+
+### 24.11 SSAO：四段式延迟管线
+
+`examples/ssao`（test32）按参考的四段照搬，全部落在示例层：
+
+1. **G-Buffer**：`GBufferAttachmentDetail` 三张 RGBA16F（视空间 position / normal / albedo）+ 深度，MRT 一次写出。position 的 w 存 1 表示"有几何"，SSAO 靠它跳过背景，省掉一次深度纹理比较。
+2. **SSAO**：64 样本半球 kernel 走 std430 SSBO（`vec3` 强制 16 B 步长，CPU 侧 `alignas(16)` + `static_assert`），每像素用 4×4 RGBA8 噪声纹理（`eRepeat`）旋转 TBN；radius 0.5、bias 0.025、`smoothstep` 距离剔除、`ao = 1 - sum/64`，与 `9.ssao.fs` 逐行对应。
+3. **模糊**：4×4 box blur，单独一个 offscreen pass。
+4. **合成**：AO **只调制环境项**，直射光不受影响——这是参考的语义，也是"关掉 SSAO 画面只是亮一点"的原因。
+
+与参考的差异都写在示例头部：随机种子固定为 12345（参考用未播种的 `default_random_engine`，dump 不可复现）；`noiseScale` 由 800/600 硬编码改成按实际分辨率从 UBO 传入；场景换成手工摆放的盒子 + 调色板实例色，墙角接触处的暗边才看得清；AO / 模糊缓冲用 RGBA16F 把标量复制到 RGB，复用既有 `ImageDump` 通道，不必为新格式加 R32F 回读编码。
+
+开关只有 `--no-ssao` 与 `--debug-ao`（把 AO 图直接贴到交换链），后者是判断"暗的是遮蔽还是光照"的唯一可靠手段。
+
+### 24.12 两个新示例暴露的帧槽位 bug
+
+补齐这两个示例时遇到一个**没有 validation 报错、只在奇数帧出现**的问题：任何 `--dump-after 2/4/6` 都抓到空白画面（AO 全 1、position 全 0、交换链只剩清屏色），而 `--dump-after 1/3` 正常。
+
+根因不在新示例，而在**描述符集合的共享标志**：`makeSet(..., eStatic, /*shared=*/false)` 会让引擎为每个 in-flight 帧各建一份资源（`RenderManager::CreateShaderAssetGroup` 里 `shared ? 别名到 frame 0 : 逐帧新建`），但实例矩阵 SSBO / 调色板 SSBO 只在启动时按 frame 0 上传了一次。于是第 0 槽有模型矩阵，第 1 槽是一整块零——顶点被零矩阵压成一个点，GPU 什么都没画出来，而描述符本身完全合法，validation 一句话都不说。
+
+`bloom` / `hdr` / `gamma` 的实例 SSBO 是同样的写法，同样中招（bloom `--dump-after 2` 的帧均值是 0，`--dump-after 5` 才是 0.247958）。修复是把这 5 处改成 `eStatic, true`（静态数据本就与帧无关，别名到一份资源即可），并在 `DescriptorLayoutConfig.h::makeSet` 上写明这条约定。修完后：
+
+- 两个示例在 `--dump-after 1..4` 下输出逐字节相同，`bloom` 的帧均值也回到与上一轮完全一致的 `(0.247958, 0.244486, 0.2749)`。
+- 这类"奇数帧空白"的排查顺序可以固化为：先看 `--dump-after` 奇偶是否一致，再看该集合的 `shared` 标志与上传时的 frame 参数，最后才怀疑坐标/矩阵。
+
+### 24.13 剩余缺口与限制
 
 | 项 | 现状 | 后续 |
 | --- | --- | --- |
-| 点光源阴影 | 未迁移 | GS `gl_Layer` 已有，可先用 6 层 2D 数组做等价实现；真 cubemap 深度附件需给 `ImageAttachment` 暴露 `vk::ImageViewType`，并让 `TextureImageSpec` 支持 `compareEnable` 以用 `samplerCubeShadow` |
-| SSAO | 未迁移 | 框架已有 MRT / SSBO / 线性采样；需要 SSAO 专用附件配置与固定种子的 64-sample kernel |
+| 点光源阴影 | ✅ 已迁移：`examples/point_shadow`（见 24.10） | 用 6 层 2D 数组 + 手算面 UV 代替 cubemap；若要 `samplerCubeShadow`，需给 `ImageAttachment` 暴露 `vk::ImageViewType`、并让 `TextureImageSpec` 支持 `compareEnable` |
+| SSAO | ✅ 已迁移：`examples/ssao`（见 24.11） | 固定 64 样本 + 4×4 固定噪声；后续可加 kernel 尺寸/半径运行期参数、temporal 去噪 |
 | Blinn 开关 | ✅ 已补齐：`multi-lighting --blinn`（见 24.8） | 参考 A/B 已可脚本化；若要逐像素对齐参考，需同时换地板/单点光场景 |
 | 单张阴影图 | ✅ 已迁移：`examples/shadow_mapping`（见 24.9） | 固定光盒 `[-10,10]` / `near=1` / `far=7.5` 与参考一致；移动物体出盒会失去阴影，大场景应改用 CSM 的视锥拟合 |
+| 点阴影面数 | 固定 6 层、1024²，`--shadow-res` 只改分辨率 | 面分辨率与层数是 blueprint 常量，改层数需同步 GS `invocations`（同 CSM 的三处手工同步） |
+| SSAO 强度 | AO 均值 0.997、最暗 0.59，属"贴地接触处才有暗边"的量级 | 参考场景有背包褶皱所以更明显；若要更明显的观感，调 radius 或换带凹面的场景，而不是改公式 |
 | HDR dump | `eToneMap` 用固定 Reinhard，不读 exposure | 需要曝光相关对照时看交换链帧的 `eColor` dump |
 | Bloom 模糊 | 全分辨率 10-pass，无 mip 降采样 | 与参考一致；大分辨率下 GPU 时间明显高于其它示例（本场景 0.745 ms @1280×720） |
 | 常量重复 | 光源位置/颜色同时写在 cpp 与 fragment shader | 与既有示例风格一致；需用启动断言或生成宏消除 |

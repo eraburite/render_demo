@@ -242,7 +242,7 @@ void test(int argc, char **argv)
         0, {SceneComponent::eSceneBlock}, UpdateFrequency::eEachFrame, false);
     sceneBlockSet.specs[0] = GBufferSpec{1, static_cast<uint32_t>(sizeof(HdrSceneUBO)), DataTypes::eCustom};
     auto sceneInstanceSet = DescriptorLayoutAtlas::makeSet<SceneInstanceComponent, SceneInstanceComponentTable>(
-        1, {SceneInstanceComponent::eInstances}, UpdateFrequency::eStatic, false);
+        1, {SceneInstanceComponent::eInstances}, UpdateFrequency::eStatic, true);
     sceneInstanceSet.specs[0] = GBufferSpec{instanceCount, static_cast<uint32_t>(sizeof(Instance)),
                                             DataTypes::eCustom};
     sceneLayout->setDetails({sceneBlockSet, sceneInstanceSet});
