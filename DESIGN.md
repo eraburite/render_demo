@@ -866,10 +866,11 @@ dstAccess = MemoryRead | ColorRead | ColorWrite | DepthStencilAttachmentWrite
 | 示例 | `examples/oit/`（test22）+ 5 个 shader | 加权混合 OIT：solid/transparent 两 subpass + screen pass 一步合成，`--dump/--no-depth-test/--reversed/--resize-after` 用于验证顺序无关性（见 20.5） |
 | 扩展 | `examples/common/ModelAsset.h/.cpp` | **蒙皮与动画进数据层**：`Joint/Skin/AnimationChannel/AnimationClip` + `Model::skins/clips/boneIndices/boneWeights` + `isSkinned()`；新增 `computeNodeWorldMatrices(model, locals)`（动画用外部局部矩阵重建世界矩阵）与 `computeWorldBounds()`（按节点世界矩阵求渲染空间包围盒）（见 21.2） |
 | 扩展 | `examples/common/AssimpModelLoader.cpp` | 读 `aiMesh::mBones` 生成 `Skin`（joint→nodeIndex 在树建完后按名字解析），逐顶点写 `uvec4` 索引/`vec4` 权重并按截断后权重**重新归一化**；读 `scene->mAnimations` 生成 `AnimationClip`（通道按 nodeIndex 索引关键帧，tick 率 0 时取 25）（见 21.2） |
-| 修复 | `examples/common/ModelLoader.cpp` | `deduplicateVertices` 与 `flattenScene` 对蒙皮模型直接返回：前者会把绑在不同骨骼上的同位置顶点合并、且不会同步置换骨骼数组，后者会摧毁关节层级；`flattenScene` 被要求用在蒙皮模型上时打印原因（见 21.6） |
+| 修复 | `examples/common/ModelLoader.cpp` | `deduplicateVertices` 与 `flattenScene` 对蒙皮模型直接返回：前者会把绑在不同骨骼上的同位置顶点合并、且不会同步置换骨骼数组，后者会摧毁关节层级；`flattenScene` 被要求用在蒙皮模型上时打印原因（见 21.7） |
 | 新增 | `examples/common/SkeletonAnimator.h/.cpp` | 动画采样器：TRS 分轨插值（位置/缩放线性、旋转 slerp 走短弧）、未驱动节点保留静态变换、`finalJoint = world(jointNode) * inverseBind`、`computeSkinnedBounds()`（CPU 蒙皮包围盒，见 21.3） |
 | 示例 | `examples/skeletal_animation/`（test23）+ 2 个 shader | 骨骼动画：局部 `SkinnedVertex` + 顶点输入组（位置/UV/骨骼索引/权重）、set1 UBO 含 64 个关节矩阵、按动画包络逐轴取景、`--time/--static/--bind-mesh/--clip/--dump/--resize-after`（见 21.1 / 21.5） |
 | 资源 | `data/models/vampire/` | `dancing_vampire.dae` + 4 张贴图入库（42 MB），`source_attribution.txt` 记录来源与体积原因 |
+| 诊断 | `examples/common/AssimpModelLoader.cpp` | 四影响截断的告警补上"最坏顶点保留了多少权重"：只报个数读不出截断是否无害（见 21.4 / 21.6） |
 
 ---
 
@@ -1134,10 +1135,10 @@ stencil 示例还会单独抓一张 `0001_stencil-mask.ppm`：它是 depth-stenc
 | 混合状态 | 逐附件混合需要 `independentBlend`（已默认请求）；MSAA 与逐附件混合的组合未验证，OIT 示例固定 1x（见 20.7） |
 | OIT 精度 | reveal 为 R8Unorm、accum 为 RGBA16F；超过约 256 层时 reveal 乘积量化到 0，上千层时 accum 可能溢出（已按参考实现做 `isinf` 兜底） |
 | 描述符时序 | 资源必须在 `CreatePipeline` **之前**加入 asset：描述符集在建管线时一次性写入，之后新增的资源不会进 `vkUpdateDescriptorSets`（见 20.6） |
-| 骨骼数量 | 关节矩阵放 set1 的 UBO（`kMaxJoints = 64`，67 个 mat4 = 4288 B）；超过 64 根骨骼的模型需要换 SSBO，示例会直接报错而不是截断（见 21.6） |
+| 骨骼数量 | 关节矩阵放 set1 的 UBO（`kMaxJoints = 64`，67 个 mat4 = 4288 B）；超过 64 根骨骼的模型需要换 SSBO，示例会直接报错而不是截断（见 21.7） |
 | 每顶点影响数 | 固定 4 个（`kMaxJointInfluences`）；第 5 个及以后的影响被丢弃并按剩余权重重新归一化（vampire 有 6 个这样的影响），与支持 8 权重的工具会有微小姿态差异（见 21.4） |
-| 蒙皮与后处理 | 蒙皮模型跳过顶点去重（合并会混淆骨骼绑定）与 `flattenScene`（会摧毁关节层级）；`normalizeSize` 也不适用，归一化必须走 `model` 矩阵（见 21.3 / 21.6） |
-| 动画播放 | `SkeletonAnimator` 是单剪辑、线性时间轴：无混合树、无事件、无根运动重定向；`--time` 冻结姿态用于可复现 dump（见 21.6） |
+| 蒙皮与后处理 | 蒙皮模型跳过顶点去重（合并会混淆骨骼绑定）与 `flattenScene`（会摧毁关节层级）；`normalizeSize` 也不适用，归一化必须走 `model` 矩阵（见 21.3 / 21.7） |
+| 动画播放 | `SkeletonAnimator` 是单剪辑、线性时间轴：无混合树、无事件、无根运动重定向；`--time` 冻结姿态用于可复现 dump（见 21.7） |
 
 ---
 
@@ -2604,8 +2605,11 @@ modelMatrix = scale(2 / longest) * translate(-center);   // 传给 shader 的 u.
 参考实现的 `MAX_BONE_INFLUENCE` 是 4，本移植同样是 4（`kMaxJointInfluences`）。这份 vampire 实测单顶点最多 **5** 个影响，`aiBone` 顺序下共有 **6 个（顶点, 影响）对** 溢出：
 
 ```
-[model] assimp: dropped 6 influence(s) beyond 4 per vertex in mesh 'VampireMesh'
+[model] assimp: dropped 6 influence(s) beyond 4 per vertex in mesh 'VampireMesh',
+                worst vertex kept only 94.5294% of its weight
 ```
+
+末尾那个比例是 21.6 之后加的：只报个数读不出"截断是否无害"，同一个 6 对溢出可能只丢 5%，也可能丢一半。
 
 差别在于截断之后做什么。参考实现直接丢掉第 5 个权重，那些顶点的权重和小于 1，蒙皮结果会朝关节原点收缩；本移植按剩余权重重新归一化，于是**绑定姿态下蒙皮结果与未蒙皮几何严格相等**——这正是 21.5 那个逐像素对照能成立的前提。
 
@@ -2642,7 +2646,56 @@ modelMatrix = scale(2 / longest) * translate(-center);   // 传给 shader 的 u.
 
 **resize。** `--time 2 --resize-after 3 --dump-after 8 --dump` → dump 为 1024 × 600，0 校验错误，角色完整在框内。
 
-### 21.6 差异与限制
+### 21.6 第二段动画：换格式、换 tick 率、换骨骼数再验一遍
+
+vampire 一个样本会把若干条路径掩盖成"恰好成立"，因为它同时满足几个特殊条件：Collada、tick 率 1.0（秒与 tick 恰好 1:1）、每通道关键帧齐全、每顶点最多 5 个影响。为此又跑了一个结构上尽量不同的样本——assimp 官方测试集里的 `test/models/FBX/animation_with_skeleton.fbx`（195 KB，外部资源，不入库）：
+
+```
+./build/examples/skeletal_animation/skeletal_animation \
+    --model D:/assimp/test/models/FBX/animation_with_skeleton.fbx --time 0.28 --dump
+```
+
+| 维度 | `dancing_vampire.dae` | `animation_with_skeleton.fbx` |
+| --- | --- | --- |
+| 容器 | Collada（XML） | FBX（二进制） |
+| tick 率 | 1.0 | **24** |
+| 骨骼 / 关节 | 52 | 14 |
+| 单顶点最多影响 | 5 | **6** |
+| 通道数 / 命中骨骼 | 52 / 52 | 15 / **14**（1 条驱动非骨骼节点 `Armature`） |
+| 贴图 | 3 | 0（走 1×1 白回退） |
+| 剪辑 | 3.4333 s，每通道 104 帧 | 0.8333 s，仅 `Bone.005` 有 14 帧 |
+
+这个样本把四条原本空转的路径真正跑起来了：
+
+1. **秒 ↔ tick 换算。** vampire 的 `ticksPerSecond` 是 1.0，`m_timeSeconds * ticksPerSecond` 是恒等变换，漏乘也看不出来。这个文件是 24，漏乘会让整段动画快 24 倍、每个时间的姿态全错。实测 `--time 0.28` → tick 6.72 落在 `Bone.005` 的 key 6 与 7 之间，弯曲幅度与预期一致。
+2. **四影响截断。** 单顶点 6 个影响，共 **3783 个（顶点, 影响）对**溢出，最坏顶点截断后只剩 **76.99%** 的权重——重新归一化在这里是必需的，否则那批顶点会明显朝关节收缩。vampire 只有 6 对、最坏 94.53%，差别几乎不可见，这一条在它身上验不出来。
+3. **通道关键帧密度不均。** 14 个通道只有首尾两帧（tick 0 与 20），只有 `Bone.005` 是 tick 0,1,…,12,20。形变在 tick 12 = **0.5 s** 就走完了，之后一路保持到 tick 20。于是 `--time 0.56 / 0.70 / 0.83` 的 dump **逐字节相同**（`cmp` 通过），而 0.56 与 0.28 不同——这正是"钳到末帧"该有的行为，不是采样器停在半路。
+4. **无贴图材质。** 0 张贴图，走 `(none)` 的 1×1 白回退，输出是剪影而非着色画面，便于纯几何核对。
+
+逐时间点数据（`jointFingerprint` 是全部关节矩阵元素之和）：
+
+| `--time` | jointFingerprint | coverage |
+| --- | --- | --- |
+| 0 | 572.963 | 0.0319965 |
+| 0.14 | 861.769 | 0.0317914 |
+| 0.28 | 1295.1 | 0.0316601 |
+| 0.42 | 1469.5 | 0.0314703 |
+| 0.56 | 1481.54 | 0.0314149 |
+| 0.70 | 1481.55 | 0.0314149 |
+| 0.83 | 1481.54 | 0.0314149 |
+
+**几何自洽性。** 逐时刻统计剪影包围框，两端 x 恒为 104 与 1175 不动（只有链中段的 `Bone.005` 在转，两端骨骼的关键帧首尾相同），弯曲幅度从 27 px 单调增到 93 px 后停在 0.5 s；9 个时刻全部在框内，最小边距 **104 px**，说明按整段包络取景没有切掉任何姿态。
+
+**其余检查。** 同一 `--time 0.42` 连跑两次指纹都是 `1469.5`；`--resize-after 3 --dump-after 8` → 1024 × 600、0 校验错误；`--static` 的指纹是 `1481.54`，与末帧相同，说明这个文件的节点默认变换本身就停在末帧姿态上（不是"绑定态等于首帧"的巧合）。错误路径也干净：`spider.fbx`（19 个网格、无骨骼）与 `duck.dae` 都报 `is not a skinned model`，`--clip 2` 报 `has 1 clip(s)`。
+
+这一轮还顺手把截断告警改成可判读的——原来只报个数，读不出"丢弃是否无害"：
+
+```
+[model] assimp: dropped 3783 influence(s) beyond 4 per vertex in mesh 'Cube.001',
+                worst vertex kept only 76.9853% of its weight
+```
+
+### 21.7 差异与限制
 
 | 项 | 现状 | 原因/后续 |
 | --- | --- | --- |
@@ -2657,7 +2710,7 @@ modelMatrix = scale(2 / longest) * translate(-center);   // 传给 shader 的 u.
 | 大资源 | `data/models/vampire/` 42 MB（dae 32 MB + 4 张贴图 11 MB） | Collada 是逐行 XML、每个关键帧都用十进制展开；换成 glTF 会小一个量级，但那样就不再是"迁移同一个资源文件"了 |
 | morph | `mNumMeshChannels` 未读 | `MeshVertex` 无形变字段 |
 
-### 21.7 构建与验证状态
+### 21.8 构建与验证状态
 
 | 项 | 结果 |
 | --- | --- |
@@ -2666,5 +2719,7 @@ modelMatrix = scale(2 / longest) * translate(-center);   // 传给 shader 的 u.
 | 加载结果 | 45066 顶点 / 45066 索引 / 15022 三角形 / 1 mesh / 1 material / 3 image / 67 节点 / 52 关节 / 1 剪辑（3.4333 s @ 1 tick/s，52 通道 × 104 关键帧） |
 | 蒙皮等价性 | `--bind-mesh` 与 `model_loading` 的 921600 像素仅 12 个差 1/255（21.5） |
 | 姿态可复现 | 同一 `--time` 两次运行 `jointFingerprint` 完全一致；6 个时间点各不相同（21.5） |
-| resize | 1024 × 600 下角色完整、0 校验错误 |
+| 第二样本 | `FBX/animation_with_skeleton.fbx`（24 tick/s、14 骨骼、单顶点 6 影响、通道密度不均）：0 VUID / 0 ERR，9 个时刻全部在框内，最小边距 104 px；保持段 dump 逐字节相同（21.6） |
+| 截断诊断 | 告警附带最坏顶点的保留权重比：vampire 94.53%（6 对）、FBX 76.99%（3783 对）（21.4 / 21.6） |
+| resize | 1024 × 600 下角色完整、0 校验错误（两个样本都验过） |
 

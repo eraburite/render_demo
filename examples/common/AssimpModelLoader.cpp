@@ -387,6 +387,11 @@ void appendSkinData(Model &model, const aiMesh *mesh, uint32_t vertexStart, Skin
     }
 
     std::vector<uint8_t> used(mesh->mNumVertices, 0);
+    // Weight that each vertex lost to the four-slot limit, kept so the warning
+    // can say how much the truncation actually cost instead of only how often
+    // it happened.  A few hundred dropped influences at 1% each are harmless;
+    // one vertex losing half its weight is a visible seam.
+    std::vector<float> droppedWeight(mesh->mNumVertices, 0.0f);
     uint32_t truncated = 0;
 
     for (unsigned b = 0; b < mesh->mNumBones; ++b) {
@@ -404,6 +409,7 @@ void appendSkinData(Model &model, const aiMesh *mesh, uint32_t vertexStart, Skin
             uint8_t &slot = used[weight.mVertexId];
             if (slot >= kMaxJointInfluences) {
                 ++truncated;
+                droppedWeight[weight.mVertexId] += weight.mWeight;
                 continue;
             }
             model.boneIndices[vertex][slot] = static_cast<uint32_t>(joint);
@@ -412,24 +418,31 @@ void appendSkinData(Model &model, const aiMesh *mesh, uint32_t vertexStart, Skin
         }
     }
 
+    float worstLoss = 0.0f;
     for (unsigned v = 0; v < mesh->mNumVertices; ++v) {
         const uint32_t vertex = vertexStart + v;
         if (vertex >= model.boneWeights.size()) {
             break;
         }
         glm::vec4 &weights = model.boneWeights[vertex];
-        const float sum = weights.x + weights.y + weights.z + weights.w;
-        if (sum > 0.0f && std::abs(sum - 1.0f) > 1e-6f) {
-            weights /= sum;
+        const float kept = weights.x + weights.y + weights.z + weights.w;
+        const float lost = droppedWeight[v];
+        if (kept + lost > 0.0f) {
+            worstLoss = std::max(worstLoss, lost / (kept + lost));
+        }
+        if (kept > 0.0f && std::abs(kept - 1.0f) > 1e-6f) {
+            weights /= kept;
         }
     }
 
     if (truncated > 0) {
         // Worth saying out loud: the file asked for more influences than the
         // vertex format carries, so those vertices are slightly different from
-        // what a tool with 8 weights would produce.
+        // what a tool with 8 weights would produce.  The loss fraction is what
+        // decides whether "slightly" is true.
         std::cerr << "[model] assimp: dropped " << truncated << " influence(s) beyond " << kMaxJointInfluences
-                  << " per vertex in mesh '" << (mesh->mName.C_Str() ? mesh->mName.C_Str() : "") << "'"
+                  << " per vertex in mesh '" << (mesh->mName.C_Str() ? mesh->mName.C_Str() : "")
+                  << "', worst vertex kept only " << (1.0f - worstLoss) * 100.0f << "% of its weight"
                   << std::endl;
     }
 }
