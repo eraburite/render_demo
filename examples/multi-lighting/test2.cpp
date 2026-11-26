@@ -5,6 +5,8 @@
 #include <iostream>
 #include <iterator>
 #include <memory>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "Camera.h"
@@ -15,6 +17,8 @@
 
 #include "AttachmentDetailConfig.h"
 #include "DescriptorLayoutConfig.h"
+#include "ImageDump.h"
+#include "ImageReadback.h"
 #include "VertexInputStateConfig.h"
 
 #include "CmdOpDrawFrame.h"
@@ -51,6 +55,52 @@ struct SpotLightData {
 const glm::vec3 POINT_LIGHT_POSITIONS[4] = {
     glm::vec3(2.0f, 2.0f, 1.5f), glm::vec3(-2.0f, 1.5f, -1.0f), glm::vec3(1.5f, -1.5f, 2.0f),
     glm::vec3(-1.5f, -0.5f, -2.0f)};
+
+// Runtime switch for the 1.advanced_lighting A/B comparison.  The reference
+// uses Phong exponent 8 and Blinn exponent 32; this example's existing Phong
+// path used 32, so the defaults stay 32/64 (same highlight width) and both
+// exponents are exposed to reproduce the reference with --phong-exp 8
+// --blinn-exp 32.
+struct LightingParams {
+    alignas(16) glm::vec4 params{0.0f, 32.0f, 64.0f, 0.0f};
+};
+static_assert(sizeof(LightingParams) == 16, "LightingParams must match the std140 vec4 block");
+
+struct Options {
+    bool blinn = false;
+    float phongExponent = 32.0f;
+    float blinnExponent = 64.0f;
+    bool dump = false;
+    uint32_t dumpAfter = 3;
+};
+
+Options parseOptions(int argc, char **argv)
+{
+    Options options;
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--blinn") {
+            options.blinn = true;
+        } else if (arg == "--phong-exp" && i + 1 < argc) {
+            options.phongExponent = std::stof(argv[++i]);
+        } else if (arg == "--blinn-exp" && i + 1 < argc) {
+            options.blinnExponent = std::stof(argv[++i]);
+        } else if (arg == "--dump") {
+            options.dump = true;
+        } else if (arg == "--dump-after" && i + 1 < argc) {
+            options.dumpAfter = static_cast<uint32_t>(std::stoul(argv[++i]));
+        } else {
+            throw std::runtime_error("multi-lighting: unknown argument " + arg);
+        }
+    }
+    if (options.phongExponent <= 0.0f) {
+        options.phongExponent = 1.0f;
+    }
+    if (options.blinnExponent <= 0.0f) {
+        options.blinnExponent = 1.0f;
+    }
+    return options;
+}
 
 LoadedTexture loadTextureAuto(const std::string &primary, const std::string &fallback)
 {
@@ -93,8 +143,10 @@ std::vector<glm::mat4> makeLightModels()
 
 } // namespace
 
-void test()
+void test(int argc, char **argv)
 {
+    const Options options = parseOptions(argc, argv);
+
     // Slightly elevated, pitched 8 degrees down so the whole 5 x 2 cube board and
     // the point lights are framed: the view ray from (0, 1.2, 8.5) hits y = 0 at
     // the origin, which keeps the board centred.
@@ -137,11 +189,11 @@ void test()
     environmentSet.specs[0] = GBufferSpec{1, static_cast<uint32_t>(sizeof(CameraMatrix)), DataTypes::eCustom};
 
     // Binding order must match the shader: eye(0), light(1), directional(2),
-    // pointLights(3), spot(4).
+    // pointLights(3), spot(4), lighting params(5).
     auto frameSet = DescriptorLayoutAtlas::makeSet<FrameComponent, FrameComponentTable>(
         2,
         {FrameComponent::eViewEyePosition, FrameComponent::eLightSource, FrameComponent::eDirectionalLight,
-         FrameComponent::ePointLights, FrameComponent::eSpotlight},
+         FrameComponent::ePointLights, FrameComponent::eSpotlight, FrameComponent::eLightingParams},
         UpdateFrequency::eEachFrame, false);
     frameSet.specs[0] = GBufferSpec{1, static_cast<uint32_t>(sizeof(ViewEyePoint)), DataTypes::eCustom};
     frameSet.specs[1] = GBufferSpec{1, static_cast<uint32_t>(sizeof(LightSource)), DataTypes::eCustom};
@@ -149,6 +201,12 @@ void test()
     frameSet.specs[3] = GBufferSpec{static_cast<uint32_t>(pointLights.size()), static_cast<uint32_t>(sizeof(PointLightData)),
                                     DataTypes::eCustom};
     frameSet.specs[4] = GBufferSpec{1, static_cast<uint32_t>(sizeof(SpotLightData)), DataTypes::eCustom};
+    frameSet.specs[5] = GBufferSpec{1, static_cast<uint32_t>(sizeof(LightingParams)), DataTypes::eCustom};
+
+    // LightingParams::w is unused; the other three components carry the
+    // Phong/Blinn switch and both exponents to lighting.frag.
+    const LightingParams lightingParams{glm::vec4(options.blinn ? 1.0f : 0.0f, options.phongExponent,
+                                                  options.blinnExponent, 0.0f)};
 
     auto instanceSet = DescriptorLayoutAtlas::makeSet<InstanceComponent, InstanceComponentTable>(
         3, {InstanceComponent::eModelMatrix}, UpdateFrequency::eEachInstance, false);
@@ -239,6 +297,9 @@ void test()
     auto lightingFrameSync = std::make_shared<CmdSyncDevice>(lightingAsset);
     auto lightFrameSync = std::make_shared<CmdSyncDevice>(lightAsset);
 
+    uint32_t framesRendered = 0;
+    bool dumpDone = false;
+
     while (!window.shouldClose()) {
         // Pump the GLFW message queue first: processInputEvents() only reads the
         // cached key state, so without polling the resize callback never fires
@@ -273,6 +334,7 @@ void test()
         lightingDraw->OnUpdateRawData(ResourceId(2, 2), frame, directional);
         lightingDraw->OnUpdateRawData(ResourceId(2, 3), frame, pointLights);
         lightingDraw->OnUpdateRawData(ResourceId(2, 4), frame, spot);
+        lightingDraw->OnUpdateRawData(ResourceId(2, 5), frame, lightingParams);
         lightingDraw->OnUpdateRawData(ResourceTypes::ePushConst, frame, model);
         // light_cube only reads the camera (set1); its instance table is static.
         lightDraw->OnUpdateRawData(ResourceId(1, 0), frame, cameraMatrix);
@@ -287,16 +349,39 @@ void test()
         });
         sequence->endRecording();
         sequence->submitFrame();
+
+        ++framesRendered;
+        if (options.dump && !dumpDone && framesRendered >= options.dumpAfter) {
+            ImageReadback readback(mgr->getLogicalDevice(), mgr->memoryProperties(), mgr->getMemoryAllocator(),
+                                   mgr->getGraphicsQueue(), *mgr->getQueueFamilyIndices().graphicsFamily);
+            DumpRequest request;
+            request.label = options.blinn ? "frame-blinn" : "frame-phong";
+            request.image = mgr->getSwapChain()->getImages()[sequence->getImageIndex()];
+            request.format = *mgr->getSwapChain()->getImageFormat();
+            request.extent = extent;
+            request.layout = vk::ImageLayout::ePresentSrcKHR;
+            request.encoding = DumpEncoding::eColor;
+            const auto results = DumpImages(readback, {request}, "dump", 0);
+            std::cout << "[dump] " << results[0].path.string() << " mode="
+                      << (options.blinn ? "Blinn-Phong" : "Phong") << " phongExp=" << options.phongExponent
+                      << " blinnExp=" << options.blinnExponent << "\n";
+            dumpDone = true;
+            if (!sequence->presentFrame()) {
+                continue;
+            }
+            break;
+        }
+
         if (!sequence->presentFrame()) {
             continue;
         }
     }
 }
 
-int main()
+int main(int argc, char **argv)
 {
     try {
-        test();
+        test(argc, argv);
         return 0;
     } catch (const std::exception &e) {
         std::cerr << e.what() << "\n";

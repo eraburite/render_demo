@@ -74,7 +74,11 @@ enum class FrameComponent {
     eLightSource,
     eDirectionalLight,
     ePointLights,
-    eSpotlight
+    eSpotlight,
+    // multi-lighting's Phong/Blinn switch: x = blinn flag, y = Phong exponent,
+    // z = Blinn exponent, w unused.  Appended so every other example's binding
+    // indices stay unchanged.
+    eLightingParams
 };
 using FrameConfig = DescriptorComponentSpec<FrameComponent>;
 inline constexpr auto FrameComponentTable = std::make_tuple(
@@ -87,6 +91,8 @@ inline constexpr auto FrameComponentTable = std::make_tuple(
     FrameConfig{FrameComponent::ePointLights, vk::DescriptorType::eStorageBuffer, 1,
                 vk::ShaderStageFlagBits::eFragment},
     FrameConfig{FrameComponent::eSpotlight, vk::DescriptorType::eUniformBuffer, 1,
+                vk::ShaderStageFlagBits::eFragment},
+    FrameConfig{FrameComponent::eLightingParams, vk::DescriptorType::eUniformBuffer, 1,
                 vk::ShaderStageFlagBits::eFragment});
 
 // ---- set3: eEachInstance ---------------------------------------------------

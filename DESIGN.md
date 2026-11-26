@@ -16,7 +16,7 @@
 | 数学库 | GLM |
 | 资源加载 | `stb_image` 解码；`tinygltf`（glTF/GLB）、`tiny_obj_loader`（OBJ/MTL）、KTX 1.0 解析器、assimp（`.dae/.fbx` 等，运行期动态绑定，可选，见 19.2） |
 | 构建 | CMake ≥ 3.22，需 `glslangValidator` 编译着色器并转成 `*.hpp` 字节码头 |
-| 目标产物 | `myEngine` 静态库 + `example_common` + **29 个**可执行示例（simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb，迁移示例 test7..test29，见 14–24） |
+| 目标产物 | `myEngine` 静态库 + `example_common` + **30 个**可执行示例（simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb，迁移示例 test7..test30，见 14–24） |
 
 依赖约定（由根 `CMakeLists.txt` 的 `globalConfig` 接口目标统一提供）：`src/`、`examples/common/`、`external/`、`external/glm/include`、`external/glfw/include`、`build_vs/generated`。
 
@@ -123,7 +123,8 @@ render_demo/
 │   ├── csm/{test26.cpp,shader/}                             # 5 级联阴影 + 分层深度数组（见 23）
 │   ├── hdr/{test27.cpp,shader/}                             # RGBA16F + 曝光色调映射（见 24）
 │   ├── bloom/{test28.cpp,shader/}                           # MRT 阈值 + 10-pass 高斯模糊 + 合成（见 24）
-│   └── gamma/{test29.cpp,shader/}                           # sRGB 纹理 + gamma 编码对拍（见 24）
+│   ├── gamma/{test29.cpp,shader/}                           # sRGB 纹理 + gamma 编码对拍（见 24）
+│   └── shadow_mapping/{test30.cpp,shader/}                  # 单张 2D 深度图 + bias/PCF + depth quad（见 24）
 ├── tools/gltf2obj.py               # glTF -> OBJ 导出，用于生成往返验证资源（见 18.5）
 └── build_vs/                       # Visual Studio 构建目录（含各示例可执行程序）
 ```
@@ -923,7 +924,7 @@ dstAccess = MemoryRead | ColorRead | ColorWrite | DepthStencilAttachmentWrite
 - **Pipeline A（subpass 0）**：`lighting.vert/frag`
   - set0：baseColor / specular 贴图 + 材质表 SSBO
   - set1：相机 UBO
-  - set2：视点 UBO + 方向光 UBO + 点光源 SSBO + 聚光 UBO
+  - set2：视点 UBO + 方向光 UBO + 点光源 SSBO + 聚光 UBO + 光照参数 UBO（binding 5：Phong/Blinn 开关与两种指数，见 24.8）
   - set3：实例矩阵 SSBO（10 个立方体，`gl_InstanceIndex` 索引）
 - **Pipeline B（subpass 1）**：`light_cube.vert/frag`，set1 + set3（4 个光源立方体）。
 - **上传**：顶点、两张贴图、材质表、4 个点光源（静态 SSBO）、两套实例矩阵。
@@ -1095,6 +1096,18 @@ python tools/gltf2obj.py data/models/deer.gltf /tmp/deer.obj             # 用�
 ./build/examples/gamma/gamma --dump                     # sRGB 纹理 + 1/d² + 1/2.2
 ./build/examples/gamma/gamma --no-gamma --dump          # 线性纹理 + 1/d，无编码
 
+# 第二批：Blinn 开关与单张 2D 阴影图（见 24.8 / 24.9）
+./build/examples/multi-lighting/multi-lighting --dump                          # Phong（默认 32 次幂）
+./build/examples/multi-lighting/multi-lighting --blinn --dump                  # Blinn（默认 64 次幂）
+./build/examples/multi-lighting/multi-lighting --blinn --phong-exp 8 --blinn-exp 32 --dump
+                                                                                # 按参考 1 的 8 ↔ 32 对拍
+./build/examples/shadow_mapping/shadow_mapping --dump                         # 3.1.3：bias + 9-tap PCF
+./build/examples/shadow_mapping/shadow_mapping --no-bias --no-pcf --dump      # 3.1.2：硬阴影 + acne
+./build/examples/shadow_mapping/shadow_mapping --debug-quad --dump            # 3.1.1：全屏深度 quad
+./build/examples/shadow_mapping/shadow_mapping --debug-diff --dump            # R=片元深度，G=图中深度
+./build/examples/shadow_mapping/shadow_mapping --no-shadow --debug-map --dump # 关阴影但深度视图仍有效
+./build/examples/shadow_mapping/shadow_mapping --shadow-res 512 --dump        # 分辨率/PCF 纹素步长联动
+
 > `csm` 通过 `DeviceRequirement::geometryShader = true` 请求设备能力；不支持几何着色器的设备会在 `RenderManager::Create()` 阶段明确报错，而不是在管线创建时给出一个难懂的 VUID。
 
 # 调试：数字键切换通道视图，P 存盘；也可脚本化（见 13.6）
@@ -1161,6 +1174,7 @@ stencil 示例还会单独抓一张 `0001_stencil-mask.ppm`：它是 depth-stenc
 | 调试视图覆盖 | 仅 gbuffer / offscreen 接入 `DebugViewState`；其余示例可在各自 fragment shader 里按 13.2 的约定加分支 |
 | 交换链图像回读 | ✅ 已实现（见 16.2 / 17）：swapchain 申请了 `eTransferSrc`，`LoopSequence::getImageIndex()` 定位当前帧，`--dump` 可抓合成后的交换链帧；S8 平面回读见 17.4 |
 | 深度通道导出 | G-Buffer 与 offscreen 的深度 `storeOp = DontCare`，内容不留存，因此没有深度 PPM；深度用 position 通道反推（`eLinearDepth`） |
+| 单张阴影图范围 | `shadow_mapping` 用固定正交光盒 `[-10,10]` / `near=1` / `far=7.5`（与参考 3.1.x 一致）；物体移出光盒即失去阴影 | 大场景改用 `csm` 的视锥拟合光空间；不要把该示例当通用阴影方案 |
 | 回读阻塞 | `ImageReadback::capture()` 提交后同步等 fence，一次 capture 会停顿一个 copy 的时长（2048² RGBA32F 约 64 MB），仅适合手动/脚本触发的调试 |
 | 模型格式 | 已支持 glTF/GLB 与 OBJ/MTL，新格式只需一个 `IModelLoader` 实现 + 一次注册（见 18）；`.dae/.fbx/.3ds` 等经 assimp 覆盖（见 19）；蒙皮与动画片段已在数据层（见 21），**形变目标/形变动画（morph）仍无字段**，assimp 的 `mNumMeshChannels` 目前被忽略 |
 | assimp 依赖 | 运行期动态绑定 `assimp-vc140-mt.dll`，缺失时只有 assimp 格式不可用（异常里报出查找过的路径），其余示例不受影响；**不随仓库分发** DLL（14 MB），需自备并放到 exe 目录或设 `RENDER_DEMO_ASSIMP_DLL`（见 19.2） |
@@ -1222,8 +1236,8 @@ stencil 示例还会单独抓一张 `0001_stencil-mask.ppm`：它是 depth-stenc
 | P3 | 阴影滤波 | 固定 3×3 手写 PCF | 换 `sampler2DArrayShadow` 硬件比较，开放半径 / PCSS |
 | P1 | 点光源阴影 | 未迁移（3.2.1 / 3.2.2） | GS 写 6 层数组可纯示例层完成；真 cubemap 深度附件需给 `ImageAttachment` 加 viewType 参数 |
 | P1 | SSAO | 未迁移（9.ssao） | 复用 MRT + SSBO kernel + 4×4 noise；需固定随机种子以保证 dump 可复现 |
-| P2 | Blinn 开关 | `multi-lighting` 固定 Phong 32 次幂 | 加 `uniform bool blinn` 与高光指数，合并参考 1 的 A/B 对照 |
-| P2 | 单张阴影图 | csm 覆盖 depth-only/PCF/bias，但用 5 层数组 | 新增 `layers=1` 的 sampler2D 示例，或给 csm 加 `--cascades 1` |
+| P2 | Blinn 开关 | ✅ `multi-lighting --blinn` 已支持运行期切换与 A/B dump（见 24.8） | 若要逐像素复现参考 1，再补一块地板 + 单点光的专用场景 |
+| P2 | 单张阴影图 | ✅ `examples/shadow_mapping` 已覆盖 3.1.1–3.1.3（见 24.9） | 固定光盒不随视锥拟合；大场景继续用 CSM |
 | P3 | 延迟光照体 | `subpasses` 已有全屏合成，无球体 volume 几何 | 参考 8.2 实际只是半径剔除；若要真 volume 需 stencil/背面深度剔除 |
 
 ### 9.4 代码卫生
@@ -3102,29 +3116,29 @@ bias 与参考逐字一致：`max(0.05 * (1 - dot(n, lightDir)), 0.005)`，再�
 
 ---
 
-## 24. LearnOpenGL 5.advanced_lighting（HDR / Bloom / Gamma）
+## 24. LearnOpenGL 5.advanced_lighting（HDR / Bloom / Gamma / Blinn / 单张阴影）
 
-`D:/LearnOpenGL/src/5.advanced_lighting` 下 17 组例子逐个读完后的处置如下。上一批（14–23）已经覆盖了其中技术含量最高的几组，本轮补掉剩下三组"有独立渲染技术、且框架底座已经具备"的例子。
+`D:/LearnOpenGL/src/5.advanced_lighting` 下 17 组例子逐个读完后的处置如下。上一批（14–23）已经覆盖了其中技术含量最高的几组；第一批补掉 HDR / Bloom / Gamma 三个"有独立渲染技术、且框架底座已经具备"的例子，第二批再把 Blinn 开关和单张 2D 阴影图这两个部分覆盖项补齐。
 
 | 参考目录 | 处置 | 落点 / 理由 |
 | --- | --- | --- |
-| `1.advanced_lighting` | 部分覆盖 | `multi-lighting`（test2）已有 Phong，但没有 Blinn 开关；见 24.8 |
-| `2.gamma_correction` | **本轮迁移** | `examples/gamma`（test29） |
-| `3.1.1.shadow_mapping_depth` | 部分覆盖 | `csm` 的 depth-only pass；但没有独立的单张 2D 深度图示例 |
-| `3.1.2.shadow_mapping_base` | 部分覆盖 | 同上，无 bias 版本未单独保留 |
-| `3.1.3.shadow_mapping` | 技术覆盖 | `csm` 的 bias 公式与 9-tap PCF 与参考逐字一致，只是 5 层数组 |
-| `3.2.1.point_shadows` | 未迁移 | 框架缺 cubemap 深度附件视图；见 24.8 |
+| `1.advanced_lighting` | **本轮补齐** | `multi-lighting`（test2）加 `--blinn` + 运行期高光指数，A/B dump 见 24.8 |
+| `2.gamma_correction` | 已迁移 | `examples/gamma`（test29） |
+| `3.1.1.shadow_mapping_depth` | **本轮迁移** | `examples/shadow_mapping --debug-quad`：全屏深度 quad（见 24.9） |
+| `3.1.2.shadow_mapping_base` | **本轮覆盖** | `--no-bias --no-pcf` 复现无偏移硬阴影（见 24.9） |
+| `3.1.3.shadow_mapping` | **本轮迁移** | `examples/shadow_mapping`（test30）：单张 sampler2D + bias + 9-tap PCF；`csm` 仍是 5 层数组版（见 23） |
+| `3.2.1.point_shadows` | 未迁移 | 框架缺 cubemap 深度附件视图；见 24.10 |
 | `3.2.2.point_shadows_soft` | 未迁移 | 同上，且硬件比较采样器尚未接入 `TextureImageSpec` |
 | `3.3.csm` | **不迁移** | 目录内容是错置的深度测试旧代码，引用不存在的 `depth_testing.vs/.frag`；真 CSM 在 `guest/2021/2.csm`，已由第 23 章覆盖 |
 | `4.normal_mapping` | 部分覆盖 | `parallaxmapping`（test17）的 TBN + 法线贴图已覆盖算法主体 |
 | `5.1.parallax_mapping` | 完整覆盖 | `parallaxmapping` 模式 1 |
 | `5.2.steep_parallax_mapping` | 完整覆盖 | 模式 3，8–32 层步进 |
 | `5.3.parallax_occlusion_mapping` | 完整覆盖 | 模式 4（默认），层步进 + 交点插值 |
-| `6.hdr` | **本轮迁移** | `examples/hdr`（test27） |
-| `7.bloom` | **本轮迁移** | `examples/bloom`（test28） |
+| `6.hdr` | 已迁移 | `examples/hdr`（test27） |
+| `7.bloom` | 已迁移 | `examples/bloom`（test28） |
 | `8.1.deferred_shading` | 完整/超额 | `gbuffer` / `deferred` / `subpasses` 三套实现 |
 | `8.2.deferred_shading_volumes` | 部分覆盖 | `subpasses` 有半径光的概念；参考本身仍是全屏 quad，并无真实 volume 几何 |
-| `9.ssao` | 未迁移 | 见 24.8 |
+| `9.ssao` | 未迁移 | 见 24.10 |
 
 ### 24.1 Gamma：同一张图，两种格式
 
@@ -3174,31 +3188,58 @@ HDR / Bloom 的中间结果都是 RGBA16F，而此前 `ImageDump` 只认识 RGBA
 
 | 项 | 结果 |
 | --- | --- |
-| 全量构建 | **29 个示例** + `myEngine` + `example_common`：0 error；链接阶段仍有仓库原有的 `LNK4098` 警告，与本轮改动无关 |
-| Validation | hdr / bloom / gamma 默认及各自开关共 8 组、外加 7 个既有示例回归：全部 0 VUID / 0 Validation Error |
-| 可复现 | 三次主帧两次 dump 的 SHA-256 完全相同：hdr `a2392afe7085…c006fe`、bloom `067c5b8a5433…ab0a52`、gamma `33fd25b730b0…7ca8` |
+| 全量构建 | **30 个示例** + `myEngine` + `example_common`：0 error；链接阶段仍有仓库原有的 `LNK4098` 警告，与本轮改动无关 |
+| Validation | hdr / bloom / gamma 默认及各自开关共 8 组，加上 multi-lighting 的 3 组、shadow_mapping 的 9 组，外加 11 个既有示例回归：全部 0 VUID / 0 Validation Error。回归中 `simplest` 是无自动退出的交互示例，按 8 s 超时终止，期间同样 0 error |
+| 可复现 | 各主帧两次 dump 的 SHA-256 完全相同：hdr `a2392afe7085…c006fe`、bloom `067c5b8a5433…ab0a52`、gamma `33fd25b730b0…7ca8`、multi-lighting `--blinn` `f7e7cae078ce…a9d75ea2476173edb`、shadow_mapping 默认 `e43d28183098…c913a09c77` |
 | HDR 曝光 | exposure 1 → 2：meanAbsDiff **13.435/255**，max 24，99.62% 通道差 ≥8；`--no-hdr` 与默认仅 0.119/255 的差，符合参考"只 clamp"的弱语义 |
 | Gamma 开关 | 默认 vs `--no-gamma`：meanAbsDiff **7.089/255**，max 56，49.2% 通道差 ≥8；木纹亮度与四个光斑大小都明显不同 |
 | Bloom 开关 | 默认 vs `--no-bloom`：meanAbsDiff 0.372/255，但 **0.40%** 通道差 ≥8 且 max 255——差异集中在四个光源的半影环，正是阈值 >1 的区域；`--debug-bloom` 与默认差 64.528/255 |
+| Blinn 开关 | 默认 vs `--blinn`：meanAbsDiff **0.245/255**，max 82，1.16% 通道差 ≥8；按参考指数 `--blinn --phong-exp 8 --blinn-exp 32` 则为 0.636/255、max 91、2.19% ≥8（见 24.8） |
+| 单张阴影图 | 默认 vs `--no-shadow`：meanAbsDiff **0.901/255**，max 103，1.19% 通道差 ≥8；`--no-bias` / `--no-pcf` 与默认分别差 0.0565 / 0.0547，前者能看到条纹 acne。深度图覆盖率 0.591、几何区平均深度 0.487（见 24.9） |
 | 回读格式 | RGBA16F PPM 的 `eToneMap` 输出正常：`hdr-color` / `scene-bright` / `bloom-final` 均有非零均值，证明 half→float 解码与固定 Reinhard 编码正确 |
 
 ### 24.7 构建与验证状态
 
 | 项 | 结果 |
 | --- | --- |
-| 可执行文件 | `build_vs/examples/{hdr,bloom,gamma}/Release/*.exe` |
-| 新增文件 | `examples/hdr/{CMakeLists.txt,test27.cpp,shader/{scene.vert,scene.frag,screen.vert,tonemap.frag}}`、`examples/bloom/{CMakeLists.txt,test28.cpp,shader/{scene.vert,scene.frag,blur_h.frag,blur_v.frag,screen.vert,composite.frag}}`、`examples/gamma/{CMakeLists.txt,test29.cpp,shader/{gamma.vert,gamma.frag}}` + 12 个生成的 `.hpp` |
-| 改动文件 | `src/ImageReadback.cpp`、`examples/common/ImageDump.{h,cpp}`、`examples/CMakeLists.txt`、本设计书 |
-| 运行 | 全部示例正常退出；`--dump` 一次抓帧后即停止 |
+| 可执行文件 | `build_vs/examples/{hdr,bloom,gamma,shadow_mapping}/Release/*.exe`；`multi-lighting` 在原 exe 上扩展 |
+| 新增文件 | 第一批：`examples/hdr/{CMakeLists.txt,test27.cpp,shader/{scene.vert,scene.frag,screen.vert,tonemap.frag}}`、`examples/bloom/{CMakeLists.txt,test28.cpp,shader/{scene.vert,scene.frag,blur_h.frag,blur_v.frag,screen.vert,composite.frag}}`、`examples/gamma/{CMakeLists.txt,test29.cpp,shader/{gamma.vert,gamma.frag}}` + 12 个生成的 `.hpp`；第二批：`examples/shadow_mapping/{CMakeLists.txt,test30.cpp,shader/{scene.vert,scene.frag,depth.vert,depth.frag,quad.vert,quad.frag}}` + 6 个生成的 `.hpp` |
+| 改动文件 | `src/ImageReadback.cpp`、`examples/common/ImageDump.{h,cpp}`、`examples/common/DescriptorLayoutConfig.h`、`examples/multi-lighting/{test2.cpp,shader/lighting.frag}`、`examples/CMakeLists.txt`、本设计书 |
+| 运行 | 支持 `--dump` 的示例一次抓帧后即停止；`simplest` 仍是交互式无限循环 |
 
-### 24.8 剩余缺口与限制
+### 24.8 Blinn 开关：multi-lighting 的运行期 A/B
+
+参考 `1.advanced_lighting` 只是"一块地板 + 一个点光 + 一个 bool"，是 `multi-lighting`（test2）的真子集，所以没有再造一个独立示例，而是把开关并进已有的多光源管线：
+
+- `examples/common/DescriptorLayoutConfig.h` 在 `FrameComponent` 末尾追加 `eLightingParams`，落在 set2/binding 5，16 B UBO。追加式改动不改 binding 0..4，其它示例的布局逐字节不变。
+- `test2.cpp` 新增 `--blinn`、`--phong-exp`、`--blinn-exp`、`--dump`、`--dump-after`。`lighting.params` 的 x 是开关，y/z 分别是两种高光的指数；默认 32/64 保持原示例观感，传 `--phong-exp 8 --blinn-exp 32` 即复现参考的 8 ↔ 32。
+- `lighting.frag` 的 `phong()` 按 x 分支：Phong 用 `reflect(-L, N)`，Blinn 用 `normalize(L + V)`，同一套 4 点光 / 方向光 / 聚光调用点无需改动。参考里写错 sampler uniform 名（`texture1` vs `floorTexture`）、未使用的 `reflectDir` 和每帧 `std::cout` 都没有照搬。
+- dump 标签是 `frame-phong` / `frame-blinn`，便于直接做 A/B；两次 `--blinn` 抓帧 SHA-256 一致。
+
+### 24.9 单张 2D 阴影图：3.1.x 的递进
+
+`examples/shadow_mapping`（test30）把 3.1.1 / 3.1.2 / 3.1.3 三个参考例子合成一个可切换的示例，全部能力都在示例层，框架无需再改：
+
+| 参考阶段 | 本示例开关 | 实现 |
+| --- | --- | --- |
+| 3.1.1 depth + debug quad | `--debug-quad` | 独立 quad 管线采样同一张 2D 深度图；正交深度已线性，不做 `LinearizeDepth()` |
+| 3.1.2 base（无 bias / PCF） | `--no-bias --no-pcf` | 单 tap、固定 0.005 bias，能看到条纹 acne |
+| 3.1.3 final | 默认 | `max(0.05 * (1 - dot(N, L)), 0.005)` + 3×3 软件 PCF，`proj.z > 1` 直接判为受光 |
+
+- 深度附件仍是 `ShadowMapAttachmentDetail` 那套结构，但 `layers = 1`；`ImageAttachment` 在层数 1 时生成 `e2D` 视图，`IRenderPass::depthStencilView()` 直接配 `sampler2D`，白边 `NEAREST` 采样器与 CSM 相同。
+- 光空间使用参考的固定参数：`lightPos = (-2, 4, -1)`、`ortho(-10, 10, -10, 10)`、`near = 1`、`far = 7.5`。GLM 的 `ortho` 给 `[-1,1]` 深度，这里显式改成 Vulkan `[0,1]`：`projection[2][2] = -1/(far-near)`、`projection[3][2] = -near/(far-near)`。**列主序下 z 平移在 `[3][2]` 而不是 `[2][3]`**；写错时所有 `proj.z` 都是 0，画面表现为"有深度图但完全不投影阴影"，没有任何校验错误。
+- 相机拉到 `(0, 1.2, 8)`、俯角 8°，让参考的三个立方体和阴影都落在同一张 dump 里；地板用薄盒 + 程序棋盘代替木纹平面。几何体是 1 单位宽的立方体，所以参考的 scale `0.5/0.5/0.25` 在这里写作 `1.0/1.0/0.5`。
+- 深度 pass 不剔除正面：对闭合地板盒做正面剔除会存下它的背面，接触阴影会脱离物体；acne 交给 bias 处理。
+- 调试视图 `--debug-shadow` / `--debug-map` / `--debug-diff` / `--debug-depth` 与 CSM 同语义；`--no-shadow` 只跳过比较，投影和深度视图依然有效。`--shadow-res` 同时更新 PCF 纹素步长（经 `eye.w` 传 1/分辨率）。
+
+### 24.10 剩余缺口与限制
 
 | 项 | 现状 | 后续 |
 | --- | --- | --- |
 | 点光源阴影 | 未迁移 | GS `gl_Layer` 已有，可先用 6 层 2D 数组做等价实现；真 cubemap 深度附件需给 `ImageAttachment` 暴露 `vk::ImageViewType`，并让 `TextureImageSpec` 支持 `compareEnable` 以用 `samplerCubeShadow` |
 | SSAO | 未迁移 | 框架已有 MRT / SSBO / 线性采样；需要 SSAO 专用附件配置与固定种子的 64-sample kernel |
-| Blinn 开关 | `multi-lighting` 无运行期切换 | 加 `uniform bool blinn`（或高光指数），把 1.advanced_lighting 的 A/B 对照并进去 |
-| 单张阴影图 | csm 只提供 5 层数组 | `layers=1` 时 `ImageAttachment` 本就生成 2D 视图，可做纯示例层的新例子 |
+| Blinn 开关 | ✅ 已补齐：`multi-lighting --blinn`（见 24.8） | 参考 A/B 已可脚本化；若要逐像素对齐参考，需同时换地板/单点光场景 |
+| 单张阴影图 | ✅ 已迁移：`examples/shadow_mapping`（见 24.9） | 固定光盒 `[-10,10]` / `near=1` / `far=7.5` 与参考一致；移动物体出盒会失去阴影，大场景应改用 CSM 的视锥拟合 |
 | HDR dump | `eToneMap` 用固定 Reinhard，不读 exposure | 需要曝光相关对照时看交换链帧的 `eColor` dump |
 | Bloom 模糊 | 全分辨率 10-pass，无 mip 降采样 | 与参考一致；大分辨率下 GPU 时间明显高于其它示例（本场景 0.745 ms @1280×720） |
 | 常量重复 | 光源位置/颜色同时写在 cpp 与 fragment shader | 与既有示例风格一致；需用启动断言或生成宏消除 |

@@ -15,6 +15,8 @@ layout(set = 2, binding = 2) uniform DirectionalLight {
 } directional;
 layout(set = 2, binding = 3) readonly buffer PointLights { PointLight lights[]; } pointLights;
 layout(set = 2, binding = 4) uniform SpotLightBlock { SpotLight light; } spot;
+// x > 0.5 selects Blinn-Phong, y = Phong exponent, z = Blinn exponent.
+layout(set = 2, binding = 5) uniform LightingParams { vec4 params; } lighting;
 
 layout(location = 0) in vec3 fragPos;
 layout(location = 1) in vec3 fragNormal;
@@ -24,8 +26,18 @@ layout(location = 0) out vec4 outColor;
 
 vec3 phong(vec3 N, vec3 L, vec3 V, vec3 lightColor, vec3 albedo, float specStrength) {
     float diff = max(dot(N, L), 0.0);
-    vec3 R = reflect(-L, N);
-    float spec = pow(max(dot(R, V), 0.0), 32.0) * specStrength;
+    float spec;
+    if (lighting.params.x > 0.5) {
+        // Blinn-Phong: the reference's Blinn branch uses a half vector and a
+        // higher exponent (8 -> 32) so the wider lobe stays tight.  This
+        // example keeps Phong at 32 by default and uses 64 for Blinn; both
+        // exponents are runtime parameters for A/B comparison.
+        vec3 H = normalize(L + V);
+        spec = pow(max(dot(N, H), 0.0), lighting.params.z) * specStrength;
+    } else {
+        vec3 R = reflect(-L, N);
+        spec = pow(max(dot(R, V), 0.0), lighting.params.y) * specStrength;
+    }
     return lightColor * (albedo * diff + vec3(spec));
 }
 
