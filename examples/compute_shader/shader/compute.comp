@@ -1,0 +1,30 @@
+#version 450
+
+// 5.computeshader_helloworld: one invocation per texel, written with imageStore.
+// The reference hard-codes `width = 1000` because its texture is 1000x1000; here
+// both extents come from the dispatch itself (gl_NumWorkGroups * workgroup size),
+// so --size changes the host constants and the shader stays untouched.
+layout(local_size_x = 10, local_size_y = 10, local_size_z = 1) in;
+
+layout(rgba32f, set = 0, binding = 0) uniform image2D imgOutput;
+
+layout(std140, set = 0, binding = 1) uniform ParamsBlock
+{
+    float t;     // animation time in seconds
+    float speed; // texels per second
+    vec2 padding;
+} params;
+
+void main()
+{
+    const ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    const float width = float(gl_NumWorkGroups.x * gl_WorkGroupSize.x);
+    const float height = float(gl_NumWorkGroups.y * gl_WorkGroupSize.y);
+
+    // Red sweeps horizontally with time, green is a vertical ramp, blue stays 0
+    // and alpha 1 so the screen pass can show the raw buffer without a mask.
+    vec4 value = vec4(0.0, 0.0, 0.0, 1.0);
+    value.x = mod(float(texel.x) + params.t * params.speed, width) / width;
+    value.y = float(texel.y) / height;
+    imageStore(imgOutput, texel, value);
+}

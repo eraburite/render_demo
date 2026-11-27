@@ -86,6 +86,11 @@ TextureImage::TextureImage(std::shared_ptr<vk::Device> device, vk::PhysicalDevic
     imageInfo.initialLayout = vk::ImageLayout::eUndefined;
     imageInfo.usage = vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled
                       | vk::ImageUsageFlagBits::eTransferSrc;
+    if (m_spec.storageImage) {
+        // A compute stage writes the image with imageStore, so STORAGE is
+        // mandatory and TRANSFER_SRC stays (readback / dump of the result).
+        imageInfo.usage |= vk::ImageUsageFlagBits::eStorage;
+    }
     imageInfo.samples = vk::SampleCountFlagBits::e1;
     imageInfo.sharingMode = vk::SharingMode::eExclusive;
     imageInfo.flags = m_spec.faces == 6 ? vk::ImageCreateFlagBits::eCubeCompatible : vk::ImageCreateFlags{};
@@ -172,8 +177,14 @@ void TextureImage::recordCopyFromStagingToDevice(const vk::CommandBuffer &cmd)
     }
 
     const uint32_t mipCount = std::max(1u, m_spec.miplevels);
+    // A storage image must be left in GENERAL: imageStore has no other legal
+    // layout, and the same descriptor is then also sampled by the screen pass
+    // (GENERAL permits both, so no per-frame transition is needed).
+    const vk::ImageLayout finalLayout =
+        m_spec.storageImage ? vk::ImageLayout::eGeneral : vk::ImageLayout::eShaderReadOnlyOptimal;
     DeviceResourceUtils::transitionImageLayout(cmd, *m_image, m_spec.format, vk::ImageLayout::eUndefined,
                                                vk::ImageLayout::eTransferDstOptimal, mipCount, m_spec.arrayLayers());
+
 
     if (m_spec.mipsInData) {
         // The host block already holds every level, packed (mip -> layer -> face).
@@ -187,10 +198,10 @@ void TextureImage::recordCopyFromStagingToDevice(const vk::CommandBuffer &cmd)
             offset += m_spec.mipByteSize(mip);
         }
         DeviceResourceUtils::transitionImageLayout(cmd, *m_image, m_spec.format, vk::ImageLayout::eTransferDstOptimal,
-                                                   vk::ImageLayout::eShaderReadOnlyOptimal, mipCount,
-                                                   m_spec.arrayLayers());
+                                                   finalLayout, mipCount, m_spec.arrayLayers());
         return;
     }
+
 
     DeviceResourceUtils::copyBufferToImageRegion(cmd, *m_staging, *m_image, 0, 0, 0, m_spec.arrayLayers(),
                                                  m_spec.width, m_spec.height, std::max(1u, m_spec.depth));
@@ -199,19 +210,28 @@ void TextureImage::recordCopyFromStagingToDevice(const vk::CommandBuffer &cmd)
         // generateMipmaps leaves every level in eShaderReadOnlyOptimal.
         DeviceResourceUtils::generateMipmaps(cmd, *m_image, m_spec.format, m_width, m_height, mipCount,
                                              m_spec.arrayLayers());
+        if (m_spec.storageImage && finalLayout != vk::ImageLayout::eShaderReadOnlyOptimal) {
+            DeviceResourceUtils::transitionImageLayout(cmd, *m_image, m_spec.format,
+                                                       vk::ImageLayout::eShaderReadOnlyOptimal, finalLayout, mipCount,
+                                                       m_spec.arrayLayers());
+        }
     } else {
         DeviceResourceUtils::transitionImageLayout(cmd, *m_image, m_spec.format, vk::ImageLayout::eTransferDstOptimal,
-                                                   vk::ImageLayout::eShaderReadOnlyOptimal, mipCount,
-                                                   m_spec.arrayLayers());
+                                                   finalLayout, mipCount, m_spec.arrayLayers());
     }
+
 }
 
 vk::WriteDescriptorSet TextureImage::constructWriteDescriptorSet(vk::DescriptorSet set, vk::DescriptorType type,
                                                                  uint32_t binding)
 {
     m_imageInfo.imageView = imageView();
-    m_imageInfo.sampler = sampler();
-    m_imageInfo.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+    // A storage image has no sampler and lives in GENERAL, so the same image can
+    // be bound both as `image2D` (write) and as a plain sampled texture (read).
+    const bool storage = (type == vk::DescriptorType::eStorageImage) || m_spec.storageImage;
+    m_imageInfo.sampler = (type == vk::DescriptorType::eStorageImage) ? vk::Sampler{} : sampler();
+    m_imageInfo.imageLayout = storage ? vk::ImageLayout::eGeneral : vk::ImageLayout::eShaderReadOnlyOptimal;
+
 
     vk::WriteDescriptorSet write{};
     write.dstSet = set;

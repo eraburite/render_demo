@@ -34,6 +34,9 @@ public:
 
     vk::ImageView imageView() const { return m_imageView ? *m_imageView : vk::ImageView{}; }
     vk::Sampler sampler() const { return m_sampler ? *m_sampler : vk::Sampler{}; }
+    // Raw handle, needed by the debug readback path (ImageReadback::capture).
+    vk::Image imageHandle() const { return m_image ? *m_image : vk::Image{}; }
+
     uint32_t mipLevels() const { return m_spec.miplevels; }
     vk::Format format() const { return m_spec.format; }
     const TextureImageSpec &spec() const { return m_spec; }

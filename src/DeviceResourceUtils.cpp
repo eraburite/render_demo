@@ -231,6 +231,23 @@ void DeviceResourceUtils::transitionImageLayout(const vk::CommandBuffer &cmd, vk
         barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
         sourceStage = vk::PipelineStageFlagBits::eTransfer;
         destinationStage = vk::PipelineStageFlagBits::eFragmentShader;
+    } else if (oldLayout == vk::ImageLayout::eTransferDstOptimal
+               && newLayout == vk::ImageLayout::eGeneral) {
+        // Storage image upload: GENERAL is the only layout imageStore accepts,
+        // and it also permits sampling, so the same image serves both stages.
+        // The destination scope therefore has to cover compute and fragment.
+        barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+        barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite;
+        sourceStage = vk::PipelineStageFlagBits::eTransfer;
+        destinationStage = vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eFragmentShader;
+    } else if (oldLayout == vk::ImageLayout::eShaderReadOnlyOptimal
+               && newLayout == vk::ImageLayout::eGeneral) {
+        // Mip generation (vkCmdBlitImage) leaves the chain in SHADER_READ_ONLY;
+        // a storage image that also owns mips has to go back to GENERAL.
+        barrier.srcAccessMask = vk::AccessFlagBits::eShaderRead;
+        barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite;
+        sourceStage = vk::PipelineStageFlagBits::eFragmentShader;
+        destinationStage = vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eFragmentShader;
     } else if (oldLayout == vk::ImageLayout::eShaderReadOnlyOptimal
                && newLayout == vk::ImageLayout::eTransferSrcOptimal) {
         barrier.srcAccessMask = vk::AccessFlagBits::eShaderRead;

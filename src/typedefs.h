@@ -247,6 +247,11 @@ struct TextureImageSpec {
 
     vk::SamplerAddressMode addressMode = vk::SamplerAddressMode::eClampToEdge;
     bool anisotropy = true;
+    // True when the image is written by a shader (imageStore) instead of being
+    // sampled only.  Adds STORAGE usage, keeps the whole image in GENERAL so a
+    // single descriptor works for both reading and writing, and makes the
+    // descriptor write omit the sampler.  See DESIGN.md 25.1.
+    bool storageImage = false;
 
     uint32_t bytesPerTexel() const;
     uint32_t subresourceCount() const { return layers * faces; }
@@ -274,6 +279,20 @@ inline uint32_t TextureImageSpec::bytesPerTexel() const
         return 4u;
     case vk::Format::eR16G16B16A16Sfloat:
         return 8u;
+    // Full-float formats are the storage-image / HDR-intermediate case.  Without
+    // these the default below returns `channels` (4) and the staging buffer is a
+    // quarter of what the image needs: copyBufferToImage then reads past it.
+    case vk::Format::eR32G32B32A32Sfloat:
+        return 16u;
+    case vk::Format::eR32G32B32Sfloat:
+        return 12u;
+    case vk::Format::eR32G32Sfloat:
+    case vk::Format::eD32SfloatS8Uint:
+        return 8u;
+    case vk::Format::eR32Sfloat:
+    case vk::Format::eD32Sfloat:
+    case vk::Format::eD24UnormS8Uint:
+        return 4u;
     default:
         return channels;
     }

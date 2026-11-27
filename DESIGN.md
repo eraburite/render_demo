@@ -16,7 +16,7 @@
 | 数学库 | GLM |
 | 资源加载 | `stb_image` 解码；`tinygltf`（glTF/GLB）、`tiny_obj_loader`（OBJ/MTL）、KTX 1.0 解析器、assimp（`.dae/.fbx` 等，运行期动态绑定，可选，见 19.2） |
 | 构建 | CMake ≥ 3.22，需 `glslangValidator` 编译着色器并转成 `*.hpp` 字节码头 |
-| 目标产物 | `myEngine` 静态库 + `example_common` + **32 个**可执行示例（simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb，迁移示例 test7..test32，见 14–24） |
+| 目标产物 | `myEngine` 静态库 + `example_common` + **35 个**可执行示例（simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb，迁移示例 test7..test35，见 14–25） |
 
 依赖约定（由根 `CMakeLists.txt` 的 `globalConfig` 接口目标统一提供）：`src/`、`examples/common/`、`external/`、`external/glm/include`、`external/glfw/include`、`build_vs/generated`。
 
@@ -126,7 +126,11 @@ render_demo/
 │   ├── gamma/{test29.cpp,shader/}                           # sRGB 纹理 + gamma 编码对拍（见 24）
 │   ├── shadow_mapping/{test30.cpp,shader/}                  # 单张 2D 深度图 + bias/PCF + depth quad（见 24）
 │   ├── point_shadow/{test31.cpp,shader/}                    # 点光源阴影：6 层深度数组 + 径向距离 + 软阴影（见 24）
-│   └── ssao/{test32.cpp,shader/}                            # G-Buffer + 64-sample kernel + 模糊 + 环境光合成（见 24）
+│   ├── ssao/{test32.cpp,shader/}                            # G-Buffer + 64-sample kernel + 模糊 + 环境光合成（见 24）
+│   ├── compute_shader/{test33.cpp,shader/}                  # compute 写存储图像 + 全屏采样（见 25.2）
+│   ├── physically_based_bloom/{test34.cpp,shader/}           # 13-tap 降采样 / tent 升采样 mip 链 vs 旧 10-pass（见 25.3）
+│   └── area_lights/{test35.cpp,shader/}                      # LTC 面光源：64² LTC1/LTC2 查表 + 最多 32 盏灯的 SSBO（见 25.4）
+├── assets/ltc/{ltc1.f32,ltc2.f32}    # LTC 1/2 查找表（64×64 RGBA32F 小端，各 64 KB，见 25.4）
 ├── tools/gltf2obj.py               # glTF -> OBJ 导出，用于生成往返验证资源（见 18.5）
 └── build_vs/                       # Visual Studio 构建目录（含各示例可执行程序）
 ```
@@ -882,6 +886,8 @@ dstAccess = MemoryRead | ColorRead | ColorWrite | DepthStencilAttachmentWrite
 | 示例 | `examples/skeletal_animation/`（test23）+ 2 个 shader | 骨骼动画：局部 `SkinnedVertex` + 顶点输入组（位置/UV/骨骼索引/权重）、set1 UBO 含 64 个关节矩阵、按动画包络逐轴取景、`--time/--static/--bind-mesh/--clip/--dump/--resize-after`（见 21.1 / 21.5） |
 | 资源 | `data/models/vampire/` | `dancing_vampire.dae` + 4 张贴图入库（42 MB），`source_attribution.txt` 记录来源与体积原因 |
 | 诊断 | `examples/common/AssimpModelLoader.cpp` | 四影响截断的告警补上"最坏顶点保留了多少权重"：只报个数读不出截断是否无害（见 21.4 / 21.6） |
+| 扩展 | `src/typedefs.h` + `src/TextureImage.*` + `src/DeviceResourceUtils.cpp` | **存储图像**：`TextureImageSpec::storageImage`（`eStorage` 用法、`eGeneral` 布局、描述符不带采样器）；顺带补上 `bytesPerTexel()` 缺的全浮点格式（RGBA32F 只分到 1/4 staging，导致 `copyBufferToImage` 越界崩溃）；`transitionImageLayout` 补两条到 `eGeneral` 的路径（见 25.1） |
+| 示例 | `examples/compute_shader/`（test33）+ `examples/physically_based_bloom/`（test34）+ `examples/area_lights/`（test35）+ `assets/ltc/` | guest 2022 三个示例：compute 写存储图像、13-tap/tent mip 链 bloom（含示例侧 `SizedOffscreenAttachmentDetail`）、LTC 面光源（见 25.2–25.4） |
 
 ---
 
@@ -1123,6 +1129,28 @@ python tools/gltf2obj.py data/models/deer.gltf /tmp/deer.obj             # 用�
 ./build/examples/ssao/ssao --debug-ao --dump                             # 把 AO 图直接贴到屏幕
                                                                          # dump 同时给出 ssao-raw / ssao-blur / position / normal
 
+# guest/2022（见 25）：compute 存储图像 / mip 链 bloom / LTC 面光源
+./build/examples/compute_shader/compute_shader --size 60 --time 1.5 --dump
+                                                        # 60×60 存储图像 + 全屏采样，附 CPU 参考校验
+./build/examples/compute_shader/compute_shader --animate --speed 40
+                                                        # 每帧推进 t，红色扫描线随时间横移
+./build/examples/physically_based_bloom/physically_based_bloom --dump        # 默认 mode 2：mip 链
+./build/examples/physically_based_bloom/physically_based_bloom --mode 0 --dump   # 关 bloom（对照基准）
+./build/examples/physically_based_bloom/physically_based_bloom --mode 1 --dump   # 2017 参考：10 遍 9-tap 高斯
+./build/examples/physically_based_bloom/physically_based_bloom --strength 0 --dump
+                                                        # mode 2 退化为纯场景，与 mode 0 逐字节相同
+./build/examples/physically_based_bloom/physically_based_bloom --threshold-input --dump
+                                                        # 按参考的接线把阈值化缓冲喂给 mip 链
+./build/examples/physically_based_bloom/physically_based_bloom --debug-bloom --dump  # 只看 bloom 缓冲
+./build/examples/physically_based_bloom/physically_based_bloom --mips 4 --dump       # 只建 4 级 mip
+./build/examples/area_lights/area_lights --dump                # 16 盏面光源，LTC 镜面 + LTC 漫反射
+./build/examples/area_lights/area_lights --diffuse-only --dump # 关镜面，只留 M = I 的余弦项
+./build/examples/area_lights/area_lights --one-sided --dump    # 只照正面，背面灯不贡献
+./build/examples/area_lights/area_lights --lights 4 --dump     # 4 盏灯：光斑间距变大
+./build/examples/area_lights/area_lights --lights 32 --dump    # 上限 32 盏（kMaxLights）
+./build/examples/area_lights/area_lights --roughness 1 --dump  # 全粗糙：镜面项几乎消失
+./build/examples/area_lights/area_lights --no-quads --dump     # 不画发光片，只看地板
+
 > `csm` 通过 `DeviceRequirement::geometryShader = true` 请求设备能力；不支持几何着色器的设备会在 `RenderManager::Create()` 阶段明确报错，而不是在管线创建时给出一个难懂的 VUID。
 
 # 调试：数字键切换通道视图，P 存盘；也可脚本化（见 13.6）
@@ -1185,7 +1213,11 @@ stencil 示例还会单独抓一张 `0001_stencil-mask.ppm`：它是 depth-stenc
 | 异步 compute 收益 | 队列已独立，但示例 compute 与图形共用同一块 SSBO 且存在信号量依赖，实际并行度有限；需要双缓冲资源才能体现收益（见 4.13） |
 | 构造入口 | `RenderManager` 构造函数已私有，新增示例/工具必须使用 `RenderManager::Create(window, framesInFlight)` |
 | 代码卫生清理 | 已删除 `src/legacy/`（37 个历史文件）、engine 侧 `GLFWwindow.cpp`/`GLFWwindowUtils.h`（`window_utils` 从未被调用）、根目录旧 shader 副本（`shader/{lighting,mrt,deferred}.*`）；示例遗留的 `triangle`/`texture_triangle`/`mirror` shader 本就不存在。全部可从 git `Initial commit` 追溯 |
-| Validation 状态 | VUID 与 `WRITE_AFTER_WRITE`/`READ_AFTER_WRITE` hazard 全部为 0；offscreen/GBuffer 每帧独立附件组，`eSwapChain` 依赖已覆盖 depth 写入，见 4.14 |
+| 存储图像 | `TextureImageSpec::storageImage = true` 会加 `eStorage` 用法、把图像固定在 `eGeneral` 布局、并让描述符省略采样器（`image2D` 只能这样绑）；当前只支持单 mip、固定 formats 表内的全浮点格式，采样器式的 `imageLoad`（bindless / 无格式）未实现（见 25.1） |
+| 非交换链尺寸附件 | `IAttachmentDetail` 的尺寸仍由交换链推导；bloom 的各级 mip 用示例侧的 `SizedOffscreenAttachmentDetail` 显式给尺寸，还没有升进 `examples/common`（见 25.3） |
+| mip 链 bloom | `physically_based_bloom` 的降/升采样各是一遍独立 pass，输出各自成像、靠 `base + tent(coarse)` 相加而不是混合到同一张图；真正的「一图多级 + blend」需要 attachment 视图级 mip 目标（见 25.3） |
+| 面光源 | LTC 表以 128 KB 二进制随仓库分发（`assets/ltc`），不依赖参考实现的 `ltc_matrix.hpp`；单灯固定 4 顶点的矩形，不支持任意多边形/贴图发光体（见 25.4） |
+| Validation 状态 | VUID 与 `WRITE_AFTER_WRITE`/`READ_AFTER_WRITE` hazard 全部为 0；offscreen/GBuffer 每帧独立附件组，`eSwapChain` 依赖已覆盖 depth 写入，见 4.14；35 个示例的回归扫描见 25.6 |
 | 调试视图覆盖 | 仅 gbuffer / offscreen 接入 `DebugViewState`；其余示例可在各自 fragment shader 里按 13.2 的约定加分支 |
 | 交换链图像回读 | ✅ 已实现（见 16.2 / 17）：swapchain 申请了 `eTransferSrc`，`LoopSequence::getImageIndex()` 定位当前帧，`--dump` 可抓合成后的交换链帧；S8 平面回读见 17.4 |
 | 深度通道导出 | G-Buffer 与 offscreen 的深度 `storeOp = DontCare`，内容不留存，因此没有深度 PPM；深度用 position 通道反推（`eLinearDepth`） |
@@ -1844,6 +1876,7 @@ struct TextureImageSpec {
     bool mipsInData = false;                     // 新增：上传块已含完整 mip 链
     vk::SamplerAddressMode addressMode = vk::SamplerAddressMode::eClampToEdge;
     bool anisotropy = true;
+    bool storageImage = false;                   // 25.1 新增：可写图像（eStorage + eGeneral，描述符不带采样器）
 };
 ```
 
@@ -3203,7 +3236,7 @@ HDR / Bloom 的中间结果都是 RGBA16F，而此前 `ImageDump` 只认识 RGBA
 
 | 项 | 结果 |
 | --- | --- |
-| 全量构建 | **32 个示例** + `myEngine` + `example_common`：0 error；链接阶段仍有仓库原有的 `LNK4098` 警告，与本轮改动无关 |
+| 全量构建 | **32 个示例**（本章完成时）+ `myEngine` + `example_common`：0 error；链接阶段仍有仓库原有的 `LNK4098` 警告，与本轮改动无关。加入 guest/2022 的 3 个后为 **35 个**，见 25.6 |
 | Validation | 16 个带 `--dump` 的示例各抓一帧（bloom / csm / deferred / gamma / hdr / heightmap_terrain / model_loading / multi-lighting / oit / point_shadow / scene_graph / shadow_mapping / skeletal_animation / ssao / stencil / subpasses），其余 16 个交互示例按 6 s 超时终止：**32/32 全部 0 VUID / 0 Validation Error**。点阴影另跑 9 组开关（默认 / `--soft` / `--no-shadow` / 四种调试视图 / `--shadow-res 512 --soft` / `--light 3 5 -2`）、SSAO 3 组、shadow_mapping 5 组，均 0 error |
 | 可复现 | 各主帧两次 dump 的 SHA-256 完全相同：hdr `a2392afe7085…c006fe`、bloom `067c5b8a5433…ab0a52`、gamma `33fd25b730b0…7ca8`、multi-lighting `--blinn` `f7e7cae078ce…a9d75ea2476173edb`、shadow_mapping 默认 `e43d28183098…c913a09c77`、point_shadow `--soft` `6bd9f1876d0c…`、ssao `369c44add3cd…` |
 | HDR 曝光 | exposure 1 → 2：meanAbsDiff **13.435/255**，max 24，99.62% 通道差 ≥8；`--no-hdr` 与默认仅 0.119/255 的差，符合参考"只 clamp"的弱语义 |
@@ -3320,3 +3353,171 @@ HDR / Bloom 的中间结果都是 RGBA16F，而此前 `ImageDump` 只认识 RGBA
 1. **软阴影的平均遮挡比硬阴影高 39%**（0.3171 vs 0.2278）。直觉上"模糊"应该只改边界，但圆盘 PCF 把阴影外沿按 penumbra 半径向外扩，地面又被大面积照亮，于是总遮挡面积反而增加；只有盘心仍是全不透明。这也解释了为什么硬 vs 软的画面差只有 0.512/255——差异全部集中在边界带上。
 2. **SSAO 的均值不能只看一个数**。0.9972 的平均值会让人误以为"没生效"，但分布是长尾：4.52% 的像素低于 0.99、其中该批像素均值 0.941，最暗到 0.502。用"受影响像素占比 + 局部最小值"描述比均值有信息量。
 3. **对画面的实际影响与遮挡均值不成比例**。遮挡均值相差 1:81（0.0028 vs 0.2278），但对整帧的影响只差 1:14（0.122 vs 1.676）。拆开看是两个比例相乘：受影响面积 4.52% : 22.78% ≈ 1:5，单像素损失约 1:3（SSAO 只乘环境项 `0.3·albedo·ao` 且压得浅，阴影直接消掉 `diffuse+specular`）。所以比较"技术强度"必须同时看缓冲统计量、受影响面积和它进入光照方程的方式，单看任何一个都会误判。
+
+---
+
+## 25. LearnOpenGL guest 2022（compute 存储图像 / mip 链 bloom / LTC 面光源）
+
+`8.guest/2022` 下只有三个例子：`5.computeshader_helloworld`、`6.physically_based_bloom`、`7.area_lights`，全部已迁移为 `test33..test35`。这一批的画面并不新鲜，价值在于它们是前 32 个示例都没碰过的三块能力：
+
+| 例子 | 新能力 | 落点 |
+| --- | --- | --- |
+| `compute_shader` | 图像作为**写入目标**（`imageStore`），同时又能被采样 | `TextureImageSpec::storageImage`，见 25.1 / 25.2 |
+| `physically_based_bloom` | 中间目标**尺寸与交换链无关**（mip 级） | 示例侧 `SizedOffscreenAttachmentDetail`，见 25.3 |
+| `area_lights` | 128 KB 常量表直接当纹理查；每帧可变的灯数据走 SSBO | `assets/ltc` + 描述符 `eStatic, shared`，见 25.4 |
+
+### 25.1 三处框架缺口
+
+**（1）存储图像。** 在此之前 `TextureImage` 只有一条路径：上传完转到 `eShaderReadOnlyOptimal`，描述符一律写 `eCombinedImageSampler`。compute 写图像需要 `eStorage` 用法和 `eGeneral` 布局，而且描述符**不能带采样器**（`image2D` 只接受 `eStorageImage`）。改动集中在三处：
+
+- `TextureImageSpec` 加 `bool storageImage`：加 `eStorage` 用法、最终布局取 `eGeneral`、描述符按 `eStorageImage` 写、`sampler` 留空；
+- `DeviceResourceUtils::transitionImageLayout` 补 `eTransferDstOptimal -> eGeneral` 与 `eShaderReadOnlyOptimal -> eGeneral`（否则上传阶段直接抛 `unsupported image layout transition`）；
+- 生成 mip 之后再兜一次 `eGeneral`（`generateMipmaps` 内部会把布局在各级之间来回切）。
+
+**（2）`bytesPerTexel()` 少了全浮点格式——一个静默崩溃。** 第一版上传 LTC 表时进程在 `copyBufferToImage` 里直接退出（`-1073740791`，没有 validation 消息）。根因不在 Vulkan，而在 `TextureImageSpec::bytesPerTexel()`：它的 `default` 分支返回 `channels`，对这个只服务过 8-bit 纹理的函数来说恰好等于 4，于是 RGBA32F 的 staging buffer 只有需要的 1/4，拷贝越界读。补上：
+
+| 格式 | 字节 |
+| --- | --- |
+| `eR16G16B16A16Sfloat` | 8 |
+| `eR32G32B32A32Sfloat` | 16 |
+| `eR32G32B32Sfloat` | 12 |
+| `eR32G32Sfloat`、`eD32SfloatS8Uint` | 8 |
+| `eR32Sfloat`、`eD32Sfloat`、`eD24UnormS8Uint` | 4 |
+
+教训：`default: return channels` 是「对当前所有调用者都正确」的写法，只有在引入新格式时才变成越界，而且崩在驱动里而非校验层。
+
+**（3）非交换链尺寸的附件。** `IAttachmentDetail` 的尺寸一直由交换链推导（`extent()` 直接取 `swapchain` 大小）。bloom 的 mip 级是 640×360、320×180……，不能这么来。示例里加了 30 行的 `SizedOffscreenAttachmentDetail`：显式持有 `vk::Extent2D`，其余照抄 `SimpleAttachmentDetail`。它目前留在示例内——只有 bloom 需要，等第二个用户出现再升进 `examples/common`。
+
+### 25.2 compute_shader（test33，来自 5.computeshader_helloworld）
+
+参考实现是一个「compute 写纹理、全屏 quad 采样」的最小闭环，宽度在 host 侧硬编码成 1000。这里做了两处改动：
+
+- 工作区尺寸由 dispatch 自己决定：`width = gl_NumWorkGroups.x * gl_WorkGroupSize.x`，`--size` 只改 host 侧的 dispatch 组数，shader 一行不动；
+- `t` / `speed` 走 std140 UBO，于是「参数要在 dispatch **之前**可见」成为必须显式处理的事情：`CmdOpBase::OnUpdateRawData` 写的是 push constant，compute 侧不适用，必须先 `UpdateDescriptorResourceData(...)` 再 `recordDispatch(frame)`。漏掉这一步不会报错，只是 probe 读到上一帧或全零——第一版就是这样拿到「GPU 的红色通道恒为 0.5、CPU 却是斜波」的。
+
+同步只有一次提交：`beginComputeRecording(/*chainToGraphics=*/true)` → `recordComputeBarrier()`（只做 `eShaderWrite -> eShaderRead` 的可见性，**不改布局**，因为图像全程 `eGeneral`）→ 图形 pass 采样同一张图。
+
+自校验：CPU 复刻 `mod(x + t·speed, width)/width` 与 `y/height`，在 6 个探针 texel 上 `max |gpu - cpu| = 5.96e-08`（float32 舍入量级）。
+
+`--dump` 出两张图，均值不同但都对：
+
+| dump | 均值 | 说明 |
+| --- | --- | --- |
+| `0001_storage-image.ppm` | (0.5, 0.491667, 0) | 图像本身，线性 float |
+| `0000_frame.ppm` | (0.691958, 0.680874, 0) | 交换链帧，**sRGB 编码** |
+
+线性 0.5 存进 `B8G8R8A8Srgb` 就是 0.735，所以两张图的数字不能直接比；要对拍得先过一遍 sRGB 曲线。这一点值得写下来：所有「帧 dump 与中间缓冲 dump 差多少」的对比都受它影响。
+
+### 25.3 physically_based_bloom（test34，来自 6.physically_based_bloom）
+
+参考实现用键 1/2/3 切三个分支：
+
+| 模式 | 做法 | 合成 |
+| --- | --- | --- |
+| 0 | 什么都不做 | `hdr` |
+| 1 | 2017 版：阈值 + 5 遍水平 + 5 遍垂直 9-tap 高斯（全分辨率） | `hdr + bloom`（加法） |
+| 2 | 2022 版：13-tap 降采样 + Karis 平均 + 3×3 tent 升采样 | `mix(hdr, bloom, 0.04)` |
+
+实现上三个决定：
+
+1. **每一级 mip 是独立 pass + 独立图像**，而不是一张图的多个 mip 级。`ImageAttachment` 的单个 mip 级不能当 render target，与其扩展附件层，不如让示例显式管理 6 张不同尺寸的离屏图像（`SizedOffscreenAttachmentDetail`）。
+2. **升采样写成 `up[k] = base + tent(coarse)`**：`base` 取第 k 级降采样结果（set1）、`coarse` 取第 k+1 级升采样结果（set2）。参考实现用 blending 往同一张图累加，而在 Vulkan 里对同一图像读+写要么改布局要么加依赖，等价变换成「两个输入、一个输出」既省事又便于逐张 dump 验证。
+3. **mip 链的输入是未阈值化的场景颜色**。参考的注释也写着 "unthresholded"，但它的接线给的是阈值化缓冲；由于 `mix` 的权重只有 4%，作用在阈值化缓冲上会把整屏压暗，所以默认走未阈值化，`--threshold-input` 保留参考接线用于对拍。
+
+实测（1280×720，`--dump-after 2`，GPU 时间为引擎自带的单帧时间戳）：
+
+| 模式 | 帧均值 | GPU 时间 | bloom 缓冲均值 |
+| --- | --- | --- | --- |
+| 0 关 | 0.246517 | 0.090 ms | — |
+| 1 旧 10-pass | 0.247385 | 0.749 ms | 0.001615（`bloom-old`） |
+| 2 mip 链 | 0.305704 | 0.177 ms | 0.0109625（`bloom-mip`） |
+| 2 + `--threshold-input` | 0.297742 | 0.175 ms | 0.00119526 |
+
+逐像素对照：
+
+| 对比 | 平均差 | 最大差 | ≥8/255 的像素 |
+| --- | --- | --- | --- |
+| mode 0 vs 1 | 0.227/255 | 255 | 0.21% |
+| mode 0 vs 2 | 17.059/255 | 132 | 61.36% |
+| mode 0 vs 2（`--threshold-input`） | 13.997/255 | 131 | 61.36% |
+| mode 0 vs 2（`--strength 0`） | 0.000/255 | 0 | 0%（**逐字节相同**） |
+
+三点结论：
+
+1. **旧版模糊几乎什么都没做**。mode 1 与关掉的差异只有 0.227/255，变化集中在 0.21% 的像素（发光体边缘）。原因是阈值化后亮部只剩发光片本身，9-tap 高斯把它糊开一圈，而加法合成的绝对量太小——这正是 2022 版改用「整幅画面参与 mip 链」的原因。
+2. **mip 链把暗部整体抬起来，而不是加一圈光晕**。背景的 `hdr ≈ 0`，而 bloom 缓冲在背景仍有溢出的能量，`mix` 之后 `0.04×bloom` 让 0 变成非零，再经 `1-exp(-x)` 和 `1/2.2` 放大，就是十几级的差——60% 以上的像素都动了。这不是「bloom 过强」，而是「4% 是全屏混合权重、不是加性权重」的必然结果，参考实现选这个权重就是为了这层雾状效果。
+3. **`--strength 0` 与 mode 0 逐字节相同**（2764800 字节全等），证明 mip 链本身不改变颜色，所有差异都来自那 4%。这是这套 A/B 里最干净的一个对照。
+
+各级 mip 均值（mode 2，第一级 640×360，之后依次折半到 20×11）：
+
+| mip0 | mip1 | mip2 | mip3 | mip4 | mip5 |
+| --- | --- | --- | --- | --- | --- |
+| 0.00881016 | 0.00138573 | 0.000294671 | 0.000219635 | 0.000221333 | 0.000223593 |
+
+从 80×45 起基本落在量化噪声上——本场景的亮部太小，再往下只剩平均色。
+
+一个容易误判的地方：`scene-bright` 在 mode 0 和默认 mode 2 下是**全黑**。这是 shader 里 `wantBright = (mode == 1) || (mode == 2 && --threshold-input)` 决定的（不用的目标就不写），不是 dump 读错了图像。
+
+### 25.4 area_lights（test35，来自 7.area_lights）
+
+LTC（linearly transformed cosines）把 GGX 波瓣用 3×3 矩阵 `M` 变换成余弦分布，多边形上的积分随即变成四条边积分之和：LTC1 存 `M⁻¹` 的四个系数，LTC2 存 `(F90 缩放, Smith 项, -, 地平线裁剪)`。两次查表买下「每盏灯 4 次顶点变换 + 4 次边积分」。
+
+- **表**：`assets/ltc/ltc1.f32`、`ltc2.f32`，64×64 RGBA32F 小端，各 65536 字节，从参考的 `ltc_matrix.hpp` 一次性转出——示例不解析头文件，也不把 1024 行浮点常量塞进源码。查表参数 `LUT_SCALE = (64-1)/64`、`LUT_BIAS = 0.5/64`。
+- **`integrateEdge`** 用参考里的 acos 拟合式（`0.8543985 + (0.4965155 + 0.0145206y)y` …），因为内置 `acos` 在两条边接近共面时产生可见接缝。
+- **漫反射复用同一个 `evaluate()`**，只把 `M` 换成 `I`（纯余弦波瓣），与参考一致。
+- **灯数据走 SSBO**（std430，`AreaLight` 96 B = 4×`vec4` 顶点 + color + params），最多 32 盏；灯位由固定种子 `20221127` 生成——参考用时钟做种子，dump 不可复现。默认值与参考对齐：16 盏、`intensity 4.0`、`twoSided = true`、偏移 `(x,z)*8`。
+- 场景：20×20 地板四边形 + 程序化棋盘 `floor(uv*10)`，相机 `(0, 12, 19)`、yaw -90 / pitch -34。
+
+开关实测（默认帧均值 94.31/255）：
+
+| 开关 | 帧均值 | 与默认的平均差 | 最大差 | ≥8/255 的像素 |
+| --- | --- | --- | --- | --- |
+| 默认（16 盏、双面、roughness 0.5） | 94.31 | — | — | — |
+| `--diffuse-only` | 89.39 | 4.916 | 90 | 17.57% |
+| `--one-sided` | 79.27 | 15.031 | 175 | 34.26% |
+| `--lights 4` | 68.06 | 26.723 | 242 | 44.95% |
+| `--lights 32` | 107.72 | 17.164 | 172 | 41.37% |
+| `--roughness 1` | 93.61 | 4.387 | 72 | 20.43% |
+| `--roughness 0.02` | 91.96 | 4.632 | 144 | 16.85% |
+
+读法：
+
+1. **单面/双面差最大（15/255）**。灯片水平、相机在上方，关掉背面等于把每盏灯的有效立体角砍半，正好是「地板被从下方照」的那一半。
+2. **灯数不是线性的**。4 盏时每盏覆盖大、重叠少，光斑之间露出暗地板（68.06）；32 盏重叠多（107.72）；16 盏接近「每个棋盘格一盏」的密度，均值最高。所以「多加灯更亮」只在重叠区成立。
+3. **roughness 两端都比中间暗**。`0.02` 的镜面波瓣极窄，只有灯片正下方几个像素拿到高光；`1` 把镜面能量摊到整个半球、峰值下降。两者的最大差都出现在光斑中心。
+4. **`--diffuse-only` 只掉 4.9/255**。地板 albedo 0.62、roughness 0.5 时镜面项本来就只占 5% 量级，这与 25.4 里 `specular *= mSpecular·t2.x + (1-mSpecular)·t2.y` 的取值吻合。
+
+### 25.5 上传顺序：管线输入资源只在 `CreatePipeline` 之后存在
+
+`area_lights` 第一版是九个 validation 完全干净的**全黑帧**（地板没画出来）。原因不在着色器：顶点缓冲由 `VertexInputAtlas` 描述，对应的 `IDeviceResource`/`vk::Buffer` 是在 `RenderManager::CreateGraphicsPipeline` 里才创建的；在 `CreatePipeline` 之前调用 `OnUpdateRawData(ResourceId(2, 0), …)`，数据被写进一个随后被覆盖的资源，GPU 最终拿到 6 个零顶点——所有 descriptor、buffer 都合法，校验层一句话都不说。
+
+约定（已写进示例注释）：
+
+- **描述符资源**（UBO / SSBO / 纹理）：`CreatePipeline` **之前**加入 asset（否则描述符集里不会有它，见 20.6）；
+- **管线输入**（顶点 / 索引）：`CreatePipeline` **之后**上传（资源此刻才存在）。
+
+两条看似矛盾，其实是同一件事的两面：先有资源，再上传数据——而顶点缓冲的资源恰好是建管线时才被创建的。
+
+### 25.6 验证与确定性
+
+| 项 | compute_shader | physically_based_bloom | area_lights |
+| --- | --- | --- | --- |
+| dump 张数 | 2 | 4（mode 1）/ 10（mode 2） | 1 |
+| 两次运行逐字节相同 | ✅ | ✅（10 张全等） | ✅ |
+| CPU 参考校验 | `max｜gpu−cpu｜ = 5.96e-08`（6 个 texel） | — | — |
+| VUID / hazard | 0 | 0 | 0 |
+
+全量回归：35 个示例逐一按 `--dump --dump-after 2` 跑（不支持 dump 的用 8 s 窗口超时），VUID 与 `WRITE_AFTER_WRITE` / `READ_AFTER_WRITE` 计数全部为 0。
+
+### 25.7 差异与限制
+
+| 项 | 现状 | 后续 |
+| --- | --- | --- |
+| 存储图像 | 单 mip、固定格式表、固定 `eGeneral` | 需要 `imageLoad` 无格式读取或 bindless 时，要给描述符层加 `eStorageImage` 的「无采样器 + 多视图」组合 |
+| 离屏 mip 目标 | 示例内 `SizedOffscreenAttachmentDetail`（30 行） | 第二个需要非交换链尺寸的例子出现时升进 `examples/common` |
+| bloom 合成 | 两级链共 6 次降采样 + 5 次升采样，全部独立 pass | 参考实现的 blending 版本需要「同图多 mip 视图」与 `eGeneral` 读写依赖，暂未做 |
+| bloom 权重 | 固定 `0.04`（`--strength` 可调） | 参考实现没有自适应曝光/时域稳定，亮部闪烁未处理 |
+| 面光源形状 | 固定矩形（4 顶点） | 任意多边形只需把 `points[4]` 换成 SSBO + 循环边积分；贴图发光体需要给 `AreaLight` 加 UV 与纹理索引 |
+| LTC 表 | 随仓库分发 128 KB 二进制 | 若要支持各向异性/多波瓣，需换 3D 表或更高分辨率 |
+| 灯位随机 | 固定种子 20221127，dump 可复现 | 参考用时钟种子，画面每次不同；需要「随机但可复现」时沿用当前做法 |
+| 面积光阴影 | 不支持 | LTC 只解直接光照积分，遮挡仍需阴影图；参考也未实现 |
