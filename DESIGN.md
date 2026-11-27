@@ -16,7 +16,7 @@
 | 数学库 | GLM |
 | 资源加载 | `stb_image` 解码；`tinygltf`（glTF/GLB）、`tiny_obj_loader`（OBJ/MTL）、KTX 1.0 解析器、assimp（`.dae/.fbx` 等，运行期动态绑定，可选，见 19.2） |
 | 构建 | CMake ≥ 3.22，需 `glslangValidator` 编译着色器并转成 `*.hpp` 字节码头 |
-| 目标产物 | `myEngine` 静态库 + `example_common` + **36 个**可执行示例（simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb，迁移示例 test7..test36，见 14–26） |
+| 目标产物 | `myEngine` 静态库 + `example_common` + **37 个**可执行示例（simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb，迁移示例 test7..test37，见 14–27） |
 
 依赖约定（由根 `CMakeLists.txt` 的 `globalConfig` 接口目标统一提供）：`src/`、`examples/common/`、`external/`、`external/glm/include`、`external/glfw/include`、`build_vs/generated`。
 
@@ -131,7 +131,13 @@ render_demo/
 │   ├── compute_shader/{test33.cpp,shader/}                  # compute 写存储图像 + 全屏采样（见 25.2）
 │   ├── physically_based_bloom/{test34.cpp,shader/}           # 13-tap 降采样 / tent 升采样 mip 链 vs 旧 10-pass（见 25.3）
 │   ├── area_lights/{test35.cpp,shader/}                      # LTC 面光源：64² LTC1/LTC2 查表 + 最多 32 盏灯的 SSBO（见 25.4）
-│   └── text_rendering/{test36.cpp,shader/}                   # FreeType 字形图集 + 单次实例化绘制（见 26）
+│   ├── text_rendering/{test36.cpp,shader/}                  # FreeType 字形图集 + 单次实例化绘制（见 26）
+│   └── breakout/{test37.cpp,shader/}                        # 2D 打砖块：离屏 MSAA + 实例化精灵 + 后处理（见 27）
+├── data/                               # 示例运行期资源，统一由 assetPath() 相对 PROJECT_ROOT_PATH 解析
+│   ├── levels/{one,two,three,four}.lvl  # Breakout 的四张关卡（见 27.7）
+│   ├── textures/breakout/               # 12 张精灵/粒子贴图（见 27.3）
+│   ├── fonts/Antonio-Bold.ttf           # 26 的 FreeType 字体
+│   └── models/vampire/                  # 21 的蒙皮模型与贴图
 ├── assets/ltc/{ltc1.f32,ltc2.f32}    # LTC 1/2 查找表（64×64 RGBA32F 小端，各 64 KB，见 25.4）
 ├── tools/gltf2obj.py               # glTF -> OBJ 导出，用于生成往返验证资源（见 18.5）
 └── build_vs/                       # Visual Studio 构建目录（含各示例可执行程序）
@@ -893,6 +899,8 @@ dstAccess = MemoryRead | ColorRead | ColorWrite | DepthStencilAttachmentWrite
 | 新增 | `examples/common/FontAtlas.h/.cpp` + `external/freetype/include` + `data/fonts/` | **字形图集**：FreeType 逐字光栅化到单张 R8 图集（shelf 装箱、逐行按 `bitmap.pitch` 拷贝、空格只走 advance），度量按像素给出以复刻参考的 `RenderText()`；头文件入库、静态库按 `RENDER_DEMO_FREETYPE_DIR` 探测（见 26.2 / 26.6） |
 | 示例 | `examples/text_rendering/`（test36） | 文字渲染：实例 SSBO + `gl_VertexIndex` 展开的一次 draw、正交投影、`--verify` 回读实例缓冲、`--dump` 自动比对布局包围盒（见 26.3 / 26.4） |
 | 扩展 | `src/ImageReadback.cpp` + `examples/common/ImageDump.*` | `R8Unorm` 进格式表（`texelSize`/`layoutOf`/`readTexel` 单通道复制成灰度），新增 `DumpEncoding::eCoverage`（见 26.5） |
+| 示例 | `examples/breakout/`（test37）+ `data/levels/` + `data/textures/breakout/` | 2D 打砖块：游戏状态机原样移植（不含 Vulkan）、示例侧 `SceneAttachmentDetail` 给**非交换链**颜色目标加 MSAA + resolve、11 条按纹理分组的实例化精灵管线 + 加法混合粒子、全屏三角形后处理器（shake/confuse/chaos/边缘检测）、+y 向下的 HUD 文字、`std::mt19937` 固定种子（见 27.1–27.6） |
+| 示例侧扩展 | `examples/breakout/test37.cpp` 的 `SceneAttachmentDetail` | 本轮**没有改动框架层**：`IAttachmentDetail` 已经支持 `samples`/`resolveAttachments`/多份 `OffscreenTargetSpec`。关键是 resolve 附件必须单独再给一份 `OffscreenTargetSpec`（其默认 `extraUsage = eSampled`），否则它只有 `COLOR_ATTACHMENT|TRANSFER_SRC`，能 dump 但被 shader 采样时是全黑（见 27.2） |
 
 ---
 
@@ -1167,6 +1175,19 @@ python tools/gltf2obj.py data/models/deer.gltf /tmp/deer.obj             # 用�
 ./build/examples/text_rendering/text_rendering --atlas-width 512 --dump
                                                         # dump 同时给出 0001_font-atlas.ppm（R8 覆盖率）
 
+# 7.in_practice/3.2d_game（见 27）：Breakout，离屏 MSAA + 后处理
+./build/examples/breakout/breakout --demo --dump          # 自动演示：挡板跟球、自动发球、通关后自动进下一关
+./build/examples/breakout/breakout --demo --frames 120 --stats --dump
+                                                        # 定点跑 120 帧并打印砖块/道具/粒子计数
+./build/examples/breakout/breakout --demo --verify --dump # 回读 block 实例 SSBO 与 CPU 数组逐字节比对
+./build/examples/breakout/breakout --self-test            # 20 项纯 CPU 自检（碰撞几何 + 关卡 + 状态机），不建 Vulkan
+./build/examples/breakout/breakout --demo --effect chaos --dump
+                                                        # 强制后处理：none|shake|confuse|chaos
+./build/examples/breakout/breakout --demo --level 3 --seed 7 --dump
+./build/examples/breakout/breakout --demo --msaa 1 --dump # 关 MSAA 对照
+./build/examples/breakout/breakout --demo --no-blend --dump
+./build/examples/breakout/breakout --frames 20           # 交互模式也能用 --frames 限定帧数（0 = 直到关窗）
+
 > `csm` 通过 `DeviceRequirement::geometryShader = true` 请求设备能力；不支持几何着色器的设备会在 `RenderManager::Create()` 阶段明确报错，而不是在管线创建时给出一个难懂的 VUID。
 
 # 调试：数字键切换通道视图，P 存盘；也可脚本化（见 13.6）
@@ -1237,7 +1258,11 @@ stencil 示例还会单独抓一张 `0001_stencil-mask.ppm`：它是 depth-stenc
 | 文字字符集 | 图集默认只烘焙 ASCII 32..126（95 个字形），其它码点计入 `missingGlyphs` 后被跳过；要中文/emoji 得把码点范围、shelf 装箱与图集尺寸一起放大（见 26.2） |
 | 文字布局 | 单行推进（无换行、无 kerning、无 bidi）：逐字取 `advance` 累加，与参考一致；多行需要自己按 `lineHeight` 分行 |
 | 单通道 dump | `R8Unorm` 已进 `ImageReadback`/`ImageDump` 格式表，`eCoverage` 把单通道复制成灰度；但 PPM 仍按"alpha<0.5 写黑"处理，所以关掉混合时字形框内的透明部分在文件里是黑的（屏幕上不是，见 26.5） |
-| Validation 状态 | VUID 与 `WRITE_AFTER_WRITE`/`READ_AFTER_WRITE` hazard 全部为 0；offscreen/GBuffer 每帧独立附件组，`eSwapChain` 依赖已覆盖 depth 写入，见 4.14；36 个示例的回归扫描见 25.6 / 26.7 |
+| Breakout 音频 | 参考的 irrKlang 音效（`breakout.mp3`、`bleep`、`solid`、`powerup`）整段不移植：与渲染无关，且会引入第二个链接期第三方依赖（见 27.7） |
+| Breakout 关卡文件 | 关卡必须存在且非空，缺文件直接抛异常（参考静默得到空关卡并「秒通关」）；`resetLevel()` 用 `Level::sourcePath` 重新加载，因此该路径必须是 `assetPath()` 给出的绝对路径（见 27.7） |
+| 2D 采样器 | 精灵/粒子共用 `eRepeat` 采样器（复刻参考 `GL_REPEAT`，后处理 3×3 卷积的越界 tap 会绕回），字体图集仍用 `eClampToEdge`；两者 wrap 语义不同，不能共用一个 sampler（见 27.4 / 27.6） |
+| 后处理效果时长 | `shake/confuse/chaos` 由拾取道具触发，参考用 `glfwGetTime()` 计时；本例改用固定步长 `simTime`（按帧累加 `dt`）以便确定性复现，因此效果的实际时长与帧率无关、只与帧数有关（见 27.6） |
+| Validation 状态 | VUID 与 `WRITE_AFTER_WRITE`/`READ_AFTER_WRITE` hazard 全部为 0；offscreen/GBuffer 每帧独立附件组，`eSwapChain` 依赖已覆盖 depth 写入，见 4.14；37 个示例的回归扫描见 25.6 / 26.7 / 27.8 |
 | 调试视图覆盖 | 仅 gbuffer / offscreen 接入 `DebugViewState`；其余示例可在各自 fragment shader 里按 13.2 的约定加分支 |
 | 交换链图像回读 | ✅ 已实现（见 16.2 / 17）：swapchain 申请了 `eTransferSrc`，`LoopSequence::getImageIndex()` 定位当前帧，`--dump` 可抓合成后的交换链帧；S8 平面回读见 17.4 |
 | 深度通道导出 | G-Buffer 与 offscreen 的深度 `storeOp = DontCare`，内容不留存，因此没有深度 PPM；深度用 position 通道反推（`eLinearDepth`） |
@@ -3619,7 +3644,7 @@ const glm::mat4 projection = glm::ortho(0.0f, float(w), float(h), 0.0f);
 - FreeType 头文件 vendored 到 `external/freetype/include`（93 个文件 / 1.4 MB），`.gitignore` 的 `/external/*` 加例外——与 assimp 同一条规则：构建不能依赖开发机上的外部 checkout。
 - **为什么不能直接把 `D:/LearnOpenGL/includes` 加进 include 路径**：那个目录同时带着 LearnOpenGL 自己的 `GLFW/`、`glm/`、`stb_image.h`。目标自己的 include 目录排在继承来的目录**之前**，于是那份 `GLFW/glfw3.h` 和旧 `stb_image.h` 抢先命中，`example_common` 整库编译失败（`GLFW_TRUE` 未声明、`stbi_load_16_from_memory` 找不到）。这不是"加个顺序就能解决"的问题，入库一份头文件才是稳的。
 - 只找静态库 `lib/freetype.lib`（4 MB，不需要 DLL）；`RENDER_DEMO_FREETYPE_DIR` cache 变量 → `FREETYPE_DIR` 环境变量 → 自动探测 `D:/LearnOpenGL`。
-- 找不到时 `examples/CMakeLists.txt` 直接 `continue()` 跳过该示例，其余 35 个照常构建。
+- 找不到时 `examples/CMakeLists.txt` 直接 `continue()` 跳过该示例，其余 36 个照常构建（当前共 37 个示例）。
 
 ### 26.7 验证
 
@@ -3645,3 +3670,152 @@ const glm::mat4 projection = glm::ortho(0.0f, float(w), float(h), 0.0f);
 | 抗锯齿 | 灰度覆盖率（R8） | LCD 亚像素渲染需要三通道或带 swizzle 的格式 |
 | 动态文本 | quad 一次性上传（静态共享） | 每帧变化的文本要么改 `eEachFrame`，要么做环形缓冲（见 24.12） |
 | 字体格式 | 只走 FreeType 的 TrueType/OpenType | 位图字体（BMFont）不需要 FreeType，可以复用同一套图集 + 实例绘制 |
+
+---
+
+## 27. LearnOpenGL 7.in_practice/3.2d_game（Breakout：离屏 MSAA + 实例化精灵 + 后处理）
+
+参考实现把 2D 游戏拆成 `Game/GameLevel/BallObject/ParticleGenerator/SpriteRenderer/PostProcessor/TextRenderer/ResourceManager` 八块，外加 irrKlang 音效。迁移产物是 `examples/breakout/`（test37，第 37 个示例）、`data/levels/` 四张关卡和 `data/textures/breakout/` 12 张贴图。
+
+**这一轮没有改动框架层**：`IAttachmentDetail` 已经支持 `samples` / `resolveAttachments` / 多份 `OffscreenTargetSpec`，`BasicRenderPass` 也已经会按 `samples` 建 MSAA 附件。真正新增的是示例侧的 `SceneAttachmentDetail`，以及把已有能力按参考的语义接起来。两个真坑（resolve 目标不可采样、正交投影方向）都出在「照搬 GL 习惯」而不是框架缺能力上，见 27.2 / 27.5。
+
+### 27.1 游戏状态机：整段照搬，一行 Vulkan 都没有
+
+`test37.cpp` 前半段是纯 CPU 的 `GameObject` / `Ball` / `PowerUp` / `Particle` + `ParticlePool`(500) / `Level` / `Game`，结构体、常量和函数顺序与参考的 `game.h/game.cpp`、`ball_object.*`、`game_level.*`、`particle_generator.*` 一一对应，里面不出现任何 `vk::` 类型。这样 2D 物理可以脱离 GPU 单独验证（`--self-test`），也能用 `--stats` 从日志确认「像素里看到的砖块少了」确实来自碰撞而不是画错。
+
+| 常量 | 值 | 说明 |
+| --- | --- | --- |
+| `kPlayerVelocity` / `kPlayerSize` | 500 / 100×20 | 挡板速度与尺寸 |
+| `kBallRadius` / `kInitialBallVelocity` | 12.5 / (100, −350) | 球半径与发球速度，−y 即向上 |
+| `kPowerUpSize` / `kMaxPowerUps` | 60×20 / 64 | 掉落物尺寸与同时存在上限 |
+| `kParticleCount` / `kMaxGlyphQuads` | 500 / 128 | 粒子池 / HUD 单帧字形 quad 上限 |
+| `kSeedDefault` | 20221127 | 固定 RNG 种子（见 27.6） |
+
+碰撞三件套也保持参考语义：`aabbOverlap` 用 `>=` 判定（**贴边算重叠**），`circleCollision` 用 clamp 求 AABB 上离球心最近的点、再以 `< radius` 判定（**恰好一个半径不算命中**），`vectorDirection` 按罗盘方向返回 `eUp/eDown/eLeft/eRight`。道具生成概率沿用参考的 75/75/75/75/15/15；`Level::load()` 的颜色表 2..5 与 `completed()` 里「只数可破坏砖」的判定也没改。
+
+`--self-test` 有 20 项纯 CPU 检查：碰撞几何与穿透量、贴边/相隔 1 px 的 AABB、缺关卡文件抛异常、关卡网格尺寸与越界、以及状态机的三条路径（最后一块可破坏砖 → 通关画面 + chaos 开启 + 关卡重置、只剩不可破坏砖仍然算完成、球掉出底边扣一条命并回到挡板）。这些是 dump 看不出来的行为，所以单独固化。
+
+### 27.2 离屏 MSAA + resolve：resolve 目标必须单独给一份 `OffscreenTargetSpec`
+
+参考的 `PostProcessor` 先渲到一张带 4× MSAA renderbuffer 的 FBO，再用 `glBlitFramebuffer` 把多重采样结果解析到普通纹理，后处理 shader 采样这张纹理。Vulkan 侧没有 blit 的必要：把 resolve 直接作为 subpass 的解析附件即可。示例侧的 `SceneAttachmentDetail` 描述两个固定尺寸颜色附件：
+
+| 附件 | 内容 | `storeOp` / `finalLayout` | `OffscreenTargetSpec` |
+| --- | --- | --- | --- |
+| 0 | MSAA 颜色图（`samples = m_samples`） | `eDontCare` / `eColorAttachmentOptimal` | 索引 0（供 `offscreenImages()` 取图） |
+| 1 | 单采样 resolve 目标 | `eStore` / `eShaderReadOnlyOptimal` | **索引 1**（默认 `extraUsage = eSampled`） |
+
+`bp.colorAttachmentCount = 1`（颜色附件数指 subpass 的颜色引用数，不是物理附件数）、`subpass.resolveAttachments` 把 0 解析到 1、`bp.dependencies = makeDependencies(DependencyPreset::eOffscreen)`。渲染顺序是 `scenePass`（固定 extent 1280×720）→ `screenPass`（`SimpleAttachmentDetail::eDirect`，交换链格式，无深度）。
+
+**坑 1：resolve 附件没有自己的 spec 时，能被 dump 但被采样是全黑。** `BasicRenderPass` 给非交换链颜色附件的用法是 `COLOR_ATTACHMENT | TRANSFER_SRC | spec->extraUsage`：没挂 spec 就少了 `eSampled`。于是 `0001_scene.ppm` 完全正常（`TRANSFER_SRC` 是无条件加的），而 `post.frag` 采样到的却是一张未初始化/不可读的图，合成帧均值只剩 0.000692。定位方法是把 `post.frag` 临时改成常量色 `vec4(1,0,1,1)`——帧均值变成 `(1, 0.000692, 1)`，说明交换链与后处理管线都正常，问题只在 scene 纹理本身。补上第二份 `OffscreenTargetSpec` 后帧均值回到 `(0.2247, 0.3250, 0.2200)`。
+
+**坑 2 见 27.5**（投影方向）。两个坑的症状都是「帧全黑、validation 一句不说」，这与 26.4 是同一类问题：错误发生在数学/图像布局层，Vulkan 校验层无从判断。
+
+`--msaa 1` 与默认 4× 的帧有 3623 个像素不同（0.39%，scene 通道最大差 48），集中在砖块与球的轮廓边缘，说明 MSAA 真的在起作用；`sampleCountFor()` 会把请求值按 2 的幂钳到设备 `framebufferColorSampleCounts` 支持的上限。
+
+### 27.3 一纹理一管线 + 实例化精灵 / 粒子
+
+参考的 `SpriteRenderer::DrawSprite()` 每个精灵上传一次 `model` 矩阵并 draw 一次，一帧几十次 draw。这里把逐精灵状态压成一条 `std430` 实例缓冲，六个角由 `gl_VertexIndex % 6` 从常量表取（`kCorners`，顺序与参考的 6 顶点一致），于是**共享同一张纹理的所有精灵合并成一次 instanced draw**。按 `kSpriteKinds[]` 分组共 11 条精灵管线（背景 / 实心砖 / 普通砖 / 挡板 / 6 种道具 / 球），外加 1 条粒子管线（`particle.png` 单独一张贴图）。
+
+| 记录 | 大小 | 内容 |
+| --- | --- | --- |
+| `CameraBlock` | 64 B | `mat4` 像素空间正交投影（set 0 UBO） |
+| `SpriteInstance` | 32 B | `position` / `size` / `color`（set 1 SSBO） |
+| `ParticleInstance` | 32 B | `position` / `color`（set 1 SSBO） |
+| `PostBlock` | 16 B | `vec4(simTime, confuse, chaos, shake)`（set 0 UBO） |
+| `GlyphQuad` | 48 B | `rect` / `uv` / `color`（set 2 SSBO） |
+
+纹理集合 `eStatic, shared=true`，相机 UBO 与实例 SSBO 是 `eEachFrame`——砖块会被打掉，实例数组每帧都变。四个 `CmdSyncDevice`（11 条精灵 + 粒子 + 后处理 + 文字）必须在每帧 `sequence->record()` 之前全部录进去，否则就是 24.12 那个「staging 改了但设备缓冲还是上一帧」的静默错误。
+
+绘制顺序照抄参考：场景里先画精灵（背景→砖块→道具→挡板），再画粒子，最后画球；屏幕 pass 里先画后处理全屏三角形，再画 HUD 文字（所以文字不参与 shake/confuse/chaos）。粒子用 `ColorBlendAttachment::additive()`（`(SRC_ALPHA, ONE)`），文字用普通 alpha 混合，两者都不开深度测试。HUD 复用 26 的 `FontAtlas`（R8 单通道、`eClampToEdge`、无各向异性），但字形 quad 按 **+y 向下**布局，所以 `fragUV = mix(quad.uv.xy, quad.uv.zw, corner)` 不做 v 翻转。
+
+### 27.4 后处理器：烘焙卷积核 + 全屏三角形
+
+参考 `post_processor.*` 的顶点是 VBO quad，片元里用 `offset = 1/300` 的 3×3 邻域做边缘检测 / 二项模糊，并按 `Confuse/Chaos/Shake` 三个 bool 分支。这里改成 `positions[3] = {(-1,-1),(3,-1),(-1,3)}` 的全屏三角形、`uv = pos*0.5+0.5`，`kOffsets` / `kEdgeKernel` / `kBlurKernel` 直接作为 GLSL 常量烘焙进 `post.frag`（省一份 UBO，也让 kernel 一眼可读）：
+
+- `chaos`：`uv += vec2(sin(t), cos(t)) * 0.3` + 边缘核；
+- `confuse`：`uv = 1 - uv` + 模糊核（画面反色）；
+- `shake`：`position += vec2(cos(10t), cos(15t)) * 0.01` + 模糊核；
+- 默认：模糊核轻微软化。
+
+`--effect none|shake|confuse|chaos` 可以强制某个分支，不必等随机道具掉下来。同参数（seed 7 / 90 帧）的帧均值：
+
+| 效果 | 帧均值 (R, G, B) | 画面 |
+| --- | --- | --- |
+| none | 0.2243 / 0.3244 / 0.2196 | 正常场景 |
+| chaos | 0.0706 / 0.0915 / 0.0658 | 边缘轮廓 + uv 大幅位移 |
+| shake | 0.2287 / 0.3269 / 0.2236 | 轻微抖动 |
+| confuse | 0.9412 / 0.9289 / 0.9513 | 反色 |
+
+**采样器 wrap 的坑**：参考的 `Texture2D` 默认 `Wrap_S = Wrap_T = GL_REPEAT`，本例最初给精灵采样器用了 `eClampToEdge`。后处理 3×3 卷积的 tap 会越过 quad 边界，clamp 会把边缘 texel 向内抹成水平条纹（chaos 的 ±0.3 uv 位移让大半屏都受影响），而参考是绕回另一侧。改成 `vk::SamplerAddressMode::eRepeat` 后与参考一致；字体图集仍保留 `eClampToEdge`，两者 wrap 语义不同，不能共用一个 sampler。
+
+同参数 A/B 对拍（seed 7 / 90 帧 / `--effect chaos`，把 sampler 临时改回 clamp 再改回 repeat）：帧均值 `(0.0447, 0.0596, 0.0483)` → `(0.0706, 0.0915, 0.0658)`，**184532 / 921600 个像素不同（20.0%）、最大差 255**；改回 repeat 后 dump 的 MD5 与首次修复版逐字节相同（`2ff4d7d8…`），说明差异只来自 wrap 模式而不是别的改动。
+
+### 27.5 正交投影：`ortho(0,w,h,0)` 与 `ortho(0,w,0,h)`，以及方向命名陷阱
+
+这是本轮第二个「帧全黑」的坑，也最容易和 26.4 混淆。三种写法要在同一张表里看：
+
+| 场景 | 写法 | 屏幕上的 +y | UV |
+| --- | --- | --- | --- |
+| 参考 Breakout（OpenGL） | `glm::ortho(0, w, h, 0)` | 向下（y=0 在顶部） | 不翻 |
+| `text_rendering`（Vulkan，26.4） | `glm::ortho(0, w, h, 0)` | **向上**（y=0 在底部） | `uvCorner.y = 1 - corner.y` |
+| `breakout`（Vulkan，27） | `glm::ortho(0, w, 0, h)` | 向下（y=0 在顶部） | 不翻 |
+
+Vulkan 的 NDC +y 指向 framebuffer 下方，与 GL 相反。所以要把参考的 `bottom/top` 交换回来，才能在 Vulkan 上复现「像素 y 从左上角往下增大」。第一版误把 26 的 `ortho(0,w,h,0)` 抄过来，所有精灵被送到画面下方之外——帧全黑、实例缓冲正确、0 VUID。用常量色 `post.frag` 确认「屏幕 pass 正常」后，才定位到是投影而不是采样。26.4 里 `projection[1][1] *= -1` 的错误也在这里再次印证：正交投影要翻 Y 必须换 `bottom/top`，改 m11 会把常数项一起翻错，所有顶点出屏。
+
+**方向命名**：`Direction::eUp/eDown/eLeft/eRight` 来自参考的 GL 罗盘（+y 向上）。本例按 +y 向下绘制后，`difference = closest - center`，球在砖块**上方**时 `difference.y > 0`，代码里叫 `eUp`，实际含义是「最近点在球的下方」。物理完全相同，只是名字沿用参考；自检里专门写了两条注释把这个反直觉点固化下来，避免以后有人「顺手修正」它。
+
+### 27.6 确定性：把 `rand()` 换成 `std::mt19937`
+
+参考用 `rand()` 决定道具种类、粒子速度和初始颜色，同一份二进制在不同 CRT 实现下结果都可能不同，更没法做两次 dump 的逐字节比对。移植时统一换成 `Rng`（`std::mt19937` + 固定种子 `20221127`，`--seed` 可改），粒子发射、道具生成、球的初始扰动全部走它；`simTime` 按固定步长 `dt` 累加，不取 `glfwGetTime()`，于是后处理的 shake/chaos 相位也只与帧数有关。
+
+`--demo` 提供无人值守的自动游玩：挡板横向追踪球、SPACE 常按（粘板时自动发球）、进入通关画面后按住 ENTER 等 60 帧自动 `advanceLevel()`。不带 `--demo` 时是完整的键盘交互（A/D 或 ←/→ 移动、SPACE 发球、ENTER 开始/继续、W/S 在菜单里选关），`--frames N` 可以给它一个帧上限（0 = 一直跑到关窗），方便冒烟测试。
+
+两次 `--demo --frames 120 --seed 42 --dump --dump-after 120` 的 PPM MD5 完全相同：
+
+| 文件 | MD5 |
+| --- | --- |
+| `dump/0000_frame.ppm` | `9443e93e518df769a46b05f6ea4f669a` |
+| `dump/0001_scene.ppm` | `c6347790e6408555281296a42ffd3ef6` |
+
+换成 `--seed 99` 后帧 MD5 变为 `476e6a38bbb7c343a5989e51071c4fe4`，证明种子确实进入了模拟而不是摆设。长时间自动游玩 6000 帧的统计：`bricksDestroyed=18 powerUpsSpawned=2 powerUpsCollected=1 livesLost=0 particlesAlive=120`——碰撞、道具、粒子池都在持续工作。
+
+### 27.7 丢弃的音频、关卡文件路径与 `throw`
+
+- **irrKlang 音效不移植**：`breakout.mp3`、`bleep`、`solid`、`powerup` 与渲染无关，且会带来第二个链接期第三方依赖。游戏状态和碰撞音效的触发点都还在（计数器里能看到），需要时可接任何音频后端。
+- **关卡缺文件必须报错**：参考 `GameLevel::Load("levels/one.lvl", ...)` 用相对路径，失败时静默留下一个空 `Bricks`，而 `IsCompleted()` 对空关卡返回 true——路径写错会变成「开局即通关」。本例 `Level::load()` 对打不开或空文件直接 `throw`，并把 `assetPath()` 得到的绝对路径存在 `Level::sourcePath` 里；`resetLevel()` 用它重新加载，所以通关/丢命后砖块会真正复位。
+- 四张关卡从 `D:/LearnOpenGL/resources/levels/` 原样入库，`--level 0..3` 的砖块数分别是 **106 / 100 / 46 / 78**，帧均值明显不同，确认布局确实各自加载。
+
+### 27.8 构建与验证状态
+
+| 项 | 结果 |
+| --- | --- |
+| 全量构建 | **37 个示例** + `myEngine` + `example_common`：0 error；链接阶段仍有仓库原有的 `LNK4098` 警告，与本轮改动无关 |
+| CPU 自检 | `--self-test` 20/20 通过（碰撞几何 / 关卡 / 状态机），不创建 Vulkan 设备 |
+| 数据通路 | `--verify` 回读 block 实例 SSBO：99 × 32 B = 3168 B 与第 0 帧 CPU 快照逐字节相同；回读安排在**第 1 帧**（staging→device 的拷贝在首帧序列里，第 0 帧回读只会读到未初始化缓冲） |
+| 端到端 | 帧 dump 目视确认：砖块网格在顶部、挡板在底部、球带蓝色粒子尾迹、左上 `Lives:3`，方向与颜色均正确；`0000_frame.ppm` 是交换链 `B8G8R8A8Srgb` 的编码结果，`0001_scene.ppm` 是场景的线性 UNORM——同一个线性 0.5 在前者里约为 0.735，所以两个 dump 的均值不能按同一尺度直接相减（见 24.1） |
+| 后处理 | 四种 `--effect` 的帧均值见 27.4，`none/chaos/confuse` 已目视确认；每种 0 VUID |
+| 可复现 | 两次同种子 frame + scene PPM MD5 一致；不同种子不同（27.6） |
+| 开关差异 | `--no-blend`：469 px 不同（0.05%，最大差 135），集中在粒子尾迹与字形边缘；`--msaa 1`：3623 px 不同（0.39%，最大差 120），集中在精灵轮廓 |
+| 交互模式 | `--frames 20 --stats` 正常退出（球停在挡板上、粒子 0）；不带 `--frames` 时持续渲染直到关窗 |
+| Validation | breakout 全部运行 **0 VUID / 0 Validation Error**；37 个示例全量回归 0 VUID（见下表） |
+
+全量回归按 `--dump --dump-after 1` 逐个跑（不支持该开关的用短窗口超时），统计每个日志里的 `VUID|Validation Error`：
+
+| 项 | 结果 |
+| --- | --- |
+| 示例数 | 37 / 37 完成冒烟 |
+| VUID / Validation Error | 全部 0 |
+| 非 0 退出码 | 5 个窗口类示例（gbuffer / gltfloading / offscreen / texture / texturecubemap）被 `timeout` 主动终止（rc=124，表示持续渲染），其余 32 个正常退出；无崩溃、无异常退出 |
+
+### 27.9 差异与限制
+
+| 项 | 现状 | 后续 |
+| --- | --- | --- |
+| 音频 | irrKlang 全部音效未移植 | 在碰撞/拾取触发点接任意音频后端即可 |
+| 多重采样 | 参考用 MSAA renderbuffer + `glBlitFramebuffer`；本例用 subpass resolve，等价且少一次 blit | 想对比两种实现的边缘质量可加 `--msaa` 之外的 resolve 开关 |
+| 后处理计时 | `simTime` 按固定 `dt` 累加，效果时长随帧数而非墙上时间 | 需要真实秒数时传 `glfwGetTime()`，但会失去确定性 |
+| 效果组合 | 参考的 shake/confuse/chaos 可叠加，本例 `post.frag` 用 `if/else if` 一次只走一支 | 改成累加位移/多次采样即可，成本是后处理多几个 tap |
+| 文字 | 复用 26 的 ASCII 32..126 图集，HUD 只有 `Lives:N`；单行、无 kerning | 中文 HUD 要先扩图集码点范围（见 26.8） |
+| 精灵分组 | 一张纹理一条管线，11 次 draw | 真正的 2D 批处理要用纹理数组 / bindless，把所有精灵压成一次 draw |
+| 关卡 | 4 张固定关卡、256 砖 / 64 道具 / 128 字形上限 | 更大的关卡要相应抬高 bucket 容量，或改动态扩容 |
+| 窗口缩放 | 场景与屏幕 pass 都用固定 1280×720 extent | 参考也在启动时钉死尺寸；要做 resize 得同步重建离屏附件与投影矩阵 |

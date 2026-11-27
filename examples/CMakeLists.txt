@@ -18,7 +18,7 @@ add_subdirectory(geometryshader)
 foreach(example tessellation deferred terraintessellation gltfloading gltfscenerendering multithreading
                 texture texturecubemap texturearray parallaxmapping texture3d subpasses stencil model_loading oit
                 skeletal_animation scene_graph heightmap_terrain csm hdr bloom gamma shadow_mapping point_shadow ssao
-                compute_shader physically_based_bloom area_lights text_rendering)
+                compute_shader physically_based_bloom area_lights text_rendering breakout)
     # text_rendering is the only example with a link-time third-party dependency
     # (FreeType); without it the target would not link, so skip it instead.
     if(example STREQUAL "text_rendering" AND NOT RENDER_DEMO_HAS_FREETYPE)
