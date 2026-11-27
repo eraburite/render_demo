@@ -16,9 +16,9 @@
 | 数学库 | GLM |
 | 资源加载 | `stb_image` 解码；`tinygltf`（glTF/GLB）、`tiny_obj_loader`（OBJ/MTL）、KTX 1.0 解析器、assimp（`.dae/.fbx` 等，运行期动态绑定，可选，见 19.2）、手写 MMD（PMX/PMD/VMD）与 DirectX X 文本解析器（见 29） |
 | 构建 | CMake ≥ 3.22，需 `glslangValidator` 编译着色器并转成 `*.hpp` 字节码头 |
-| 目标产物 | `myEngine` 静态库 + `example_common` + **41 个**可执行示例（simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb，迁移示例 test7..test41，见 14–29） |
+| 目标产物 | `myEngine` 静态库 + `frameworkExtensions`（框架拓展层，见 30）+ `example_common` + **41 个**可执行示例（simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb，迁移示例 test7..test41，见 14–29） |
 
-依赖约定（由根 `CMakeLists.txt` 的 `globalConfig` 接口目标统一提供）：`src/`、`examples/common/`、`external/`、`external/glm/include`、`external/glfw/include`、`build_vs/generated`。
+依赖约定：`globalConfig` 接口目标统一提供 `src/`、`examples/common/`、`external/`、`external/glm/include`、`external/glfw/include`、`build_vs/generated`；`frameworkExtensions` 再以 PUBLIC 方式追加 `extensions/model`、`extensions/texture`、`extensions/debug` 三个头文件根，因此 41 个示例沿用无前缀的短 include 名（见 30）。`external/` 下三方依赖全部入库，fresh clone 无需外部 SDK 即可构建。
 
 ---
 
@@ -26,7 +26,7 @@
 
 ```text
 render_demo/
-├── CMakeLists.txt                  # 顶层：globalConfig 接口目标 + myEngine / example_common + 子目录
+├── CMakeLists.txt                  # 顶层：globalConfig / myEngine / frameworkExtensions / example_common 四层依赖 + 子目录
 ├── README.md
 ├── DESIGN.md                       # 本文档
 ├── cmake/
@@ -40,10 +40,15 @@ render_demo/
 │   ├── textures/                   # 示例贴图
 │   └── images/                     # raw2rgb 输入/输出
 ├── doc/                            # 设计讨论存档（当前为空）
-├── external/                       # glm / glfw / stb_image / tiny_obj_loader / tinygltf（json.hpp + tiny_gltf.h） / assimp 头文件（仅头，见 19.2） / freetype 头文件（仅头，见 26.6）
+├── external/                       # 全部入库（见 30.3）：glm（含 share/）/ glfw（含 lib/glfw3.lib）/ stb_image.h / tiny_obj_loader.h / tinygltf（json.hpp + tiny_gltf.h）/ assimp 头文件（仅头，见 19.2）/ freetype 头文件（仅头，见 26.6）；仅 *.bak 备份被忽略
 ├── data/models/                    # 迁移示例的 glTF 模型（suzanne / deer / sphere / armor / plane / cube / teapot / torusknot / samplebuilding + glass）；backpack/{obj,mtl,diffuse.jpg}（见 19）；vampire/{dancing_vampire.dae,textures/}（见 21）
 ├── data/textures/                  # 迁移示例的 KTX 纹理（metalplate01 / yokohama cubemap / texturearray / rocks 颜色+法线高度 / colored_glass）
 ├── data/fonts/                     # Antonio-Bold.ttf + SIL OFL 许可（文字渲染的字形来源，见 26.2）
+├── extensions/                     # ===== 框架拓展能力（静态库 frameworkExtensions，与 src 平级，见 30）=====
+│   ├── CMakeLists.txt              # 拓展库定义 + 三方依赖策略 + assimp 运行期 DLL 探测
+│   ├── model/                      # 模型加载：加载器中立数据层 / 注册表 / 插件 / 后处理流水线 / 7 种格式加载器 / 骨骼动画
+│   ├── texture/                    # 纹理加载：stb_image 通用解码 + KTX 1.0 解析
+│   └── debug/                      # PPM dump：基于核心 ImageReadback 的离线调试存盘
 ├── src/                            # ===== 引擎核心（静态库 myEngine）=====
 │   ├── RenderManager.h/.cpp        # 对外唯一入口：设备、交换链、工厂方法
 │   ├── SequenceBase.h/.cpp         # 序列公共基类：设备/队列/limits/上传模板/时间戳
@@ -85,34 +90,14 @@ render_demo/
 │   └── typedefs.h                  # ResourceId/ResourceKey/各类 Spec/枚举/资源表模板
 ├── examples/
 │   ├── CMakeLists.txt              # add_render_example() 统一示例配置
-│   ├── common/
+│   ├── common/                     # 仅示例侧胶水；模型/纹理/dump 已上移到 extensions/（见 30）
 │   │   ├── GLFWwindow.h/.cpp       # 窗口/输入/surface（示例侧实现）
-│   │   ├── Camera.h
-│   │   ├── Geometry.h
-│   │   ├── RenderCommon.h
-│   │   ├── TextureLoader.h/.cpp
+│   │   ├── Camera.h / Frustum.h / Geometry.h / RenderCommon.h
+│   │   ├── FontAtlas.h/.cpp        # FreeType 字形图集：唯一链接期强三方依赖，由 RENDER_DEMO_HAS_FREETYPE 条件隔离（见 26.6 / 30.2）
 │   │   ├── DescriptorLayoutConfig.h    # set0~set4 组件枚举与配置表 + subpass 输入附件表 + OIT 组件（见 16.4 / 20）
 │   │   ├── ComputeLayoutConfig.h       # compute set0 组件表 + 单层 layout 模板
 │   │   ├── AttachmentDetailConfig.h    # Simple/GBuffer/SubpassDeferred/Oit 附件配置 + DependencyPreset + StencilAttachmentSpec（见 16/17/20）
 │   │   ├── DebugViewMode.h             # 调试视图枚举 + push constant + 按键状态（见 13.2）
-│   │   ├── ImageDump.h/.cpp            # 中间结果编码 + PPM 存盘 + --capture/--view 解析（见 13.4）
-│   │   ├── ModelAsset.h/.cpp           # 加载器中立的数据层：MeshVertex/Material/Primitive/Mesh/ModelNode/Skin/AnimationClip/Model（见 18/21）
-│   │   ├── ModelLoader.h/.cpp          # IModelLoader 策略 + 插件注册表 + magic 嗅探分派（见 18.2 / 29.2）
-│   │   ├── ModelLoaderPlugin.h        # ModelLoaderDescriptor / ModelLoaderRegistrar（RAII 自注册，见 29.2）
-│   │   ├── ModelPostProcess.h/.cpp    # PostProcessPipeline：可插拔有序步骤 + 模板方法钩子（见 29.2）
-│   │   ├── BuiltinModelLoaders.cpp    # 内置加载器工厂表：新增格式唯一需要改的一行（见 29.2）
-│   │   ├── ModelBuilder.h             # Builder：统一构造 Model 的自包含 primitive 索引窗口（见 29.2）
-│   │   ├── ModelBinaryReader.h        # MMD 小端安全读取 / 变长索引 / UTF-16LE / Shift-JIS（见 29.3）
-│   │   ├── ModelFormatsCommon.h       # Phong→PBR 材质语义、side-car 贴图、动画名字绑定（见 29.3）
-│   │   ├── PmxModelLoader.h/.cpp      # PMX 2.0/2.1（BDEF1/2/4/SDEF/QDEF 骨骼权重，见 29.4）
-│   │   ├── PmdModelLoader.h/.cpp      # PMD（定长 SJIS 字段 + 双骨骼权重，见 29.4）
-│   │   ├── XFileModelLoader.h/.cpp    # DirectX X 文本（Frame 层级 + Mesh/MaterialList，见 29.4）
-│   │   ├── VmdAnimationLoader.h/.cpp  # VMD 动画（按骨骼名的 AnimationChannel，见 29.4）
-│   │   ├── GltfModelLoader.h/.cpp      # glTF/GLB 加载器（tinygltf + stb_image 的唯一实现 TU）
-│   │   ├── ObjModelLoader.h/.cpp       # OBJ/MTL 加载器（tiny_obj_loader，见 18.4）
-│   │   ├── AssimpModelLoader.h/.cpp    # assimp 加载器（运行期动态绑定 DLL，含骨骼/动画读取，见 19.2 / 21.2）
-│   │   ├── SkeletonAnimator.h/.cpp      # 动画采样 + 关节矩阵 + CPU 蒙皮包围盒（见 21.2）
-│   │   ├── KtxLoader.h/.cpp            # KTX 1.0 解析（RGBA8/R16，cube/array/3D，见 15.2）
 │   │   └── VertexInputStateConfig.h    # Vertex / VertexInputAtlas
 │   ├── simplest/{test1.cpp,shader/}
 │   ├── multi-lighting/{test2.cpp,shader/}
@@ -159,7 +144,7 @@ render_demo/
 └── build_vs/                       # Visual Studio 构建目录（含各示例可执行程序）
 ```
 
-> **说明**：顶层 `CMakeLists.txt` 通过 `file(GLOB ... CONFIGURE_DEPENDS "src/*.cpp")` 收集 `src/` 顶层源码，`examples/common/*.cpp` 同理——`CONFIGURE_DEPENDS` 会在构建时重新匹配，新增源文件无需手动 re-configure。历史 pass 实现（原 `src/legacy/`，37 个文件）、engine 侧未使用的 GLFW 桥接（`GLFWwindow.cpp` / `GLFWwindowUtils.h`，`window_utils` 命名空间函数从未被调用）以及根目录旧 shader 副本均已在代码卫生清理中删除，可从 git 历史（`Initial commit`）追溯。示例侧配置头（`*Config.h`）位于 `examples/common/`，而非引擎库内。调试存盘目录 `dump/`（见 13.4）由程序运行时创建，已在 `.gitignore` 中忽略。
+> **说明**：顶层 `CMakeLists.txt` 通过 `file(GLOB ... CONFIGURE_DEPENDS "src/*.cpp")` 收集 `src/` 顶层源码，`examples/common/*.cpp` 同理；`extensions/CMakeLists.txt` 以 `GLOB_RECURSE` 分别收集 `model/*.cpp` / `texture/*.cpp` / `debug/*.cpp`——`CONFIGURE_DEPENDS` 会在构建时重新匹配，新增源文件无需手动 re-configure。历史 pass 实现（原 `src/legacy/`，37 个文件）、engine 侧未使用的 GLFW 桥接（`GLFWwindow.cpp` / `GLFWwindowUtils.h`，`window_utils` 命名空间函数从未被调用）以及根目录旧 shader 副本均已在代码卫生清理中删除，可从 git 历史（`Initial commit`）追溯。示例侧配置头（`*Config.h`）与窗口实现留在 `examples/common/`，模型/纹理/调试能力上移到与 `src/` 平级的 `extensions/`（四层依赖见 30.1）。调试存盘目录 `dump/`（见 13.4）由程序运行时创建，已在 `.gitignore` 中忽略。
 
 ---
 
@@ -4246,3 +4231,95 @@ VMD 按骨骼名寻址，而 `AnimationChannel` 原本只有 `nodeIndex`。新�
 | 贴图 | side-car 按模型目录容错加载；MMD 的 toon/sphere 叠加、球面映射模式与共享 toon 索引只记录不渲染 |
 | 骨骼绑定 | `inverseBindMatrix` 取 `translate(-bone.position)`（PMX/PMD 头只存位置，bind pose 无旋转）；带旋转的绑定姿势需要更完整的矩阵推导 |
 | 展示侧拟合 | `test41` 上传前把顶点居中缩放到 ±1 以便任意尺寸模型入镜，这是**示例的展示辅助**，不改变加载器返回的 `Model`；真实渲染应应用 `computeNodeWorldMatrices` 而不是烘焙缩放 |
+
+---
+
+## 30. 框架拓展层 `extensions/`：模型 / 纹理 / dump 能力上移与三方依赖解耦
+
+### 30.1 动机与四层依赖
+
+迁移前 `examples/common/` 是一个 40+ 文件的「大杂烩」：既有示例胶水（窗口、相机、配置表），也有三项**与具体示例无关、可复用的框架能力**——模型加载、纹理加载、PPM 调试存盘。它们被塞进 `example_common` 静态库带来三个问题：核心 `myEngine` 与「资源 / 调试能力」边界模糊；任一示例都要链接全部加载器与三方头；能力无法被示例之外的模块复用。
+
+本轮把三项能力上移到与 `src/` **平级**的 `extensions/`，形成单向的四层依赖（每层只依赖上面的层）：
+
+| 层 | CMake 目标 | 内容 |
+| --- | --- | --- |
+| 基础 | `globalConfig`（INTERFACE） | include 根 + Vulkan / GLFW 链接库 |
+| 引擎核心 | `myEngine`（`src/`） | 渲染器核心；**不依赖任何下层** |
+| 框架拓展 | `frameworkExtensions`（`extensions/`） | 模型 / 纹理 / dump 三项能力，依赖核心的 `ImageReadback` / `typedefs` |
+| 示例胶水 | `example_common`（`examples/common/`） | 窗口 / 相机 / 配置表 / FreeType 字形图集 |
+| 可执行示例 | 41 个 exe | 经 `example_common` 的 PUBLIC 链接自动获得拓展层 |
+
+关键前提：迁移前逐一 grep 确认 `src/` 里**零**文件 include 任何待迁移头，因此是单向依赖、无循环。目录内按能力分 `model/`（27 文件）、`texture/`（4 文件）、`debug/`（2 文件），共 **33 个文件用 `git mv` 迁移**（保留 rename 历史）；`extensions/CMakeLists.txt` 定义唯一静态库。留在 `examples/common/` 的 13 个文件是纯示例侧胶水：`GLFWwindow` / `Camera` / `Geometry` / `Frustum` / `RenderCommon` / `FontAtlas` / 四个 `*Config.h` / `DebugViewMode.h` / `VertexInputStateConfig.h`。
+
+### 30.2 三方依赖强度盘点（准入判据）
+
+「相关实现是否强依赖三方」是决定哪些能力能进框架拓展层的准入判据。逐文件结论：
+
+| 依赖强度 | 涉及实现 | 处理方式 |
+| --- | --- | --- |
+| **零三方** | `ModelAsset` / `ModelLoader` / `ModelLoaderPlugin` / `ModelPostProcess` / `ModelBuilder` / `ModelBinaryReader` / `ModelFormatsCommon` / `BuiltinModelLoaders` / PMX / PMD / XFile / VMD / `SkeletonAnimator` / `KtxLoader` / `ImageDump`（**15 组、26 文件**） | 只用 Vulkan + GLM + 标准库；PMX/PMD/XFile/VMD/KTX 均为手写二进制解析，直接纳入 |
+| **header-only，随仓库入库** | `GltfModelLoader`（tinygltf + stb_image）、`ObjModelLoader`（tiny_obj_loader + stb_image）、`TextureLoader`（stb_image）（3 组、6 文件） | 弱依赖：`external/` 的单头库随仓库提交后，构建不需要任何外部 checkout |
+| **运行期动态绑定** | `AssimpModelLoader`（1 组、2 文件） | 只 vendored **头文件**；导入符号全部走 `GetProcAddress`，无链接期 assimp 符号。DLL 缺失时该加载器只报告 unavailable，不影响其余 40 个示例启动 |
+| **链接期强依赖（不纳入）** | `FontAtlas`（FreeType，1 组、2 文件） | 唯一需要本机 `freetype.lib` 的实现，**留在 `examples/common/`**，由 `RENDER_DEMO_HAS_FREETYPE` 条件编译与 `examples/CMakeLists.txt` 的 skip 双重隔离；未启用时只跳过 `text_rendering` |
+
+**结论**：三项能力中 26 个文件零三方依赖、6 个只依赖随仓库入库的 header-only 库、1 个是运行期可选 DLL；唯一「强依赖」（FreeType）被挡在拓展层之外。因此 `extensions/` 可从 fresh clone 直接构建，不把任何外部 SDK 绑进框架。
+
+两条实现约束在拆库后仍成立，也是**必须建一个库而非三个**的原因：
+
+1. **实现宏跨 TU**：`extensions/model/GltfModelLoader.cpp` 是全库唯一定义 `STB_IMAGE_IMPLEMENTATION` / `TINYGLTF_IMPLEMENTATION` 的 TU（供 `texture/TextureLoader.cpp` 与 `model/ObjModelLoader.cpp` 使用），`ObjModelLoader.cpp` 是 `TINYOBJLOADER_IMPLEMENTATION` 唯一 TU。拆库会破坏实现可见性并产生重复符号 / 未定义符号。
+2. **链接锚点不丢**：`BuiltinModelLoaders.cpp` 由 `ModelLoaderRegistry` 构造函数**显式调用** `registerBuiltinModelLoaders()`（不是纯静态自注册），所以从 `example_common` 移到 `frameworkExtensions` 后 MSVC 仍会拉入全部 7 个加载器的目标文件；30.5 用 `--list` 复核。
+
+### 30.3 `external/` ignore 解除与自包含构建
+
+原 `.gitignore` 用 `/external/*` 整体忽略，再逐个 `!` 放行 `tinygltf/` / `stb_image.h` / `assimp/` / `freetype/`，导致 **glm（430 文件）、glfw（9 文件）、`tiny_obj_loader.h` 从未入库**。后果是 fresh clone 缺 `glm/glm.hpp`、`GLFW/glfw3.h` 与 `lib/glfw3.lib`，必须依赖旁边 `D:/LearnOpenGL` checkout 才能构建——这恰好让拓展层变成事实上的强外部依赖，与 30.2 的准入判据矛盾。
+
+改为精确忽略，只排除无用的 `*.bak` 备份：
+
+```gitignore
+# Vendored third-party dependencies ... are deliberately versioned ...
+/external/*.bak
+/external/**/*.bak
+```
+
+本次新增入库 **440 个文件**：`external/glm`（430，含 `share/glm/*.cmake`）、`external/glfw`（9，含 `lib/glfw3.lib` 1.1 MB）、`external/tiny_obj_loader.h`（1）；此前已入库的 assimp / freetype / tinygltf / stb_image 头不变。此后 `cmake -S . -B build_vs` 在无外部 SDK 的机器上即可完成配置与构建。仍保留两个**可选**增强：assimp DLL（运行期，缺失只降级该加载器）与 `freetype.lib`（链接期，缺失只跳过 `text_rendering`）。`git check-ignore` 复核仅命中 `stb_image.h.bak`。
+
+### 30.4 CMake 改造与兼容性
+
+| 改动 | 说明 |
+| --- | --- |
+| 新增 `extensions/CMakeLists.txt` | `GLOB_RECURSE ... CONFIGURE_DEPENDS` 收集三个子目录 `.cpp`，定义 `frameworkExtensions`；PUBLIC 暴露三个头文件根 + `myEngine` / `globalConfig` |
+| assimp 探测内聚 | `RENDER_DEMO_ASSIMP_DIR` 探测与 `RENDER_DEMO_ASSIMP_DLL_HINT` 从顶层移入拓展层（只服务 `AssimpModelLoader.cpp`） |
+| FreeType 留在顶层 | `RENDER_DEMO_HAS_FREETYPE` 仍挂在 `example_common`，`examples/CMakeLists.txt` 的 text_rendering skip 逻辑不变 |
+| 顶层重排 | `myEngine` → `add_subdirectory(extensions)` → `example_common`（`PUBLIC` 链接拓展库）→ `add_subdirectory(examples)`；`add_render_example()` 与 41 个示例的 `CMakeLists.txt` **一字未改** |
+| 短 include 保持 | 所有示例继续 `#include "ModelLoader.h"` / `"ImageDump.h"`，由拓展库 PUBLIC include 根提供，41 个 `.cpp` 无需改动 |
+
+顺带修正 5 处失效注释：旧库名 `example_common` → `frameworkExtensions`、`examples/common/ImageDump.h` → `extensions/debug/ImageDump.h`、stb 实现 TU 的新位置、示例计数 21 → 41、`AssimpModelLoader` 里「20 个不碰 .dae」改为不写死数字。
+
+### 30.5 构建与验证
+
+> 构建环境有一个与代码无关的前提：本机同时存在 `http_proxy` 与 `HTTP_PROXY`（以及 https 变体），MSBuild 的 `ProcessStartInfo.EnvironmentVariables` 大小写不敏感，启动 `CL.exe` 时会抛 `MSB6001: 已添加项`。构建前 `unset http_proxy https_proxy` 即可，不改动仓库内容。
+
+| 项 | 结果 |
+| --- | --- |
+| 全量 Release 构建 | **0 error**；41 个 exe + 3 个库（新增 `frameworkExtensions.lib` 19.7 MB）；`CONFIGURE_DEPENDS` 一次成型，无需二次构建 |
+| 注册表链接锚点 | `model_formats --list` → **7 个** loader 全部注册（assimp / gltf / obj / pmx / pmd / xfile / vmd） |
+| `--self-test` | `model_formats` **65 / 65**；`breakout` 全部通过（纯 CPU，不创建 Vulkan 设备） |
+| `--verify` | `VBO 8 × 56 B` 与 `IBO 36 × 4 B` 回读与 CPU 数组一致 |
+| 确定性 | 同参数两次 `--dump` 的 PPM MD5 完全一致，且 `a572fa71…` 与 29.6 记录相同——**拆库未改变任何输出** |
+| 三类能力实测 | 模型：`model_loading` 经 `ObjModelLoader` 加载 backpack → 49060 顶点 / 67907 三角形（与 19 章一致）；纹理：`texture` → 512×512 / 10 mips；dump：`dump/*.ppm` 产出 49 张 PPM |
+| Validation | 41 / 41 示例 `--dump --dump-after 1` 冒烟：**0 VUID、0 Validation Error、0 崩溃**（rc=124 为持续渲染示例被 timeout 主动终止，非异常退出） |
+| `external` 入库 | 440 个新文件；仅 `stb_image.h.bak` 仍被忽略 |
+| 提交卫生 | 全量扫描回写的 `assets/images/output_rgb_64x64.ppm` / `output_unpack_raw16_64x64.raw` 已 `git restore`，不入库 |
+
+### 30.6 剩余限制与后续
+
+| 限制 | 说明 |
+| --- | --- |
+| FreeType 仍是唯一链接期三方 | 若要把字形图集也纳入拓展层，需给它独立 `OPTIONAL` target 并 vendor `freetype.lib`；当前按 30.2 准入判据刻意留在示例层 |
+| assimp DLL 未入库 | 只 vendored 头；运行期 DLL 由 `RENDER_DEMO_ASSIMP_DIR` / PATH 提供，缺失时降级 |
+| `glfw3.lib` 为 MSVC 预编译库 | 入库解决 Windows 构建，但 Linux / macOS 仍需各自使用系统 GLFW；`globalConfig` 目前按 Windows 布局硬编码 |
+| 拓展层尚未可选关闭 | `frameworkExtensions` 总是构建；如需「纯核心」构建，可加 `RENDER_DEMO_ENABLE_EXTENSIONS` 并让 `add_render_example` 条件链接 |
+| 三个能力共处一个库 | 由 30.2 的实现宏约束决定；若将来拆库，需先把 stb / tinygltf 的实现抽成独立 `detail` TU |
+
+> **历史路径说明**：第 5、14–29 章的改动记录里出现的 `examples/common/ModelLoader.*`、`examples/common/ImageDump.*` 等路径描述的是**当时**的位置；本轮之后这些文件位于 `extensions/model|texture|debug/`，历史叙述不改写，按此映射理解。

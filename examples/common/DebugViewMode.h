@@ -50,7 +50,7 @@ enum class DebugViewMode : uint32_t {
 };
 
 // Colour mapping rules, shared by every shader and mirrored by the PPM dump
-// (examples/common/ImageDump.h):
+// (extensions/debug/ImageDump.h):
 //   eAlbedo       -> as-is (G-Buffer is UNORM / SFLOAT, no tone mapping)
 //   eNormal       -> n * 0.5 + 0.5 (world space: +X red, +Y green, +Z blue)
 //   ePosition     -> clamp(pos / referenceScale * 0.5 + 0.5, 0, 1)

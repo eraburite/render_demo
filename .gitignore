@@ -12,12 +12,12 @@
 /build
 /build*
 /captures
-/external/*
-# Vendored header-only dependencies that must be versioned (exception to /external/*).
-!/external/tinygltf/
-!/external/stb_image.h
-!/external/assimp/
-!/external/freetype/
+# Vendored third-party dependencies (glm / glfw / assimp / freetype / tinygltf /
+# stb_image / tiny_obj_loader) are deliberately versioned: the framework
+# extension layer in extensions/ must build from a fresh clone with no external
+# SDK checkout.  Only transient local backups are ignored.
+/external/*.bak
+/external/**/*.bak
 .externalNativeBuild
 .vscode
 *.doc
