@@ -97,6 +97,7 @@ uint32_t ImageReadback::texelSize(vk::Format format)
         // 16-bit channels; ImageDump handles the half -> float conversion.
         case vk::Format::eR16G16B16A16Sfloat: return 8;
         case vk::Format::eR32G32B32A32Sfloat: return 16;
+        case vk::Format::eR8Unorm: return 1; // single-channel coverage (glyph atlas, masks)
         case vk::Format::eS8Uint: return 1; // single stencil byte
         default: break;
     }

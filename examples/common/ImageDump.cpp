@@ -34,6 +34,10 @@ TexelLayout layoutOf(vk::Format format)
         case vk::Format::eR16G16B16A16Sfloat: return TexelLayout{false, true, false, 4};
         case vk::Format::eR32Sfloat:
         case vk::Format::eD32Sfloat: return TexelLayout{true, false, false, 1};
+        // Single-channel 8-bit: the glyph atlas is R8, and a coverage buffer is
+        // the one format where "red" would be a lie -- eCoverage replicates it
+        // to grey.
+        case vk::Format::eR8Unorm: return TexelLayout{false, false, false, 1};
         default: break;
     }
     throw std::runtime_error("ImageDump: unsupported format " + vk::to_string(format));
@@ -79,6 +83,12 @@ glm::vec4 readTexel(const uint8_t *texel, const TexelLayout &layout)
     }
 
     const float r = static_cast<float>(texel[0]) / 255.0f;
+    if (layout.channels == 1) {
+        // R8 / S8: replicate the single channel so a coverage map reads as grey
+        // instead of "red with a black background".  Alpha is 1 because a
+        // single-channel image has no coverage mask of its own.
+        return glm::vec4(r, r, r, 1.0f);
+    }
     const float g = static_cast<float>(texel[1]) / 255.0f;
     const float b = static_cast<float>(texel[2]) / 255.0f;
     const float a = static_cast<float>(texel[3]) / 255.0f;
@@ -90,6 +100,10 @@ glm::vec3 encodeColor(const glm::vec4 &sample, const DumpRequest &request)
 {
     switch (request.encoding) {
         case DumpEncoding::eColor: return glm::vec3(sample);
+        // A single-channel image has no colour to preserve: the channel *is* the
+        // value (glyph coverage, an AO term, a mask).  readTexel already
+        // replicated it, so this is just the identity with the intent spelled out.
+        case DumpEncoding::eCoverage: return glm::vec3(sample.r);
         case DumpEncoding::eToneMap: {
             // Reinhard, the simplest display transform that preserves the fact
             // that HDR texels can exceed 1.0.  Exposure in the shader uses the

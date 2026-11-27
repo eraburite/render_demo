@@ -1,0 +1,18 @@
+Antonio-Bold.ttf
+================
+Source : https://github.com/JoeyDeVries/LearnOpenGL (resources/fonts/Antonio-Bold.ttf)
+Upstream: Antonio, by Vernon Adams (Google Fonts)
+License: SIL Open Font License 1.1 -- see "SIL Open Font License.txt" in this
+         directory.  Redistribution with the licence text is required, so both
+         files are versioned together.
+
+Why it is here
+--------------
+examples/text_rendering rasterises this font into a single-channel glyph atlas
+with FreeType (see DESIGN.md 26.2).  The reference example loads the same file
+from LearnOpenGL's resources/ folder; keeping a copy under data/fonts makes the
+example runnable from this repository alone.
+
+Only ASCII 32..126 is baked into the atlas by default, so the font's full
+glyph set is unused -- it is shipped as-is because subsetting a TTF is a
+separate concern from rendering it.

@@ -74,6 +74,44 @@ else()
     message(STATUS "assimp runtime hint: none found (set RENDER_DEMO_ASSIMP_DIR to enable .dae/.fbx loading)")
 endif()
 
+# ---- FreeType for examples/common/FontAtlas.cpp ----------------------------
+# Unlike assimp this is a *link-time* dependency: the glyph rasteriser is called
+# on the CPU once at load time, so there is nothing to defer.  The headers are
+# vendored under external/freetype (same rule as assimp: the build must not
+# depend on an external checkout), and only the static library is looked up on
+# the machine.  When the library cannot be found the text example is skipped
+# instead of failing the build -- everything else keeps working.
+#
+# The vendoring is not just tidiness: pointing the include path at LearnOpenGL's
+# own includes/ directory also brings its GLFW/glm/stb_image copies into scope,
+# and since a target's own include dirs are searched *before* the ones it
+# inherits, that silently shadowed the headers this project builds with
+# (GLFW_TRUE undeclared, stbi_load_16_from_memory missing).
+target_include_directories(example_common PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/external/freetype/include)
+
+set(RENDER_DEMO_FREETYPE_DIR "" CACHE PATH "Directory containing lib/freetype.lib")
+if(NOT RENDER_DEMO_FREETYPE_DIR AND DEFINED ENV{FREETYPE_DIR})
+    set(RENDER_DEMO_FREETYPE_DIR "$ENV{FREETYPE_DIR}")
+endif()
+if(NOT RENDER_DEMO_FREETYPE_DIR)
+    foreach(candidate "D:/LearnOpenGL" "C:/LearnOpenGL" "$ENV{USERPROFILE}/LearnOpenGL")
+        if(EXISTS "${candidate}/lib/freetype.lib")
+            set(RENDER_DEMO_FREETYPE_DIR "${candidate}")
+            break()
+        endif()
+    endforeach()
+endif()
+
+set(RENDER_DEMO_HAS_FREETYPE OFF)
+if(RENDER_DEMO_FREETYPE_DIR AND EXISTS "${RENDER_DEMO_FREETYPE_DIR}/lib/freetype.lib")
+    set(RENDER_DEMO_HAS_FREETYPE ON)
+    target_link_libraries(example_common PUBLIC "${RENDER_DEMO_FREETYPE_DIR}/lib/freetype.lib")
+    target_compile_definitions(example_common PUBLIC RENDER_DEMO_HAS_FREETYPE=1)
+    message(STATUS "FreeType: ${RENDER_DEMO_FREETYPE_DIR}/lib/freetype.lib")
+else()
+    message(STATUS "FreeType: lib/freetype.lib not found (set RENDER_DEMO_FREETYPE_DIR to enable examples/text_rendering)")
+endif()
+
 # myEngine: the core static library.
 file(GLOB ENGINE_SRC CONFIGURE_DEPENDS "src/*.cpp")
 add_library(myEngine STATIC ${ENGINE_SRC})

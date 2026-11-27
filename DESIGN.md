@@ -16,7 +16,7 @@
 | 数学库 | GLM |
 | 资源加载 | `stb_image` 解码；`tinygltf`（glTF/GLB）、`tiny_obj_loader`（OBJ/MTL）、KTX 1.0 解析器、assimp（`.dae/.fbx` 等，运行期动态绑定，可选，见 19.2） |
 | 构建 | CMake ≥ 3.22，需 `glslangValidator` 编译着色器并转成 `*.hpp` 字节码头 |
-| 目标产物 | `myEngine` 静态库 + `example_common` + **35 个**可执行示例（simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb，迁移示例 test7..test35，见 14–25） |
+| 目标产物 | `myEngine` 静态库 + `example_common` + **36 个**可执行示例（simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb，迁移示例 test7..test36，见 14–26） |
 
 依赖约定（由根 `CMakeLists.txt` 的 `globalConfig` 接口目标统一提供）：`src/`、`examples/common/`、`external/`、`external/glm/include`、`external/glfw/include`、`build_vs/generated`。
 
@@ -40,9 +40,10 @@ render_demo/
 │   ├── textures/                   # 示例贴图
 │   └── images/                     # raw2rgb 输入/输出
 ├── doc/                            # 设计讨论存档（当前为空）
-├── external/                       # glm / glfw / stb_image / tiny_obj_loader / tinygltf（json.hpp + tiny_gltf.h） / assimp 头文件（仅头，见 19.2）
+├── external/                       # glm / glfw / stb_image / tiny_obj_loader / tinygltf（json.hpp + tiny_gltf.h） / assimp 头文件（仅头，见 19.2） / freetype 头文件（仅头，见 26.6）
 ├── data/models/                    # 迁移示例的 glTF 模型（suzanne / deer / sphere / armor / plane / cube / teapot / torusknot / samplebuilding + glass）；backpack/{obj,mtl,diffuse.jpg}（见 19）；vampire/{dancing_vampire.dae,textures/}（见 21）
 ├── data/textures/                  # 迁移示例的 KTX 纹理（metalplate01 / yokohama cubemap / texturearray / rocks 颜色+法线高度 / colored_glass）
+├── data/fonts/                     # Antonio-Bold.ttf + SIL OFL 许可（文字渲染的字形来源，见 26.2）
 ├── src/                            # ===== 引擎核心（静态库 myEngine）=====
 │   ├── RenderManager.h/.cpp        # 对外唯一入口：设备、交换链、工厂方法
 │   ├── SequenceBase.h/.cpp         # 序列公共基类：设备/队列/limits/上传模板/时间戳
@@ -129,7 +130,8 @@ render_demo/
 │   ├── ssao/{test32.cpp,shader/}                            # G-Buffer + 64-sample kernel + 模糊 + 环境光合成（见 24）
 │   ├── compute_shader/{test33.cpp,shader/}                  # compute 写存储图像 + 全屏采样（见 25.2）
 │   ├── physically_based_bloom/{test34.cpp,shader/}           # 13-tap 降采样 / tent 升采样 mip 链 vs 旧 10-pass（见 25.3）
-│   └── area_lights/{test35.cpp,shader/}                      # LTC 面光源：64² LTC1/LTC2 查表 + 最多 32 盏灯的 SSBO（见 25.4）
+│   ├── area_lights/{test35.cpp,shader/}                      # LTC 面光源：64² LTC1/LTC2 查表 + 最多 32 盏灯的 SSBO（见 25.4）
+│   └── text_rendering/{test36.cpp,shader/}                   # FreeType 字形图集 + 单次实例化绘制（见 26）
 ├── assets/ltc/{ltc1.f32,ltc2.f32}    # LTC 1/2 查找表（64×64 RGBA32F 小端，各 64 KB，见 25.4）
 ├── tools/gltf2obj.py               # glTF -> OBJ 导出，用于生成往返验证资源（见 18.5）
 └── build_vs/                       # Visual Studio 构建目录（含各示例可执行程序）
@@ -888,6 +890,9 @@ dstAccess = MemoryRead | ColorRead | ColorWrite | DepthStencilAttachmentWrite
 | 诊断 | `examples/common/AssimpModelLoader.cpp` | 四影响截断的告警补上"最坏顶点保留了多少权重"：只报个数读不出截断是否无害（见 21.4 / 21.6） |
 | 扩展 | `src/typedefs.h` + `src/TextureImage.*` + `src/DeviceResourceUtils.cpp` | **存储图像**：`TextureImageSpec::storageImage`（`eStorage` 用法、`eGeneral` 布局、描述符不带采样器）；顺带补上 `bytesPerTexel()` 缺的全浮点格式（RGBA32F 只分到 1/4 staging，导致 `copyBufferToImage` 越界崩溃）；`transitionImageLayout` 补两条到 `eGeneral` 的路径（见 25.1） |
 | 示例 | `examples/compute_shader/`（test33）+ `examples/physically_based_bloom/`（test34）+ `examples/area_lights/`（test35）+ `assets/ltc/` | guest 2022 三个示例：compute 写存储图像、13-tap/tent mip 链 bloom（含示例侧 `SizedOffscreenAttachmentDetail`）、LTC 面光源（见 25.2–25.4） |
+| 新增 | `examples/common/FontAtlas.h/.cpp` + `external/freetype/include` + `data/fonts/` | **字形图集**：FreeType 逐字光栅化到单张 R8 图集（shelf 装箱、逐行按 `bitmap.pitch` 拷贝、空格只走 advance），度量按像素给出以复刻参考的 `RenderText()`；头文件入库、静态库按 `RENDER_DEMO_FREETYPE_DIR` 探测（见 26.2 / 26.6） |
+| 示例 | `examples/text_rendering/`（test36） | 文字渲染：实例 SSBO + `gl_VertexIndex` 展开的一次 draw、正交投影、`--verify` 回读实例缓冲、`--dump` 自动比对布局包围盒（见 26.3 / 26.4） |
+| 扩展 | `src/ImageReadback.cpp` + `examples/common/ImageDump.*` | `R8Unorm` 进格式表（`texelSize`/`layoutOf`/`readTexel` 单通道复制成灰度），新增 `DumpEncoding::eCoverage`（见 26.5） |
 
 ---
 
@@ -1151,6 +1156,17 @@ python tools/gltf2obj.py data/models/deer.gltf /tmp/deer.obj             # 用�
 ./build/examples/area_lights/area_lights --roughness 1 --dump  # 全粗糙：镜面项几乎消失
 ./build/examples/area_lights/area_lights --no-quads --dump     # 不画发光片，只看地板
 
+# 7.in_practice/2.text_rendering（见 26）：FreeType 图集 + 一次实例化绘制
+./build/examples/text_rendering/text_rendering --stats --dump          # 参考的两行文字 + 字形度量
+./build/examples/text_rendering/text_rendering --verify --dump         # 回读实例缓冲并比对 CPU 布局
+./build/examples/text_rendering/text_rendering --size 96 --dump        # 换字号：图集重建为 576x553
+./build/examples/text_rendering/text_rendering --size 24 --dump        # 换字号：图集 160x149
+./build/examples/text_rendering/text_rendering --no-blend --dump       # 关 alpha 混合：每个字形变成一个色块
+./build/examples/text_rendering/text_rendering --text "Hello" --scale 2 --x 60 --y 300 --dump
+./build/examples/text_rendering/text_rendering --color 1 0 0 --no-copyright --dump
+./build/examples/text_rendering/text_rendering --atlas-width 512 --dump
+                                                        # dump 同时给出 0001_font-atlas.ppm（R8 覆盖率）
+
 > `csm` 通过 `DeviceRequirement::geometryShader = true` 请求设备能力；不支持几何着色器的设备会在 `RenderManager::Create()` 阶段明确报错，而不是在管线创建时给出一个难懂的 VUID。
 
 # 调试：数字键切换通道视图，P 存盘；也可脚本化（见 13.6）
@@ -1217,7 +1233,11 @@ stencil 示例还会单独抓一张 `0001_stencil-mask.ppm`：它是 depth-stenc
 | 非交换链尺寸附件 | `IAttachmentDetail` 的尺寸仍由交换链推导；bloom 的各级 mip 用示例侧的 `SizedOffscreenAttachmentDetail` 显式给尺寸，还没有升进 `examples/common`（见 25.3） |
 | mip 链 bloom | `physically_based_bloom` 的降/升采样各是一遍独立 pass，输出各自成像、靠 `base + tent(coarse)` 相加而不是混合到同一张图；真正的「一图多级 + blend」需要 attachment 视图级 mip 目标（见 25.3） |
 | 面光源 | LTC 表以 128 KB 二进制随仓库分发（`assets/ltc`），不依赖参考实现的 `ltc_matrix.hpp`；单灯固定 4 顶点的矩形，不支持任意多边形/贴图发光体（见 25.4） |
-| Validation 状态 | VUID 与 `WRITE_AFTER_WRITE`/`READ_AFTER_WRITE` hazard 全部为 0；offscreen/GBuffer 每帧独立附件组，`eSwapChain` 依赖已覆盖 depth 写入，见 4.14；35 个示例的回归扫描见 25.6 |
+| 文字字形来源 | FreeType 是**链接期**依赖：头文件已 vendor 到 `external/freetype`，`lib/freetype.lib` 仍需 `RENDER_DEMO_FREETYPE_DIR`（默认探测 `D:/LearnOpenGL`）；找不到时 `examples/text_rendering` 整个跳过，其余示例不受影响（见 26.6） |
+| 文字字符集 | 图集默认只烘焙 ASCII 32..126（95 个字形），其它码点计入 `missingGlyphs` 后被跳过；要中文/emoji 得把码点范围、shelf 装箱与图集尺寸一起放大（见 26.2） |
+| 文字布局 | 单行推进（无换行、无 kerning、无 bidi）：逐字取 `advance` 累加，与参考一致；多行需要自己按 `lineHeight` 分行 |
+| 单通道 dump | `R8Unorm` 已进 `ImageReadback`/`ImageDump` 格式表，`eCoverage` 把单通道复制成灰度；但 PPM 仍按"alpha<0.5 写黑"处理，所以关掉混合时字形框内的透明部分在文件里是黑的（屏幕上不是，见 26.5） |
+| Validation 状态 | VUID 与 `WRITE_AFTER_WRITE`/`READ_AFTER_WRITE` hazard 全部为 0；offscreen/GBuffer 每帧独立附件组，`eSwapChain` 依赖已覆盖 depth 写入，见 4.14；36 个示例的回归扫描见 25.6 / 26.7 |
 | 调试视图覆盖 | 仅 gbuffer / offscreen 接入 `DebugViewState`；其余示例可在各自 fragment shader 里按 13.2 的约定加分支 |
 | 交换链图像回读 | ✅ 已实现（见 16.2 / 17）：swapchain 申请了 `eTransferSrc`，`LoopSequence::getImageIndex()` 定位当前帧，`--dump` 可抓合成后的交换链帧；S8 平面回读见 17.4 |
 | 深度通道导出 | G-Buffer 与 offscreen 的深度 `storeOp = DontCare`，内容不留存，因此没有深度 PPM；深度用 position 通道反推（`eLinearDepth`） |
@@ -3521,3 +3541,107 @@ LTC（linearly transformed cosines）把 GGX 波瓣用 3×3 矩阵 `M` 变换成
 | LTC 表 | 随仓库分发 128 KB 二进制 | 若要支持各向异性/多波瓣，需换 3D 表或更高分辨率 |
 | 灯位随机 | 固定种子 20221127，dump 可复现 | 参考用时钟种子，画面每次不同；需要「随机但可复现」时沿用当前做法 |
 | 面积光阴影 | 不支持 | LTC 只解直接光照积分，遮挡仍需阴影图；参考也未实现 |
+
+---
+
+## 26. LearnOpenGL 7.in_practice/2.text_rendering（FreeType 字形图集 + 一次实例化绘制）
+
+参考实现只有 260 行，逻辑一眼看完：FreeType 逐字光栅化 → **每个字符一张 GL 纹理** → 每字往 VBO 里塞 6 个顶点 → 立即画一次。搬到 Vulkan 时有两处不能照抄（纹理绑定与逐字立即绘制），另外还踩到一个投影矩阵的坑。本章记录替换方案、踩坑过程与验证数据。
+
+### 26.1 95 张纹理 → 1 张图集
+
+参考里 `Characters` 是 `std::map<GLchar, Character>`，每个 `Character` 带一个 `TextureID`；`RenderText()` 每字 `glBindTexture` + `glBufferSubData` + `glDrawArrays`。一行 21 个字符 = 21 次重绑定、21 次缓冲更新、21 次 draw。
+
+这个形状在本框架里无法表达：描述符集在 `CreatePipeline` 时一次性写完（见 20.6），"每字符一张纹理"要么扩成 95 个 set，要么每帧重写描述符。所以把 95 个字形装进**一张图集**，整个文本变成**一次 draw**；GL 用「纹理绑定 + uniform」携带的逐字状态，改由每个字形 48 字节的实例记录携带（像素矩形 + 图集矩形 + 颜色）。
+
+这不是优化偏好，而是框架约定的直接结果：**资源数量决定描述符数量，描述符数量决定能不能一次画完**。
+
+### 26.2 FontAtlas：光栅化与装箱
+
+`examples/common/FontAtlas.{h,cpp}` 只在启动时用一次 FreeType，之后 CPU 侧只剩查表：
+
+- `FT_Load_Char(face, cp, FT_LOAD_RENDER)`，不额外指定 hinting 标志——与参考同参数，位图才能逐像素一致。
+- **`bitmap.pitch` 不是行字节数**：FreeType 把每行补齐到 4 字节，宽度 17 的字形 pitch 是 20。按 `pitch` 逐行 `memcpy(width)`，否则字形会整体斜切——这是移植 FreeType 时最常见的静默错误。
+- `bitmap.width == 0` 的字形（空格）**不占图集**，只贡献 advance；`bearing`/`size` 全 0，布局代码里要单独跳过。
+- 装箱用 shelf（按码点顺序，放不下就换层），字形之间留 1px 空白防止双线性采样跨字渗色。图集宽度先按 `sqrt(总像素/0.75)` 估、再 16 对齐、钳在 [128, 4096]；高宽比超过 2:1 时加宽一次重排。
+- 装箱结果是 `(字体, 字号, 码点范围)` 的纯函数，这是"两次运行 dump 逐字节相同"的前提。
+
+| 字号 | 图集 | 层数 | 填充率 | line height |
+| --- | --- | --- | --- | --- |
+| 24 px | 160×149 | 7 | 50.04% | 35 |
+| 48 px（参考值） | 304×287 | 6 | 47.87% | 69 |
+| 96 px | 576×553 | 6 | 47.77% | 138 |
+
+UV 的 v 方向要留意：图集行 0 是字形顶部，Vulkan 图像的 v=0 也是顶部，所以 `v0` 就是字形上沿；而 quad 的 +y 朝上，顶点阶段必须把 v 翻一次（`uvCorner.y = 1 - corner.y`），否则文字上下颠倒。
+
+没有 FreeType 时 `FontAtlas.cpp` 仍能编译（整个实现包在 `#ifdef RENDER_DEMO_HAS_FREETYPE` 里），`load()` 抛异常、示例不注册，见 26.6。
+
+### 26.3 一次 draw：顶点索引展开 + 实例缓冲
+
+- **顶点输入为空**（`emptyInput = true`），6 个顶点由 `gl_VertexIndex % 6` 查常量表得到 (0,1)(0,0)(1,0) / (0,1)(1,0)(1,1)，与参考的 6 顶点顺序逐项对应，所以两个三角形的绕序和 UV 分配完全一致。
+- `gl_InstanceIndex` 索引字形记录。34 个 quad 放一条 SSBO，`eStatic, shared=true` 只上传一次——文本内容与字号在运行期不变，没必要每帧重传 1.6 KB（更重要的是避开 24.12 那个"静态集只写 frame 0"的坑）。
+- 颜色逐实例携带，于是参考里两次 `RenderText()`（不同位置、不同字号、不同颜色）合并成**同一次 draw**。
+- `instanceCount` 在建管线时由 `VertexInputAtlas` 的最后一个参数给定；运行期真要变，`GraphicsPipeline::setInstanceCount()` 现成可用（视锥剔除就是这么做的）。
+- 只有投影矩阵是 `eEachFrame`。
+
+### 26.4 正交投影：`projection[1][1] *= -1` 在正交下是错的
+
+这是本章唯一的真坑，症状是"画面全空、validation 一句不说、实例缓冲完全正确"。
+
+第一版照着透视示例的习惯写：
+
+```cpp
+glm::mat4 projection = glm::ortho(0.0f, float(w), 0.0f, float(h));
+projection[1][1] *= -1.0f;   // Vulkan NDC 的 y 朝下
+```
+
+透视矩阵里 `y_ndc = m11 · y / (-z)`，没有常数项，取反 `m11` 就是镜像。正交矩阵是 `y_ndc = m11 · y + m13`，其中 `m13 = -(top+bottom)/(top-bottom) = -1`。只取反 `m11` 得到 `y_ndc = -2y/h - 1`：`y=0` 落在 -1，`y=h` 落在 **-3**，整幅画面被推到裁剪空间之外。
+
+正确写法是交换 bottom/top，等价于同时取反 `m11` 与 `m13`：
+
+```cpp
+const glm::mat4 projection = glm::ortho(0.0f, float(w), float(h), 0.0f);
+```
+
+排查顺序值得记下来：先 `--verify` 回读实例缓冲（证明 CPU→GPU 数据没问题），再把顶点着色器里的 `ubo.projection` 换成手算 NDC 的一行——画面立刻出现，问题就锁定在矩阵上。为此把两条校验做成了常驻开关：
+
+- `--verify`：回读实例 SSBO，与 CPU 布局逐字节比对（本次输出 `1632 B, equals CPU layout: yes`）；
+- `--dump` 后自动比对**布局预测包围盒**与**像素包围盒**，偏差 > 2 px 直接抛异常。
+
+### 26.5 单通道图集与回读
+
+- 图集是 `R8Unorm` + `channels = 1`。`TextureImageSpec::bytesPerTexel()` 早有 R8 分支（15.2 的 KTX 通路），但 `ImageReadback::texelSize()` 与 `ImageDump::layoutOf()` 没有 R8 → 回读直接抛 `unsupported format`。补上之后还差一步：`readTexel` 的 8-bit 分支默认按 4 通道读，单通道要把 r 复制到 rgb（alpha 置 1）。
+- 新增 `DumpEncoding::eCoverage`：单通道图里的"红"没有意义，灰度才是它的语义——字形覆盖率、AO、mask 都能用同一套编码。
+- **dump 的 alpha 规则会咬文字**：`ImageDump` 一律把 `alpha < 0.5` 的像素写成黑色（G-Buffer 的覆盖率约定，见 13.4 的文件头注释）。开混合时帧缓冲 alpha 恒为 1（`ONE_MINUS_SRC_ALPHA` 叠在清屏 alpha=1 上），所以完全看不出来；`--no-blend` 时 alpha 就是覆盖率，字形框内的透明部分在 PPM 里变黑——而屏幕上那里是文字颜色。这一项的差异量是 0.495/255、0.65% 像素，别误判成"混合关掉后画错了"。
+
+### 26.6 构建：头文件入库，库从外部找
+
+- FreeType 头文件 vendored 到 `external/freetype/include`（93 个文件 / 1.4 MB），`.gitignore` 的 `/external/*` 加例外——与 assimp 同一条规则：构建不能依赖开发机上的外部 checkout。
+- **为什么不能直接把 `D:/LearnOpenGL/includes` 加进 include 路径**：那个目录同时带着 LearnOpenGL 自己的 `GLFW/`、`glm/`、`stb_image.h`。目标自己的 include 目录排在继承来的目录**之前**，于是那份 `GLFW/glfw3.h` 和旧 `stb_image.h` 抢先命中，`example_common` 整库编译失败（`GLFW_TRUE` 未声明、`stbi_load_16_from_memory` 找不到）。这不是"加个顺序就能解决"的问题，入库一份头文件才是稳的。
+- 只找静态库 `lib/freetype.lib`（4 MB，不需要 DLL）；`RENDER_DEMO_FREETYPE_DIR` cache 变量 → `FREETYPE_DIR` 环境变量 → 自动探测 `D:/LearnOpenGL`。
+- 找不到时 `examples/CMakeLists.txt` 直接 `continue()` 跳过该示例，其余 35 个照常构建。
+
+### 26.7 验证
+
+| 项 | 结果 |
+| --- | --- |
+| 图集 | 48 px → 304×287 / 6 层 / 47.87% 覆盖；24 px → 160×149 / 7 层；96 px → 576×553 / 6 层 |
+| 布局 | 参考的两行文字 → 34 个 quad，ink box (25,19)-(734,592.5) px |
+| 数据通路 | `--verify` 回读实例 SSBO：1632 B 与 CPU 布局逐字节相同 |
+| 端到端 | 帧 dump 的像素包围盒与布局预测**逐边 0 px 偏差**，48 / 24 / 96 px 三种字号都是 0 |
+| 可复现 | 两次运行的 frame 与 atlas SHA-256 相同（`b848b23f84…` / `7cf2ddf710…`） |
+| 开关差异 | `--no-blend` 0.495/255（0.65% 像素，见 26.5）；`--size 24` 1.049/255；`--size 96` 4.087/255（3.95%） |
+| GPU | 单帧 0.017 ms（34 个 quad、一次 draw） |
+| Validation | 0 VUID；36 个示例全量回归 0 VUID / 0 hazard |
+
+### 26.8 差异与限制
+
+| 项 | 现状 | 后续 |
+| --- | --- | --- |
+| 字符集 | ASCII 32..126（95 个字形），范围外码点计数后跳过 | 扩范围只改 `load()` 的两个参数，但图集线性变大；CJK 上万字形需要按需增量烘焙 + 纹理数组 |
+| 排版 | 单行、逐字累加 `advance`，无 kerning / 换行 / bidi | 真正的排版要 `FT_Get_Kerning` 或 HarfBuzz；多行按 `lineHeight` 自己分行 |
+| 缩放 | 同一张图集放大/缩小（双线性） | 大字号会糊：按最大使用字号烘焙，或换 SDF/MSDF |
+| 子像素 | 位置按整数像素对齐（参考同） | 亚像素定位能让缩放后的字距更均匀，代价是图集要变大 |
+| 抗锯齿 | 灰度覆盖率（R8） | LCD 亚像素渲染需要三通道或带 swizzle 的格式 |
+| 动态文本 | quad 一次性上传（静态共享） | 每帧变化的文本要么改 `eEachFrame`，要么做环形缓冲（见 24.12） |
+| 字体格式 | 只走 FreeType 的 TrueType/OpenType | 位图字体（BMFont）不需要 FreeType，可以复用同一套图集 + 实例绘制 |

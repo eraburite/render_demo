@@ -17,6 +17,7 @@
 !/external/tinygltf/
 !/external/stb_image.h
 !/external/assimp/
+!/external/freetype/
 .externalNativeBuild
 .vscode
 *.doc
