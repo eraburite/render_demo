@@ -177,3 +177,32 @@ std::vector<std::byte> OnceSequence::ReadBack(const std::shared_ptr<ShaderAssetG
 {
     return ReadBack(asset, ResourceKey::make_key(id, 0), byteSize);
 }
+
+std::vector<std::byte> OnceSequence::ReadBack(const std::shared_ptr<ShaderAssetGroup> &asset, ResourceTypes type,
+                                              size_t byteSize)
+{
+    if (!asset) {
+        return {};
+    }
+
+    std::shared_ptr<vk::CommandBuffer> commandBuffer = allocateCommandBuffer(m_device, m_commandPool);
+    commandBuffer->begin(oneTimeBeginInfo());
+    asset->RecordInputResourceReadback(type, *commandBuffer);
+    commandBuffer->end();
+
+    vk::SubmitInfo submitInfo{};
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &*commandBuffer;
+    check(m_graphicsQueue->submit(1, &submitInfo, *m_fence), "vkQueueSubmit (input readback)");
+    check(m_device->waitForFences(1, &*m_fence, VK_TRUE, std::numeric_limits<uint64_t>::max()),
+          "vkWaitForFences (input readback)");
+    check(m_device->resetFences(1, &*m_fence), "vkResetFences (input readback)");
+
+    commandBuffer.reset();
+    std::vector<std::byte> result = asset->ReadStagedInputResource(type);
+    if (byteSize > 0 && result.size() > byteSize) {
+        result.resize(byteSize);
+    }
+    asset->OnUploadCompleted();
+    return result;
+}

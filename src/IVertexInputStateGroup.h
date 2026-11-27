@@ -27,6 +27,13 @@ public:
     // setter lives on the interface instead of on one concrete atlas.
     virtual void setDrawInstanceCount(uint32_t count) = 0;
 
+    // Optional second vertex binding at binding 1 with eInstance input rate.
+    // Defaults keep every existing example on the single-binding path; only an
+    // atlas built with instance components reports a non-zero count (see 28.3).
+    virtual bool hasInstanceBinding() const { return false; }
+    virtual uint32_t instanceVertexCount() const { return 0; }
+    virtual uint32_t instanceVertexByteSize() const { return 0; }
+
     // Fresh, uniquely owned copy.  Non-const on purpose: the pipeline mutates the
     // clone (instance count) while readers only ever need the const view.
     virtual std::shared_ptr<IVertexInputStateGroup> sharedClone() const = 0;

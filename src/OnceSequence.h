@@ -15,6 +15,9 @@ public:
     void submit(const std::shared_ptr<CmdOpBase> &op, const std::shared_ptr<ShaderAssetGroup> &asset);
     std::vector<std::byte> ReadBack(const std::shared_ptr<ShaderAssetGroup> &asset, ResourceKey key, size_t byteSize);
     std::vector<std::byte> ReadBack(const std::shared_ptr<ShaderAssetGroup> &asset, ResourceId id, size_t byteSize);
+    // Same for an input resource (VBO / IBO / per-instance VBO).
+    std::vector<std::byte> ReadBack(const std::shared_ptr<ShaderAssetGroup> &asset, ResourceTypes type,
+                                    size_t byteSize);
 
 private:
     void createCommandPool();

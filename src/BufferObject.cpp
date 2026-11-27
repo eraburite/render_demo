@@ -45,7 +45,8 @@ vk::BufferUsageFlags BufferObject::primaryUsageFlags() const
 {
     vk::BufferUsageFlags usage{};
     switch (m_resourceType) {
-        case ResourceTypes::eVertex: usage = vk::BufferUsageFlagBits::eVertexBuffer; break;
+        case ResourceTypes::eVertex:
+        case ResourceTypes::eInstanceVertex: usage = vk::BufferUsageFlagBits::eVertexBuffer; break;
         case ResourceTypes::eIndex: usage = vk::BufferUsageFlagBits::eIndexBuffer; break;
         case ResourceTypes::eUniform: usage = vk::BufferUsageFlagBits::eUniformBuffer; break;
         case ResourceTypes::eStorage: usage = vk::BufferUsageFlagBits::eStorageBuffer; break;
@@ -226,6 +227,14 @@ void BufferObject::bindToPipeline(const vk::CommandBuffer &cmd)
             vk::Buffer buffers[] = {*m_primary};
             vk::DeviceSize offsets[] = {0};
             cmd.bindVertexBuffers(0, 1, buffers, offsets);
+            break;
+        }
+        case ResourceTypes::eInstanceVertex: {
+            // Binding 1 is the per-instance stream (VK_VERTEX_INPUT_RATE_INSTANCE).
+            // The vertex input state declares it explicitly; see 28.3.
+            vk::Buffer buffers[] = {*m_primary};
+            vk::DeviceSize offsets[] = {0};
+            cmd.bindVertexBuffers(1, 1, buffers, offsets);
             break;
         }
         case ResourceTypes::eIndex: {

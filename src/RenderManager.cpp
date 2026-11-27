@@ -256,6 +256,7 @@ void RenderManager::createDevice(const DeviceRequirement &req)
     deviceFeatures.samplerAnisotropy = req.samplerAnisotropy ? VK_TRUE : VK_FALSE;
     deviceFeatures.geometryShader = req.geometryShader ? VK_TRUE : VK_FALSE;
     deviceFeatures.tessellationShader = req.tessellationShader ? VK_TRUE : VK_FALSE;
+    deviceFeatures.pipelineStatisticsQuery = req.pipelineStatisticsQuery ? VK_TRUE : VK_FALSE;
     deviceFeatures.fillModeNonSolid = req.fillModeNonSolid ? VK_TRUE : VK_FALSE;
     deviceFeatures.independentBlend = req.independentBlend ? VK_TRUE : VK_FALSE;
 
@@ -491,6 +492,19 @@ RenderManager::CreatePipeline(std::shared_ptr<const IVertexInputStateGroup> vert
                                 std::make_shared<BufferObject>(getLogicalDevice(), m_physicalDeviceMemoryProperties,
                                                                m_allocator, ResourceTypes::eVertex, MemoryTypes::eDevice,
                                                                vertexSpec, &sharedFamilies));
+        if (vertexInputClone->hasInstanceBinding()) {
+            // Binding 1 is a separate, device-local per-instance stream.  It is
+            // a distinct ResourceTypes key, so ShaderAssetGroup owns both VBOs
+            // and SyncDataToDevice uploads both through the same path (28.3).
+            const GBufferSpec instanceSpec{vertexInputClone->instanceVertexCount(),
+                                           vertexInputClone->instanceVertexByteSize(), DataTypes::eCustom};
+            asset->addInputResource(ResourceTypes::eInstanceVertex,
+                                    std::make_shared<BufferObject>(getLogicalDevice(),
+                                                                   m_physicalDeviceMemoryProperties, m_allocator,
+                                                                   ResourceTypes::eInstanceVertex,
+                                                                   MemoryTypes::eDevice, instanceSpec,
+                                                                   &sharedFamilies));
+        }
         if (vertexInputClone->hasIndexBuffer() && vertexInputClone->indexCount() > 0) {
             // The element type must stay concrete: BufferObject::bindToPipeline
             // derives vk::IndexType from it.  eCustom would make every indexed

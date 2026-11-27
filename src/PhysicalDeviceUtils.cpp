@@ -60,6 +60,7 @@ bool PhysicalDeviceUtils::checkDeviceSuitable(const vk::PhysicalDevice &device,
         (!req.samplerAnisotropy || supportedFeatures.samplerAnisotropy)
         && (!req.geometryShader || supportedFeatures.geometryShader)
         && (!req.tessellationShader || supportedFeatures.tessellationShader)
+        && (!req.pipelineStatisticsQuery || supportedFeatures.pipelineStatisticsQuery)
         && (!req.fillModeNonSolid || supportedFeatures.fillModeNonSolid)
         && (!req.independentBlend || supportedFeatures.independentBlend);
     return familyIndices.isComplete() && extensionsSupported && swapChainAdequate && featuresAdequate

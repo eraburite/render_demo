@@ -16,7 +16,7 @@
 | 数学库 | GLM |
 | 资源加载 | `stb_image` 解码；`tinygltf`（glTF/GLB）、`tiny_obj_loader`（OBJ/MTL）、KTX 1.0 解析器、assimp（`.dae/.fbx` 等，运行期动态绑定，可选，见 19.2） |
 | 构建 | CMake ≥ 3.22，需 `glslangValidator` 编译着色器并转成 `*.hpp` 字节码头 |
-| 目标产物 | `myEngine` 静态库 + `example_common` + **37 个**可执行示例（simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb，迁移示例 test7..test37，见 14–27） |
+| 目标产物 | `myEngine` 静态库 + `example_common` + **40 个**可执行示例（simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb，迁移示例 test7..test40，见 14–28） |
 
 依赖约定（由根 `CMakeLists.txt` 的 `globalConfig` 接口目标统一提供）：`src/`、`examples/common/`、`external/`、`external/glm/include`、`external/glfw/include`、`build_vs/generated`。
 
@@ -132,7 +132,10 @@ render_demo/
 │   ├── physically_based_bloom/{test34.cpp,shader/}           # 13-tap 降采样 / tent 升采样 mip 链 vs 旧 10-pass（见 25.3）
 │   ├── area_lights/{test35.cpp,shader/}                      # LTC 面光源：64² LTC1/LTC2 查表 + 最多 32 盏灯的 SSBO（见 25.4）
 │   ├── text_rendering/{test36.cpp,shader/}                  # FreeType 字形图集 + 单次实例化绘制（见 26）
-│   └── breakout/{test37.cpp,shader/}                        # 2D 打砖块：离屏 MSAA + 实例化精灵 + 后处理（见 27）
+│   ├── breakout/{test37.cpp,shader/}                        # 2D 打砖块：离屏 MSAA + 实例化精灵 + 后处理（见 27）
+│   ├── occlusion_query/{test38.cpp,shader/}                # 遮挡查询：深度剔除后统计通过样本数（见 28.2）
+│   ├── pipeline_statistics/{test39.cpp,shader/}            # 管线统计查询：6 个计数器与 CPU 绘制表对拍（见 28.2）
+│   └── instancing/{test40.cpp,shader/}                     # 双 vertex binding：binding 1 逐实例属性（见 28.3）
 ├── data/                               # 示例运行期资源，统一由 assetPath() 相对 PROJECT_ROOT_PATH 解析
 │   ├── levels/{one,two,three,four}.lvl  # Breakout 的四张关卡（见 27.7）
 │   ├── textures/breakout/               # 12 张精灵/粒子贴图（见 27.3）
@@ -901,6 +904,10 @@ dstAccess = MemoryRead | ColorRead | ColorWrite | DepthStencilAttachmentWrite
 | 扩展 | `src/ImageReadback.cpp` + `examples/common/ImageDump.*` | `R8Unorm` 进格式表（`texelSize`/`layoutOf`/`readTexel` 单通道复制成灰度），新增 `DumpEncoding::eCoverage`（见 26.5） |
 | 示例 | `examples/breakout/`（test37）+ `data/levels/` + `data/textures/breakout/` | 2D 打砖块：游戏状态机原样移植（不含 Vulkan）、示例侧 `SceneAttachmentDetail` 给**非交换链**颜色目标加 MSAA + resolve、11 条按纹理分组的实例化精灵管线 + 加法混合粒子、全屏三角形后处理器（shake/confuse/chaos/边缘检测）、+y 向下的 HUD 文字、`std::mt19937` 固定种子（见 27.1–27.6） |
 | 示例侧扩展 | `examples/breakout/test37.cpp` 的 `SceneAttachmentDetail` | 本轮**没有改动框架层**：`IAttachmentDetail` 已经支持 `samples`/`resolveAttachments`/多份 `OffscreenTargetSpec`。关键是 resolve 附件必须单独再给一份 `OffscreenTargetSpec`（其默认 `extraUsage = eSampled`），否则它只有 `COLOR_ATTACHMENT|TRANSFER_SRC`，能 dump 但被 shader 采样时是全黑（见 27.2） |
+| 扩展 | `src/QueryPool.h/.cpp` + `src/CmdOpQuery.h` + `src/typedefs.h` + `src/RenderManager.cpp` + `src/PhysicalDeviceUtils.cpp` | **通用查询池**：occlusion / pipeline-statistics 两类的创建、非阻塞（WITH_AVAILABILITY）与阻塞（WAIT）结果回读；`CmdOpQuery` 把 reset/begin/end 拆成三个 `CmdOpBase`，让 reset 落在 render pass 外、begin/end 包住 draws；`DeviceRequirement::pipelineStatisticsQuery` 打通「选设备时校验 → 建设备时启用」（见 28.2） |
+| 扩展 | `src/typedefs.h` + `src/BufferObject.cpp` + `src/IVertexInputStateGroup.h` + `examples/common/VertexInputStateConfig.h` + `src/RenderManager.cpp` | **多 vertex binding**：新增 `ResourceTypes::eInstanceVertex`（binding 1、`eInstance` 输入率），`VertexInputAtlas` 可声明逐实例属性并与逐顶点 location 连续编号；`CreatePipeline` 自动多建一份设备缓冲。全部默认关闭，旧示例零改动（见 28.3） |
+| 扩展 | `src/ShaderAssetGroup.h/.cpp` + `src/OnceSequence.h/.cpp` | **输入资源回读**：此前只有 descriptor 资源能 `ReadBack`；补齐 `InputResource` / `RecordInputResourceReadback` / `ReadStagedInputResource` 与 `OnceSequence::ReadBack(asset, ResourceTypes, ...)`，逐实例 VBO 才能与 CPU 数组逐字节对拍（见 28.3） |
+| 示例 | `examples/occlusion_query/`（test38）+ `examples/pipeline_statistics/`（test39）+ `examples/instancing/`（test40） | Vulkan-Samples 查询与实例化三例：`--verify` 分别校验遮挡计数关系、统计计数器与 CPU 绘制表、逐实例 VBO 内容；`--dump`/`--stats`/固定种子可复现（见 28.2 / 28.3） |
 
 ---
 
@@ -1188,6 +1195,18 @@ python tools/gltf2obj.py data/models/deer.gltf /tmp/deer.obj             # 用�
 ./build/examples/breakout/breakout --demo --no-blend --dump
 ./build/examples/breakout/breakout --frames 20           # 交互模式也能用 --frames 限定帧数（0 = 直到关窗）
 
+# Vulkan-Samples 查询与实例化（见 28）：三个示例共用 --frames/--dump/--dump-after/--stats/--verify
+./build/examples/occlusion_query/occlusion_query --verify --stats --dump
+                                                        # 遮挡板挡住一个物体：hidden=0 / visible>0
+./build/examples/occlusion_query/occlusion_query --no-occluder --verify --dump
+                                                        # 移走遮挡板：两个查询都非零
+./build/examples/pipeline_statistics/pipeline_statistics --objects 3 --verify --stats --dump
+                                                        # 6 个计数器，IA/VS 计数与 3 个立方体精确对拍
+./build/examples/instancing/instancing --instances 512 --verify --stats --dump
+                                                        # 双 vertex binding，回读逐实例 VBO
+./build/examples/instancing/instancing --instances 4096 --seed 7 --dump
+                                                        # 容量上限 4096，固定种子布局可复现
+
 > `csm` 通过 `DeviceRequirement::geometryShader = true` 请求设备能力；不支持几何着色器的设备会在 `RenderManager::Create()` 阶段明确报错，而不是在管线创建时给出一个难懂的 VUID。
 
 # 调试：数字键切换通道视图，P 存盘；也可脚本化（见 13.6）
@@ -1262,7 +1281,10 @@ stencil 示例还会单独抓一张 `0001_stencil-mask.ppm`：它是 depth-stenc
 | Breakout 关卡文件 | 关卡必须存在且非空，缺文件直接抛异常（参考静默得到空关卡并「秒通关」）；`resetLevel()` 用 `Level::sourcePath` 重新加载，因此该路径必须是 `assetPath()` 给出的绝对路径（见 27.7） |
 | 2D 采样器 | 精灵/粒子共用 `eRepeat` 采样器（复刻参考 `GL_REPEAT`，后处理 3×3 卷积的越界 tap 会绕回），字体图集仍用 `eClampToEdge`；两者 wrap 语义不同，不能共用一个 sampler（见 27.4 / 27.6） |
 | 后处理效果时长 | `shake/confuse/chaos` 由拾取道具触发，参考用 `glfwGetTime()` 计时；本例改用固定步长 `simTime`（按帧累加 `dt`）以便确定性复现，因此效果的实际时长与帧率无关、只与帧数有关（见 27.6） |
-| Validation 状态 | VUID 与 `WRITE_AFTER_WRITE`/`READ_AFTER_WRITE` hazard 全部为 0；offscreen/GBuffer 每帧独立附件组，`eSwapChain` 依赖已覆盖 depth 写入，见 4.14；37 个示例的回归扫描见 25.6 / 26.7 / 27.8 |
+| 查询池 | 新增 `QueryPool` 只覆盖 occlusion 与 pipeline-statistics（timestamp 仍走 `SequenceBase` 的旧池）；示例每帧用 `VK_QUERY_RESULT_WAIT_BIT` 阻塞读取，与参考一致，未做「下一帧再取」的延迟回读（见 28.2） |
+| 多 vertex binding | 只支持 binding 0（逐顶点）+ binding 1（逐实例）两槽，逐实例 stride 固定为 `InstanceData` 的 48 B；更多槽位/自定义 stride 要继续扩展 `VertexInputAtlas`（见 28.3） |
+| Vulkan-Samples 覆盖 | `D:/Vulkan-samples/examples` 共 82 个示例，本仓库直接迁移 16 个、间接覆盖 28 个、本轮新增 3 个，仍有 35 个未迁移（多为 ray tracing / 设备扩展 / headless），逐项原因见 28.1 |
+| Validation 状态 | VUID 与 `WRITE_AFTER_WRITE`/`READ_AFTER_WRITE` hazard 全部为 0；offscreen/GBuffer 每帧独立附件组，`eSwapChain` 依赖已覆盖 depth 写入，见 4.14；40 个示例的回归扫描见 25.6 / 26.7 / 27.8 / 28.5 |
 | 调试视图覆盖 | 仅 gbuffer / offscreen 接入 `DebugViewState`；其余示例可在各自 fragment shader 里按 13.2 的约定加分支 |
 | 交换链图像回读 | ✅ 已实现（见 16.2 / 17）：swapchain 申请了 `eTransferSrc`，`LoopSequence::getImageIndex()` 定位当前帧，`--dump` 可抓合成后的交换链帧；S8 平面回读见 17.4 |
 | 深度通道导出 | G-Buffer 与 offscreen 的深度 `storeOp = DontCare`，内容不留存，因此没有深度 PPM；深度用 position 通道反推（`eLinearDepth`） |
@@ -2021,18 +2043,18 @@ syncOp->OnUpdateRawData(ResourceId(0, 0), 0u, ktx.data);
 | texture3d | 逐切片堆叠绘制 + 混合 | 单次 draw 内的光线步进 | 框架是「一个 op 一次 draw」，切片数需要 N 个 op；光线步进数学等价且只需一次绘制 |
 | texture 采样器 | 示例自行决定 | `TextureImageSpec::addressMode` 显式指定 | 框架默认 clamp（逐面 UV 需要），平铺贴图按需覆盖 |
 
-### 15.7 仍未覆盖的能力（下一批的前置条件）
+### 15.7 仍未覆盖的能力（历史清单，最新状态见 28.1）
 
-按实现成本从低到高，这些都是后续示例的硬前置：
+按实现成本从低到高，这些曾是后续示例的硬前置。第 28 章补上了其中两项，其余仍按原计划保留：
 
-| 缺失能力 | 阻塞的示例 |
-| --- | --- |
-| 独立 `eSampler` 描述符（`SAMPLED_IMAGE` + `SAMPLER` 分离） | texturemipmapgen |
-| ~~深度/模板状态的 stencil 字段~~ | ~~stencilbuffer~~（已完成，见 17） |
-| 查询池（occlusion / timestamp / pipeline-statistics） | occlusionquery、pipelinestatistics |
-| 管线多视口 | specializationconstants 的三分屏 |
-| ~~input attachment 与 subpass 依赖~~ | ~~subpasses~~（已完成，见 16）；inputattachments、deferredmultisampling 仍待做 |
-| 多 vertex binding（逐实例属性） | instancing |
+| 缺失能力 | 阻塞的示例 | 本轮后的状态 |
+| --- | --- | --- |
+| 独立 `eSampler` 描述符（`SAMPLED_IMAGE` + `SAMPLER` 分离） | texturemipmapgen | 待补（还需运行时 mip 生成） |
+| 深度/模板状态的 stencil 字段 | stencilbuffer | ✅ 已完成（见 17） |
+| 查询池（occlusion / pipeline-statistics） | occlusionquery、pipelinestatistics | ✅ 已完成（见 28.2 / test38、test39）；timestamp 一直是 `SequenceBase` 的内建能力 |
+| 多 vertex binding（逐实例属性） | instancing、vertexattributes | ✅ 已完成（见 28.3 / test40） |
+| 管线多视口 | specializationconstants 的三分屏、viewportarray | 待补 |
+| input attachment 与 subpass 依赖 | subpasses / inputattachments / deferredmultisampling | 部分完成：`subpasses` 已迁（见 16）、`InputAttachmentView` 已就绪，后两者待做 |
 
 ### 15.8 构建与验证状态
 
@@ -3644,7 +3666,7 @@ const glm::mat4 projection = glm::ortho(0.0f, float(w), float(h), 0.0f);
 - FreeType 头文件 vendored 到 `external/freetype/include`（93 个文件 / 1.4 MB），`.gitignore` 的 `/external/*` 加例外——与 assimp 同一条规则：构建不能依赖开发机上的外部 checkout。
 - **为什么不能直接把 `D:/LearnOpenGL/includes` 加进 include 路径**：那个目录同时带着 LearnOpenGL 自己的 `GLFW/`、`glm/`、`stb_image.h`。目标自己的 include 目录排在继承来的目录**之前**，于是那份 `GLFW/glfw3.h` 和旧 `stb_image.h` 抢先命中，`example_common` 整库编译失败（`GLFW_TRUE` 未声明、`stbi_load_16_from_memory` 找不到）。这不是"加个顺序就能解决"的问题，入库一份头文件才是稳的。
 - 只找静态库 `lib/freetype.lib`（4 MB，不需要 DLL）；`RENDER_DEMO_FREETYPE_DIR` cache 变量 → `FREETYPE_DIR` 环境变量 → 自动探测 `D:/LearnOpenGL`。
-- 找不到时 `examples/CMakeLists.txt` 直接 `continue()` 跳过该示例，其余 36 个照常构建（当前共 37 个示例）。
+- 找不到时 `examples/CMakeLists.txt` 直接 `continue()` 跳过该示例，其余 39 个照常构建（当前共 40 个示例）。
 
 ### 26.7 验证
 
@@ -3819,3 +3841,232 @@ Vulkan 的 NDC +y 指向 framebuffer 下方，与 GL 相反。所以要把参考
 | 精灵分组 | 一张纹理一条管线，11 次 draw | 真正的 2D 批处理要用纹理数组 / bindless，把所有精灵压成一次 draw |
 | 关卡 | 4 张固定关卡、256 砖 / 64 道具 / 128 字形上限 | 更大的关卡要相应抬高 bucket 容量，或改动态扩容 |
 | 窗口缩放 | 场景与屏幕 pass 都用固定 1280×720 extent | 参考也在启动时钉死尺寸；要做 resize 得同步重建离屏附件与投影矩阵 |
+
+---
+
+## 28. Vulkan-Samples 覆盖度盘点（base + 82 个 examples）与能力补齐
+
+参考仓库 `D:/Vulkan-samples` 是 Sascha Willems 的 Vulkan Examples：`base/` 放基类与设备封装，`examples/` 下 **82 个目录各一个 `.cpp`**，GLSL 集中在 `data/shaders/glsl/<name>/`（构建期由 `compileshaders.py` 转 SPIR-V）。第 14 / 15 章分别迁过 7 个和 5 个示例，但从未做过全量对照。本章先把 82 个逐个点名，再补掉 15.7 里挂了两轮的两项框架能力，并新增 3 个示例（test38–test40，示例总数 37→40）。
+
+### 28.1 逐个盘点：82 个示例的迁移状态
+
+状态口径：
+
+| 状态 | 含义 |
+| --- | --- |
+| **A 直接迁移** | 本仓库有同名/明确对应的示例，且确实来自该 Vulkan-Samples 目录（见 14.4 / 15.4 / 16 / 17 / 21） |
+| **B 间接覆盖** | 主题由 LearnOpenGL 同类示例或框架内建能力覆盖，但没有按这个目录单独迁移 |
+| **C 本轮新增** | 本章新迁（test38–test40） |
+| **D 未迁移** | 无对应实现，按原因归到 28.6 的缺口表 |
+
+统计：**A 16 / B 28 / C 3 / D 35 = 82**。下表按目录字母序逐项列出（编号即 `ls -d examples/*/` 的顺序）：
+
+| # | 示例 | 状态 | 对应 / 原因 |
+| --- | --- | --- | --- |
+| 1 | bloom | B | test28 bloom（LearnOpenGL）+ test34 mip 链 bloom |
+| 2 | computecloth | D | compute 布料约束求解，未迁移 |
+| 3 | computecullandlod | D | compute 剔除 + 间接派发 + LOD，未迁移 |
+| 4 | computeheadless | D | 无窗口 compute，框架以 `IUnifiedWindow` 为前提 |
+| 5 | computenbody | D | compute N-body，未迁移 |
+| 6 | computeparticles | D | compute 粒子，未迁移 |
+| 7 | computeraytracing | D | 纯 compute 光线追踪，未迁移 |
+| 8 | computeshader | B | test33 compute_shader（LearnOpenGL guest 2022，存储图像） |
+| 9 | conditionalrender | D | `VK_EXT_conditional_rendering` |
+| 10 | conservativeraster | D | `VK_EXT_conservative_rasterization` |
+| 11 | debugmarker | D | `VK_EXT_debug_marker` 对象命名；框架走 `GraphicsDebugger` |
+| 12 | deferred | A | test9（14.4） |
+| 13 | deferredmultisampling | B | breakout 的离屏 MSAA + resolve（27.2）已具备能力，独立示例未迁 |
+| 14 | deferredshadows | D | 延迟 + 阴影组合，未迁移 |
+| 15 | descriptorindexing | D | `VK_EXT_descriptor_indexing` / bindless |
+| 16 | descriptorsets | B | 框架 `DescriptorLayoutAtlas::makeSet` 全示例在用 |
+| 17 | displacement | B | test25 heightmap_terrain / test11 terraintessellation |
+| 18 | distancefieldfonts | B | test36 图集文字（非 SDF） |
+| 19 | dynamicrendering | D | `VK_KHR_dynamic_rendering`；框架全基于 `VkRenderPass` |
+| 20 | dynamicstate | D | `VK_EXT_extended_dynamic_state` 系列 |
+| 21 | dynamicuniformbuffer | B | 框架 UBO 每帧更新（`UpdateDescriptorResourceData`） |
+| 22 | gears | D | 纯渲染演示/基准，无对应能力缺口 |
+| 23 | geometryshader | A | test7（14.4） |
+| 24 | gltfloading | A | test10（14.4） |
+| 25 | gltfscenerendering | A | test13（14.4） |
+| 26 | gltfskinning | A | test23 skeletal_animation（21） |
+| 27 | graphicspipelinelibrary | D | `VK_EXT_graphics_pipeline_library` |
+| 28 | hdr | B | test27 hdr（LearnOpenGL 5.advanced_lighting） |
+| 29 | imgui | D | ImGui 集成（base 的 `VulkanUIOverlay`）；框架无 UI 层 |
+| 30 | indirectdraw | D | `vkCmdDrawIndirect` 间接绘制 |
+| 31 | inlineuniformblocks | D | `VK_EXT_inline_uniform_block` |
+| 32 | inputattachments | B | `InputAttachmentView` 已就绪（16.2），独立示例待迁 |
+| 33 | instancing | **C** | **test40（28.3）** |
+| 34 | meshshader | D | `VK_EXT_mesh_shader` |
+| 35 | multisampling | B | 框架 `SimpleAttachmentDetail::eMSAA` + breakout resolve |
+| 36 | multithreading | A | test12（14.4） |
+| 37 | multiview | D | `VK_KHR_multiview` |
+| 38 | negativeviewportheight | B | `MakeCameraMatrix()` 的 Vulkan Y 翻转（26.4 讲透） |
+| 39 | occlusionquery | **C** | **test38（28.2）** |
+| 40 | offscreen | B | test3 offscreen（自有同主题「渲染到纹理」） |
+| 41 | oit | A | test22（20） |
+| 42 | parallaxmapping | A | test17（15.4） |
+| 43 | particlefire | B | test5 particle / test37 粒子尾迹 |
+| 44 | pbrbasic | B | test35 area_lights（PBR 方向） |
+| 45 | pbribl | B | test35 / test34 |
+| 46 | pbrtexture | B | test35 |
+| 47 | pipelines | B | 框架 `GraphicsPipeline` / `CreatePipeline` |
+| 48 | pipelinestatistics | **C** | **test39（28.2）** |
+| 49 | pushconstants | B | 框架 `setPushConstant`（test1 等普遍使用） |
+| 50 | pushdescriptors | D | `VK_KHR_push_descriptor` |
+| 51 | radialblur | B | test28 / test34 bloom 类后处理 |
+| 52 | rayquery | D | `VK_KHR_ray_query` |
+| 53 | raytracingbasic | D | `VK_KHR_ray_tracing_pipeline` + AS/SBT |
+| 54 | raytracingcallable | D | 同上（callable shader） |
+| 55 | raytracingreflections | D | 同上 |
+| 56 | raytracingsbtdata | D | 同上（shader binding table） |
+| 57 | raytracingshadows | D | 同上 |
+| 58 | renderheadless | D | 无窗口离线渲染输出 |
+| 59 | screenshot | B | 框架 `--dump` / `ImageReadback`（13.4 / 16.2） |
+| 60 | shadowmapping | B | test30 shadow_mapping（LearnOpenGL 3.1.x） |
+| 61 | shadowmappingcascade | B | test26 csm（LearnOpenGL guest 2021） |
+| 62 | shadowmappingomni | B | test31 point_shadow（LearnOpenGL 3.2.x） |
+| 63 | specializationconstants | B | test8 tessellation 已用 specialization constant |
+| 64 | sphericalenvmapping | B | test15 texturecubemap |
+| 65 | ssao | B | test32 ssao（LearnOpenGL SSAO） |
+| 66 | stencilbuffer | A | test20 stencil（17） |
+| 67 | subpasses | A | test19（16） |
+| 68 | terraintessellation | A | test11（14.4） |
+| 69 | tessellation | A | test8（14.4） |
+| 70 | textoverlay | B | test36 text_rendering（LearnOpenGL 7.in_practice/2） |
+| 71 | texture | A | test14（15.4） |
+| 72 | texture3d | A | test18（15.4） |
+| 73 | texturearray | A | test16（15.4） |
+| 74 | texturecubemap | A | test15（15.4） |
+| 75 | texturecubemaparray | D | cube array 视图（`TextureImage` 支持 array/cube 但未组合） |
+| 76 | texturemipmapgen | D | 独立 `eSampler` 描述符 + 运行时 mip 生成（15.7 仍是硬前置） |
+| 77 | texturesparseresidency | D | 稀疏 residency |
+| 78 | triangle | B | test1 simplest（最小程序，主题相近） |
+| 79 | variablerateshading | D | `VK_KHR_fragment_shading_rate` |
+| 80 | vertexattributes | D | 多 binding 前置已由 28.3 补齐，示例待迁 |
+| 81 | viewportarray | D | 多视口（15.7 待补） |
+| 82 | vulkanscene | D | 大型多模型场景演示，未迁移 |
+
+`base/` 的 25 个文件也逐个对照过，绝大多数能力在第 14 章重写框架时就已经有对应物：
+
+| base 文件 | 职责 | render_demo 对应 |
+| --- | --- | --- |
+| `vulkanexamplebase.h/.cpp`（89 KB） | 窗口/设备/交换链/命令缓冲/主循环/相机 | `RenderManager::Create` + `LoopSequence` + `GLFWwindow`（14.1） |
+| `VulkanDevice.h/.cpp` | 物理设备、队列族、特性/扩展、内存 | `PhysicalDeviceUtils` + `RenderManager::createDevice` + `DeviceMemoryAllocator` |
+| `VulkanSwapChain.h/.cpp` | swapchain / acquire / present | `SwapChain` |
+| `VulkanBuffer.h/.cpp` | buffer 封装 | `BufferObject` + `ShaderAssetGroup` |
+| `VulkanTexture.h/.cpp` | 2D / array / cube / 3D 纹理、mip | `TextureImage` + `KtxLoader` + `TextureLoader`（15.2） |
+| `VulkanFrameBuffer.hpp` | framebuffer 与附件 | `BasicRenderPass` + `IAttachmentDetail` / `SimpleAttachmentDetail` |
+| `VulkanInitializers.hpp`（30+ 助手） | 手填 create-info | `DescriptorLayoutAtlas::makeSet` / `GraphicsPipelineConfig` / `AttachmentDetailConfig` |
+| `VulkanDebug.h/.cpp` | 校验层、debug messenger | `GraphicsDebugger` |
+| `VulkanTools.h/.cpp` | 格式查询、barrier、文件工具 | `DeviceResourceUtils` / `ImageReadback` / `ImageDump` |
+| `VulkanglTFModel.h/.cpp`（68 KB） | glTF 模型/材质/节点 | `IModelLoader` 注册表 + `GltfModelLoader` + `ModelAsset`（18） |
+| `VulkanHeightmap.hpp` | 高度图加载 | test25 示例侧程序化高度场 |
+| `VulkanUIOverlay.h/.cpp` | ImGui overlay | **无**（D 类 `imgui`） |
+| `VulkanRaytracingSample.h/.cpp` | RT 基类（AS/SBT） | **无**（D 类 7 个 ray tracing 示例） |
+| `VulkanAndroid.h/.cpp` | Android 平台桥接 | **无**（框架仅桌面 GLFW） |
+| `camera.hpp` / `frustum.hpp` / `keycodes.hpp` | 相机/视锥/键码 | `Camera.h` / `Frustum.h` / `GLFWwindow` |
+| `threadpool.hpp` / `benchmark.hpp` | 线程池 / 基准计时 | test12 的 `SecondaryRecorder`（14.4）/ `SequenceBase` 的 timestamp 池 |
+
+结论：**框架侧的通用能力已经基本对齐**，剩余 35 个未迁移示例几乎全是「设备扩展 / 光线追踪 / headless / UI」这类需要新子系统的方向，不是 `base` 缺封装。真正挂在 15.7 上、可以低成本补齐的是查询池与多 vertex binding 两项——本轮补掉。
+
+### 28.2 框架能力一：通用查询池（occlusion + pipeline statistics）
+
+`SequenceBase` 早就有一个内建的 timestamp 池（`CreateTimestampQueryPool` / `LogExecutionTime`），但 occlusion 和 pipeline-statistics 两类查询一直缺。本轮新增：
+
+| 文件 | 内容 |
+| --- | --- |
+| `src/QueryPool.h/.cpp` | `QueryPool::Create(device, Kind, queryCount, statistics)`，RAII 销毁；`counterCount()` 对 occlusion 是 1、对 pipeline-statistics 是「置位统计项个数」；`fetch()` 用 `eWithAvailability` 非阻塞、`fetchBlocking()` 用 `eWait` 取精确值 |
+| `src/CmdOpQuery.h` | `CmdOpQuery` 继承 `CmdOpBase`，`Phase::{eReset,eBegin,eEnd}` 三个 op 分别录 `resetQueryPool` / `beginQuery` / `endQuery` |
+| `src/typedefs.h` / `RenderManager.cpp` / `PhysicalDeviceUtils.cpp` | `DeviceRequirement::pipelineStatisticsQuery`，把「选设备时校验支持 → `vkCreateDevice` 时置 `VkPhysicalDeviceFeatures::pipelineStatisticsQuery`」两步联动起来；occlusion 查询不需要任何 device feature |
+
+**录制位置的硬约束**（踩过就会 VUID 满天飞）：`vkCmdResetQueryPool` 只能在 render pass **外**，`beginQuery`/`endQuery` 必须成对且包住被测量的 draws、`CmdSyncDevice` 的 staging→device 拷贝也只能在 render pass 外。所以每帧顺序是：
+
+```
+beginRecording → record(resetQuery) → record(所有 frameSync) →
+recordPass([ beginQuery → draws → endQuery ]) → endRecording →
+submitFrame → fetchBlocking → presentFrame
+```
+
+结果每帧用 `VK_QUERY_RESULT_WAIT_BIT` 阻塞读取（与参考的 `getQueryResults()` 一致），这样下一帧的 `resetQueryPool` 不会和 GPU 正在写的结果竞争；代价是每帧等一次 GPU，对调试/验证示例可以接受。生产场景改用 `fetch()` + 延迟一帧读取即可。
+
+两个示例：
+
+- **test38 `occlusion_query`**（参考 `examples/occlusionquery`）：一个遮挡板先写入深度，两个测试物体各包一个 occlusion query。物体 A 完全在板后 → 0；物体 B 在板旁 → 非 0。`--no-occluder` 移走遮挡板后两个查询都非 0。`--verify` 校验这个关系。
+- **test39 `pipeline_statistics`**（参考 `examples/pipelinestatistics`）：单 query 开启 6 个统计位（IA vertices / IA primitives / VS invocations / clipping invocations / clipping primitives / FS invocations）。`--objects N` 画 N 个非索引立方体，`--verify` 把前 3 个计数器与 CPU 预测 `36*N` / `12*N` / `36*N` 逐项对拍。结果数组按统计位从低到高排列，这正是 `QueryPool::counterCount()` 与示例下标约定的依据。
+
+实测（800×600）：
+
+| 项 | 结果 |
+| --- | --- |
+| occlusion 有遮挡 | `hiddenSamples=0`、`visibleSamples=13366`，`--verify` 通过 |
+| occlusion 无遮挡 | `hiddenSamples=12978`、`visibleSamples=13366`，画面差 124460 / 480000 px（25.9%） |
+| statistics N=1 / 3 / 4 | IA vertices `36 / 108 / 144`，primitives `12 / 36 / 48`，VS invocations `36 / 108 / 144`，均精确匹配；FS invocations `12212 / 33876 / 46088` |
+| 确定性 | 两个示例两次同参数 dump MD5 分别相同（`b7f2d736…` / `3a42c7f6…`） |
+| Validation | 全部 0 VUID |
+
+### 28.3 框架能力二：多 vertex binding 与输入资源回读
+
+15.7 里「多 vertex binding（逐实例属性）」一直挂着：`VertexInputAtlas` 只有单 binding、`ShaderAssetGroup` 按 `ResourceTypes` 一个类型只存一份资源。本轮用**向后兼容**的方式打通：
+
+| 改动 | 说明 |
+| --- | --- |
+| `ResourceTypes::eInstanceVertex`（`0x106`） | 新的 input 类型 key，于是 `m_inputResources` 能同时持有普通 VBO 与逐实例 VBO |
+| `BufferObject::primaryUsageFlags` / `bindToPipeline` | `eInstanceVertex` 用 `eVertexBuffer` 用法、绑定到 **binding 1**（旧 `eVertex` 仍绑 0） |
+| `IVertexInputStateGroup` 三个带默认值的虚方法 | `hasInstanceBinding()` / `instanceVertexCount()` / `instanceVertexByteSize()`，旧实现零改动 |
+| `VertexInputStateConfig.h` 的 `InstanceData`（48 B）/ `VertexInstanceComponent` | 四个 vec3（position/rotation/scale/color）；`VertexInputAtlas` 在 binding 1 追加 `eInstance` 输入率的绑定描述，location 紧接逐顶点属性连续编号 |
+| `RenderManager::CreatePipeline` | 检测到实例 binding 时多建一份 `eInstanceVertex` 设备缓冲，`ShaderAssetGroup::SyncDataToDevice` 自动把它一起同步 |
+| `ShaderAssetGroup` + `OnceSequence` | **输入资源回读**：此前 `ReadBack` 只认 descriptor 资源；补上 `InputResource` / `RecordInputResourceReadback` / `ReadStagedInputResource` 和 `OnceSequence::ReadBack(asset, ResourceTypes, size)` |
+
+`instanceVertexCount` 是**容量**、`instanceCount` 是 draw 的实例数，两者分开：`instancing` 一次上传 4096 条记录，`--instances N` 只改 draw count，切换 N 不需要重新分配或重传缓冲。
+
+**test40 `instancing`**（参考 `examples/instancing`）：binding 0 是 36 顶点立方体、binding 1 是逐实例变换/颜色，一次 `vkCmdDraw` 画 N 个立方体；固定种子 `std::mt19937` 生成布局保证 dump 可复现。shader 的 location 0..3 / 4..7 与 `VertexInputAtlas` 的编号严格对应。
+
+实测：
+
+| 项 | 结果 |
+| --- | --- |
+| `--verify` | 回读逐实例 VBO `512 × 48 B`，与 CPU 数组逐字节相同（新回读路径生效） |
+| `--instances 1 / 64 / 512 / 4096` | 帧均值 `0.2482 / 0.2597 / 0.3260 / 0.5035`；相对 512 的像素差 `89529 / 78198 / — / 257013`（共 480000 px） |
+| 画面 | 目视确认 512 个彩色立方体散布、逐实例旋转/缩放/颜色与方向光均正确 |
+| 确定性 | seed 7 两次 dump MD5 同为 `cbb2188c…`；seed 99 为 `3559b9e0…` |
+| Validation | 0 VUID |
+
+### 28.4 三个新示例一览
+
+| 示例 | 主程序 | 查询/绑定 | CLI |
+| --- | --- | --- | --- |
+| occlusion_query | test38.cpp | 2 × occlusion query | `--no-occluder` / `--verify` / `--stats` / `--frames` / `--dump` / `--dump-after` |
+| pipeline_statistics | test39.cpp | 1 × pipeline-statistics query（6 计数器） | `--objects 1..4` / `--verify` / `--stats` / `--dump` |
+| instancing | test40.cpp | 2 个 vertex binding（0 逐顶点、1 逐实例） | `--instances 1..4096` / `--seed` / `--verify` / `--stats` / `--dump` |
+
+三者共用同一套约定：固定 `--frames` 上限、`--dump` 在 `--dump-after` 帧抓交换链帧后退出、`--verify` 做 GPU/CPU 对拍、固定种子保证两次运行逐字节相同。shader 都是构建期由 `vulkan_compile_shader` 编成 `shader/*.hpp`。
+
+### 28.5 构建与验证状态
+
+| 项 | 结果 |
+| --- | --- |
+| 全量构建 | **40 个示例** + `myEngine` + `example_common`：0 error；链接阶段仍有仓库原有的 `LNK4098` 警告，与本轮改动无关 |
+| 新示例 | 三个 `--verify` 全通过；`--dump` PPM 均值与目视检查见 28.2 / 28.3；确定性 MD5 两次一致 |
+| 开关差异 | occlusion `--no-occluder` 25.9% 像素；statistics `--objects` 计数线性；instancing `--instances` 画面覆盖率单调上升 |
+| Validation | 三个新示例各 0 VUID；40 个示例全量回归 0 VUID（见下表） |
+
+全量回归按 `--dump --dump-after 1` 逐个跑（不支持该开关的用短窗口超时），统计每个日志里的 `VUID|Validation Error`：
+
+| 项 | 结果 |
+| --- | --- |
+| 示例数 | 40 / 40 完成冒烟，`occlusion_query` / `pipeline_statistics` / `instancing` 均走 `--dump --dump-after 1` 正常产出 PPM 后退出 |
+| VUID / Validation Error | 全部 0 |
+| 非 0 退出码 | 12 个不接受 dump 开关的窗口类示例被 `timeout` 主动终止（rc=124，表示持续渲染）；无崩溃、无异常退出 |
+
+### 28.6 剩余缺口与限制
+
+| 缺口 | 阻塞的 D 类示例 | 说明 |
+| --- | --- | --- |
+| 光线追踪子系统（AS / SBT / RT pipeline） | computeraytracing、rayquery、raytracingbasic/callable/reflections/sbtdata/shadows（7） | `base/VulkanRaytracingSample.*` 整套没有对应物；框架连 `DeviceRequirement` 里的 RT 特性都还没接 |
+| 设备扩展与动态管线状态 | conditionalrender、conservativeraster、descriptorindexing、dynamicrendering、dynamicstate、graphicspipelinelibrary、inlineuniformblocks、meshshader、multiview、pushdescriptors、variablerateshading、texturesparseresidency（12） | 多数要 `pNext` 链与扩展入口；`dynamicrendering` 更是要求绕过 `VkRenderPass`，与 `IRenderPass` 抽象冲突 |
+| 间接绘制 / 多视口 / 独立 sampler / 运行时 mip | indirectdraw、viewportarray、texturemipmapgen（+ specializationconstants/viewportarray 的多视口）、vertexattributes（4） | 15.7 剩下的硬前置；`vertexattributes` 的多 binding 前置已由 28.3 补齐 |
+| compute 家族与组合场景 | computecloth、computecullandlod、computenbody、computeparticles、deferredshadows、vulkanscene（6） | 框架已有 `ComputePipeline` / `CmdOpComputeDispatch`，缺的是多缓冲乒乓与间接派发 |
+| headless / UI / 纯演示 | computeheadless、renderheadless、imgui、debugmarker、gears（5） | 框架以 `IUnifiedWindow` + GLFW 为前提，且没有 UI 层；与渲染能力正交 |
+| 查询池实现边界 | — | 只覆盖 occlusion / pipeline-statistics；timestamp 仍是 `SequenceBase` 的旧池；每帧 WAIT 阻塞读取未做延迟异步化 |
+| 多 binding 实现边界 | — | 固定绑定 0（逐顶点）+ 1（逐实例）、固定 `InstanceData` 48 B stride；更多槽位或自定义 stride 要继续扩展 `VertexInputAtlas` |
+| 窗口缩放 | — | 三个新示例都用固定 800×600 启动 extent，与参考一致；resize 时投影按当前 extent 重算，但离屏/查询资源未重建 |

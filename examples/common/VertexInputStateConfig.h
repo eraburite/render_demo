@@ -37,15 +37,51 @@ inline constexpr auto VertexComponentTable = std::make_tuple(
     // R32G32B32A32 read would pull 4 bytes past the end of the last vertex.
     VertexComponentSpec{VertexComponent::eTangent, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, tangent), 12});
 
+// ---- binding 1: per-instance stream --------------------------------------
+// The Vulkan-Samples `instancing` example uses a separate vertex buffer whose
+// input rate is VK_VERTEX_INPUT_RATE_INSTANCE.  It is declared here as a first
+// class vertex-input option rather than an SSBO, so the same pipeline can be
+// drawn with vkCmdDraw(..., instanceCount, ...) with no descriptor churn.
+struct InstanceData {
+    glm::vec3 position{};
+    glm::vec3 rotation{};
+    glm::vec3 scale{1.0f};
+    glm::vec3 color{1.0f};
+};
+static_assert(sizeof(InstanceData) == 48, "InstanceData must be four vec3 (48 B)");
+
+enum class VertexInstanceComponent { ePosition, eRotation, eScale, eColor };
+
+struct VertexInstanceComponentSpec {
+    VertexInstanceComponent component;
+    vk::Format format;
+    uint32_t offset;
+    uint32_t size;
+};
+
+inline constexpr auto VertexInstanceComponentTable = std::make_tuple(
+    VertexInstanceComponentSpec{VertexInstanceComponent::ePosition, vk::Format::eR32G32B32Sfloat,
+                          offsetof(InstanceData, position), 12},
+    VertexInstanceComponentSpec{VertexInstanceComponent::eRotation, vk::Format::eR32G32B32Sfloat,
+                          offsetof(InstanceData, rotation), 12},
+    VertexInstanceComponentSpec{VertexInstanceComponent::eScale, vk::Format::eR32G32B32Sfloat,
+                          offsetof(InstanceData, scale), 12},
+    VertexInstanceComponentSpec{VertexInstanceComponent::eColor, vk::Format::eR32G32B32Sfloat,
+                          offsetof(InstanceData, color), 12});
+
 // Concrete vertex input group.  location follows the listed component order.
 class VertexInputAtlas : public IVertexInputStateGroup {
 public:
     VertexInputAtlas(uint32_t binding, std::vector<VertexComponent> components, uint32_t vertexCount = 0,
                      uint32_t indexCount = 0, DataTypes indexType = DataTypes::eUnsignedInt,
-                     bool emptyInput = false, uint32_t drawVertexCount = 0, uint32_t instanceCount = 1) :
+                     bool emptyInput = false, uint32_t drawVertexCount = 0, uint32_t instanceCount = 1,
+                     std::vector<VertexInstanceComponent> instanceComponents = {},
+                     uint32_t instanceVertexCount = 0) :
         m_binding(binding), m_components(std::move(components)), m_vertexCount(vertexCount),
         m_indexCount(indexCount), m_indexType(indexType), m_emptyInput(emptyInput),
-        m_drawVertexCount(drawVertexCount), m_instanceCount(instanceCount)
+        m_drawVertexCount(drawVertexCount), m_instanceCount(instanceCount),
+        m_instanceComponents(std::move(instanceComponents)),
+        m_instanceVertexCount(instanceVertexCount == 0 ? instanceCount : instanceVertexCount)
     {
         rebuildInputState();
     }
@@ -56,7 +92,8 @@ public:
         IVertexInputStateGroup(), m_binding(other.m_binding), m_components(other.m_components),
         m_vertexCount(other.m_vertexCount), m_indexCount(other.m_indexCount), m_indexType(other.m_indexType),
         m_emptyInput(other.m_emptyInput), m_drawVertexCount(other.m_drawVertexCount),
-        m_instanceCount(other.m_instanceCount)
+        m_instanceCount(other.m_instanceCount), m_instanceComponents(other.m_instanceComponents),
+        m_instanceVertexCount(other.m_instanceVertexCount)
     {
         rebuildInputState();
     }
@@ -74,6 +111,9 @@ public:
     // constructor's default of 1 is what keeps a plain single-instance draw
     // working without every caller spelling it out.
     uint32_t drawInstanceCount() const override { return m_instanceCount; }
+    bool hasInstanceBinding() const override { return !m_instanceComponents.empty(); }
+    uint32_t instanceVertexCount() const override { return m_instanceVertexCount; }
+    uint32_t instanceVertexByteSize() const override { return static_cast<uint32_t>(sizeof(InstanceData)); }
 
     // The vertex input state does not encode the instance count (it is a draw
     // parameter), so no rebuild is needed here.
@@ -114,6 +154,30 @@ private:
                 VertexComponentTable);
         }
 
+        if (!m_instanceComponents.empty()) {
+            // Binding 1 is per-instance.  Locations continue right after the
+            // per-vertex ones, so the shader declares the same flat layout.
+            constexpr uint32_t kInstanceBinding = 1;
+            vk::VertexInputBindingDescription instanceBindingDesc{};
+            instanceBindingDesc.binding = kInstanceBinding;
+            instanceBindingDesc.stride = sizeof(InstanceData);
+            instanceBindingDesc.inputRate = vk::VertexInputRate::eInstance;
+            m_bindings.push_back(instanceBindingDesc);
+
+            for (auto component : m_instanceComponents) {
+                std::apply(
+                    [&](auto &&...row) {
+                        ((row.component == component
+                              ? (m_attributes.push_back(vk::VertexInputAttributeDescription(
+                                     location++, kInstanceBinding, row.format, row.offset)),
+                                 true)
+                              : false),
+                         ...);
+                    },
+                    VertexInstanceComponentTable);
+            }
+        }
+
         m_inputState = vk::PipelineVertexInputStateCreateInfo{};
         m_inputState.setVertexBindingDescriptionCount(static_cast<uint32_t>(m_bindings.size()))
             .setPVertexBindingDescriptions(m_bindings.data())
@@ -129,6 +193,8 @@ private:
     bool m_emptyInput = false;
     uint32_t m_drawVertexCount = 0;
     uint32_t m_instanceCount = 1;
+    std::vector<VertexInstanceComponent> m_instanceComponents;
+    uint32_t m_instanceVertexCount = 1;
 
     std::vector<vk::VertexInputBindingDescription> m_bindings;
     std::vector<vk::VertexInputAttributeDescription> m_attributes;

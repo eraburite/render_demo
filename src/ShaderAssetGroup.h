@@ -43,6 +43,13 @@ public:
     std::shared_ptr<IDeviceResource> DescriptorResource(ResourceKey key) const;
     std::shared_ptr<IDeviceResource> DescriptorResource(ResourceId id, uint32_t frame) const;
 
+    // Input resources (VBO / IBO / per-instance VBO) can be read back too.
+    // Descriptor readback was the only path until the instancing example needed
+    // to prove that binding 1 really holds the CPU's instance array (see 28.3).
+    std::shared_ptr<IDeviceResource> InputResource(ResourceTypes type) const;
+    void RecordInputResourceReadback(ResourceTypes type, const vk::CommandBuffer &cmd);
+    std::vector<std::byte> ReadStagedInputResource(ResourceTypes type);
+
     void RecordDescriptorResourceReadback(ResourceKey key, const vk::CommandBuffer &cmd, uint32_t frame);
     std::vector<std::byte> ReadStagedDescriptorResource(ResourceKey key);
 

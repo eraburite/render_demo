@@ -82,6 +82,9 @@ struct DeviceRequirement {
     bool geometryShader = false;
     bool tessellationShader = false;
     bool fillModeNonSolid = false;
+    // VK_QUERY_TYPE_PIPELINE_STATISTICS needs the feature enabled at device
+    // creation; occlusion queries need no feature at all (see 28.2).
+    bool pipelineStatisticsQuery = false;
     bool samplerAnisotropy = true;
     // Per-color-attachment blend factors.  Enabled by default: it is required by
     // weighted-blended OIT (an additive target next to a multiplicative one in
@@ -129,6 +132,10 @@ enum class ResourceTypes {
     eStorage = 3 | eCategoryDescriptor,
     eTexture = 4 | eCategoryDescriptor,
     ePushConst = 5 | eCategoryConstants,
+    // Second vertex buffer bound at binding 1 with eInstance input rate.  A
+    // distinct ResourceTypes key lets ShaderAssetGroup own it alongside the
+    // ordinary eVertex VBO (see 28.3).
+    eInstanceVertex = 6 | eCategoryInput,
 };
 
 template <class T>

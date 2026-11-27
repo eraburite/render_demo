@@ -244,3 +244,37 @@ std::vector<std::byte> ShaderAssetGroup::ReadStagedDescriptorResource(ResourceKe
     std::memcpy(result.data(), mapped, byteSize);
     return result;
 }
+
+std::shared_ptr<IDeviceResource> ShaderAssetGroup::InputResource(ResourceTypes type) const
+{
+    const auto it = m_inputResources.find(type);
+    return it == m_inputResources.end() ? nullptr : it->second;
+}
+
+void ShaderAssetGroup::RecordInputResourceReadback(ResourceTypes type, const vk::CommandBuffer &cmd)
+{
+    const std::shared_ptr<IDeviceResource> resource = InputResource(type);
+    if (!resource) {
+        return;
+    }
+    // OnReadbackRequested rebuilds the host-visible staging copy that
+    // OnUploadCompleted released after the initial upload.
+    resource->OnReadbackRequested();
+    resource->recordCopyFromDeviceToStaging(cmd);
+}
+
+std::vector<std::byte> ShaderAssetGroup::ReadStagedInputResource(ResourceTypes type)
+{
+    const std::shared_ptr<IDeviceResource> resource = InputResource(type);
+    if (!resource) {
+        return {};
+    }
+    const size_t byteSize = resource->MappedByteSize();
+    const void *mapped = resource->MappedData();
+    if (byteSize == 0 || mapped == nullptr) {
+        return {};
+    }
+    std::vector<std::byte> result(byteSize);
+    std::memcpy(result.data(), mapped, byteSize);
+    return result;
+}
