@@ -14,9 +14,9 @@
 | 图形 API | Vulkan 1.3，使用 `vulkan.hpp`；创建/查询接口统一显式检查 `vk::Result` |
 | 窗口 / 输入 | GLFW（`IUnifiedWindow` 抽象，示例使用 `GLFWwindow`） |
 | 数学库 | GLM |
-| 资源加载 | `stb_image` 解码；`tinygltf`（glTF/GLB）、`tiny_obj_loader`（OBJ/MTL）、KTX 1.0 解析器、assimp（`.dae/.fbx` 等，运行期动态绑定，可选，见 19.2） |
+| 资源加载 | `stb_image` 解码；`tinygltf`（glTF/GLB）、`tiny_obj_loader`（OBJ/MTL）、KTX 1.0 解析器、assimp（`.dae/.fbx` 等，运行期动态绑定，可选，见 19.2）、手写 MMD（PMX/PMD/VMD）与 DirectX X 文本解析器（见 29） |
 | 构建 | CMake ≥ 3.22，需 `glslangValidator` 编译着色器并转成 `*.hpp` 字节码头 |
-| 目标产物 | `myEngine` 静态库 + `example_common` + **40 个**可执行示例（simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb，迁移示例 test7..test40，见 14–28） |
+| 目标产物 | `myEngine` 静态库 + `example_common` + **41 个**可执行示例（simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb，迁移示例 test7..test41，见 14–29） |
 
 依赖约定（由根 `CMakeLists.txt` 的 `globalConfig` 接口目标统一提供）：`src/`、`examples/common/`、`external/`、`external/glm/include`、`external/glfw/include`、`build_vs/generated`。
 
@@ -97,7 +97,17 @@ render_demo/
 │   │   ├── DebugViewMode.h             # 调试视图枚举 + push constant + 按键状态（见 13.2）
 │   │   ├── ImageDump.h/.cpp            # 中间结果编码 + PPM 存盘 + --capture/--view 解析（见 13.4）
 │   │   ├── ModelAsset.h/.cpp           # 加载器中立的数据层：MeshVertex/Material/Primitive/Mesh/ModelNode/Skin/AnimationClip/Model（见 18/21）
-│   │   ├── ModelLoader.h/.cpp          # IModelLoader + 注册表 + 统一后处理链（见 18.2）
+│   │   ├── ModelLoader.h/.cpp          # IModelLoader 策略 + 插件注册表 + magic 嗅探分派（见 18.2 / 29.2）
+│   │   ├── ModelLoaderPlugin.h        # ModelLoaderDescriptor / ModelLoaderRegistrar（RAII 自注册，见 29.2）
+│   │   ├── ModelPostProcess.h/.cpp    # PostProcessPipeline：可插拔有序步骤 + 模板方法钩子（见 29.2）
+│   │   ├── BuiltinModelLoaders.cpp    # 内置加载器工厂表：新增格式唯一需要改的一行（见 29.2）
+│   │   ├── ModelBuilder.h             # Builder：统一构造 Model 的自包含 primitive 索引窗口（见 29.2）
+│   │   ├── ModelBinaryReader.h        # MMD 小端安全读取 / 变长索引 / UTF-16LE / Shift-JIS（见 29.3）
+│   │   ├── ModelFormatsCommon.h       # Phong→PBR 材质语义、side-car 贴图、动画名字绑定（见 29.3）
+│   │   ├── PmxModelLoader.h/.cpp      # PMX 2.0/2.1（BDEF1/2/4/SDEF/QDEF 骨骼权重，见 29.4）
+│   │   ├── PmdModelLoader.h/.cpp      # PMD（定长 SJIS 字段 + 双骨骼权重，见 29.4）
+│   │   ├── XFileModelLoader.h/.cpp    # DirectX X 文本（Frame 层级 + Mesh/MaterialList，见 29.4）
+│   │   ├── VmdAnimationLoader.h/.cpp  # VMD 动画（按骨骼名的 AnimationChannel，见 29.4）
 │   │   ├── GltfModelLoader.h/.cpp      # glTF/GLB 加载器（tinygltf + stb_image 的唯一实现 TU）
 │   │   ├── ObjModelLoader.h/.cpp       # OBJ/MTL 加载器（tiny_obj_loader，见 18.4）
 │   │   ├── AssimpModelLoader.h/.cpp    # assimp 加载器（运行期动态绑定 DLL，含骨骼/动画读取，见 19.2 / 21.2）
@@ -135,14 +145,17 @@ render_demo/
 │   ├── breakout/{test37.cpp,shader/}                        # 2D 打砖块：离屏 MSAA + 实例化精灵 + 后处理（见 27）
 │   ├── occlusion_query/{test38.cpp,shader/}                # 遮挡查询：深度剔除后统计通过样本数（见 28.2）
 │   ├── pipeline_statistics/{test39.cpp,shader/}            # 管线统计查询：6 个计数器与 CPU 绘制表对拍（见 28.2）
-│   └── instancing/{test40.cpp,shader/}                     # 双 vertex binding：binding 1 逐实例属性（见 28.3）
+│   ├── instancing/{test40.cpp,shader/}                     # 双 vertex binding：binding 1 逐实例属性（见 28.3）
+│   └── model_formats/{test41.cpp,shader/}                  # PMX/PMD/XFile/VMD 加载框架与验证（见 29）
 ├── data/                               # 示例运行期资源，统一由 assetPath() 相对 PROJECT_ROOT_PATH 解析
 │   ├── levels/{one,two,three,four}.lvl  # Breakout 的四张关卡（见 27.7）
 │   ├── textures/breakout/               # 12 张精灵/粒子贴图（见 27.3）
 │   ├── fonts/Antonio-Bold.ttf           # 26 的 FreeType 字体
+│   ├── models/formats/{sample.pmx,sample.pmd,sample.x,sample.vmd}  # 29 的合成测试资源
 │   └── models/vampire/                  # 21 的蒙皮模型与贴图
 ├── assets/ltc/{ltc1.f32,ltc2.f32}    # LTC 1/2 查找表（64×64 RGBA32F 小端，各 64 KB，见 25.4）
 ├── tools/gltf2obj.py               # glTF -> OBJ 导出，用于生成往返验证资源（见 18.5）
+├── tools/gen_model_formats.py      # 生成 29 的四个合成模型（可复现、无版权、见 29.5）
 └── build_vs/                       # Visual Studio 构建目录（含各示例可执行程序）
 ```
 
@@ -908,6 +921,9 @@ dstAccess = MemoryRead | ColorRead | ColorWrite | DepthStencilAttachmentWrite
 | 扩展 | `src/typedefs.h` + `src/BufferObject.cpp` + `src/IVertexInputStateGroup.h` + `examples/common/VertexInputStateConfig.h` + `src/RenderManager.cpp` | **多 vertex binding**：新增 `ResourceTypes::eInstanceVertex`（binding 1、`eInstance` 输入率），`VertexInputAtlas` 可声明逐实例属性并与逐顶点 location 连续编号；`CreatePipeline` 自动多建一份设备缓冲。全部默认关闭，旧示例零改动（见 28.3） |
 | 扩展 | `src/ShaderAssetGroup.h/.cpp` + `src/OnceSequence.h/.cpp` | **输入资源回读**：此前只有 descriptor 资源能 `ReadBack`；补齐 `InputResource` / `RecordInputResourceReadback` / `ReadStagedInputResource` 与 `OnceSequence::ReadBack(asset, ResourceTypes, ...)`，逐实例 VBO 才能与 CPU 数组逐字节对拍（见 28.3） |
 | 示例 | `examples/occlusion_query/`（test38）+ `examples/pipeline_statistics/`（test39）+ `examples/instancing/`（test40） | Vulkan-Samples 查询与实例化三例：`--verify` 分别校验遮挡计数关系、统计计数器与 CPU 绘制表、逐实例 VBO 内容；`--dump`/`--stats`/固定种子可复现（见 28.2 / 28.3） |
+| 重构 | `examples/common/ModelLoader.*` + `ModelLoaderPlugin.h` + `ModelPostProcess.*` + `BuiltinModelLoaders.cpp` | **模型加载框架三处解耦**：① 插件式工厂——注册表只认 `ModelLoaderDescriptor`，`ModelLoader.cpp` 不再 include 任何具体 loader，新增格式只改内置工厂表一行；② 责任链内容嗅探——`IModelLoader::probe(header)` 让 magic 头优先于扩展名，错扩展名/无扩展名也能分派；③ 后处理流水线——8 个硬编码 `if` 变成可查询、可插拔的 `PostProcessPipeline`，末尾接 `IModelLoader::postProcess()` 模板方法钩子。全部通过「新增带默认实现的虚函数」保持 14 个既有 `loadModel()` 调用点零改动（见 29.2） |
+| 扩展 | `ModelBuilder.h` + `ModelBinaryReader.h` + `ModelFormatsCommon.h` + `ModelAsset.h` | **四种新格式共用基础设施**：Builder 统一保证 primitive 索引窗口自包含与 skin 并行数组对齐；小端安全读取器统一边界检查/1·2·4 字节变长索引/UTF-16LE/Shift-JIS；Phong 材质语义与名字寻址动画绑定；`Material::shininess`、`AnimationChannel::nodeName` 两个向后兼容字段（见 29.3） |
+| 示例 | `examples/model_formats/`（test41）+ `data/models/formats/` + `tools/gen_model_formats.py` | Saba `Model/` 迁移：PMX 2.0/2.1（BDEF1/2/4/SDEF/QDEF 权重→`skins`）、PMD、DirectX X 文本（Frame→`nodes`）、VMD（→`AnimationClip`）；`--list`/`--probe`/`--self-test 65 项`/`--verify`/`--stats`/`--dump` 全链路验证（见 29.4 / 29.6） |
 
 ---
 
@@ -1207,6 +1223,18 @@ python tools/gltf2obj.py data/models/deer.gltf /tmp/deer.obj             # 用�
 ./build/examples/instancing/instancing --instances 4096 --seed 7 --dump
                                                         # 容量上限 4096，固定种子布局可复现
 
+# 多格式模型加载（见 29）：CPU 自检 / 注册表 / 嗅探都不创建 Vulkan 设备
+./build/examples/model_formats/model_formats --list     # 七个插件、扩展名、十步后处理链
+./build/examples/model_formats/model_formats --probe data/models/formats/sample.pmx
+                                                        # 打印每个 loader 的 probe 投票与胜出原因
+./build/examples/model_formats/model_formats --self-test
+                                                        # 65 项纯 CPU 检查（解析 / 嗅探 / 流水线 / 插件）
+./build/examples/model_formats/model_formats --format pmd --verify --stats --dump
+                                                        # VBO/IBO 逐字节回读 + 渲染出图
+./build/examples/model_formats/model_formats --format x --model my.x --stats
+./build/examples/model_formats/model_formats --format vmd --stats
+                                                        # 动画格式只出 AnimationClip，不渲染
+
 > `csm` 通过 `DeviceRequirement::geometryShader = true` 请求设备能力；不支持几何着色器的设备会在 `RenderManager::Create()` 阶段明确报错，而不是在管线创建时给出一个难懂的 VUID。
 
 # 调试：数字键切换通道视图，P 存盘；也可脚本化（见 13.6）
@@ -1283,8 +1311,11 @@ stencil 示例还会单独抓一张 `0001_stencil-mask.ppm`：它是 depth-stenc
 | 后处理效果时长 | `shake/confuse/chaos` 由拾取道具触发，参考用 `glfwGetTime()` 计时；本例改用固定步长 `simTime`（按帧累加 `dt`）以便确定性复现，因此效果的实际时长与帧率无关、只与帧数有关（见 27.6） |
 | 查询池 | 新增 `QueryPool` 只覆盖 occlusion 与 pipeline-statistics（timestamp 仍走 `SequenceBase` 的旧池）；示例每帧用 `VK_QUERY_RESULT_WAIT_BIT` 阻塞读取，与参考一致，未做「下一帧再取」的延迟回读（见 28.2） |
 | 多 vertex binding | 只支持 binding 0（逐顶点）+ binding 1（逐实例）两槽，逐实例 stride 固定为 `InstanceData` 的 48 B；更多槽位/自定义 stride 要继续扩展 `VertexInputAtlas`（见 28.3） |
+| MMD / X 格式子集 | PMX/PMD 只解析到骨骼段（几何/材质/骨骼），morph、IK 链、显示帧、刚体/关节与 VPD 姿势未读取；VMD 只读骨骼关键帧，morph/相机/灯光/阴影/IK 段按 count=0 跳过；DirectX X 只支持文本 flavour，`xof 0302bin` 明确报错（见 29.7） |
+| MMD 字符串 | PMD/VMD 的 Shift-JIS 名字只做 ASCII 直通 + 半角片假名精确映射，其余多字节字符降级为 U+FFFD；名字只用于材质/骨骼标签与日志，不影响几何或绘制（见 29.3） |
+| 模型贴图 | side-car 贴图按模型文件所在目录解析并容错加载（`stb_image`）；缺失或不可解码不致命。真实 MMD 常引用未随模型附带的 toon/sphere 文件，因此 `images` 可能为空（见 29.3） |
 | Vulkan-Samples 覆盖 | `D:/Vulkan-samples/examples` 共 82 个示例，本仓库直接迁移 16 个、间接覆盖 28 个、本轮新增 3 个，仍有 35 个未迁移（多为 ray tracing / 设备扩展 / headless），逐项原因见 28.1 |
-| Validation 状态 | VUID 与 `WRITE_AFTER_WRITE`/`READ_AFTER_WRITE` hazard 全部为 0；offscreen/GBuffer 每帧独立附件组，`eSwapChain` 依赖已覆盖 depth 写入，见 4.14；40 个示例的回归扫描见 25.6 / 26.7 / 27.8 / 28.5 |
+| Validation 状态 | VUID 与 `WRITE_AFTER_WRITE`/`READ_AFTER_WRITE` hazard 全部为 0；offscreen/GBuffer 每帧独立附件组，`eSwapChain` 依赖已覆盖 depth 写入，见 4.14；41 个示例的回归扫描见 25.6 / 26.7 / 27.8 / 28.5 / 29.6 |
 | 调试视图覆盖 | 仅 gbuffer / offscreen 接入 `DebugViewState`；其余示例可在各自 fragment shader 里按 13.2 的约定加分支 |
 | 交换链图像回读 | ✅ 已实现（见 16.2 / 17）：swapchain 申请了 `eTransferSrc`，`LoopSequence::getImageIndex()` 定位当前帧，`--dump` 可抓合成后的交换链帧；S8 平面回读见 17.4 |
 | 深度通道导出 | G-Buffer 与 offscreen 的深度 `storeOp = DontCare`，内容不留存，因此没有深度 PPM；深度用 position 通道反推（`eLinearDepth`） |
@@ -3666,7 +3697,7 @@ const glm::mat4 projection = glm::ortho(0.0f, float(w), float(h), 0.0f);
 - FreeType 头文件 vendored 到 `external/freetype/include`（93 个文件 / 1.4 MB），`.gitignore` 的 `/external/*` 加例外——与 assimp 同一条规则：构建不能依赖开发机上的外部 checkout。
 - **为什么不能直接把 `D:/LearnOpenGL/includes` 加进 include 路径**：那个目录同时带着 LearnOpenGL 自己的 `GLFW/`、`glm/`、`stb_image.h`。目标自己的 include 目录排在继承来的目录**之前**，于是那份 `GLFW/glfw3.h` 和旧 `stb_image.h` 抢先命中，`example_common` 整库编译失败（`GLFW_TRUE` 未声明、`stbi_load_16_from_memory` 找不到）。这不是"加个顺序就能解决"的问题，入库一份头文件才是稳的。
 - 只找静态库 `lib/freetype.lib`（4 MB，不需要 DLL）；`RENDER_DEMO_FREETYPE_DIR` cache 变量 → `FREETYPE_DIR` 环境变量 → 自动探测 `D:/LearnOpenGL`。
-- 找不到时 `examples/CMakeLists.txt` 直接 `continue()` 跳过该示例，其余 39 个照常构建（当前共 40 个示例）。
+- 找不到时 `examples/CMakeLists.txt` 直接 `continue()` 跳过该示例，其余 40 个照常构建（当前共 41 个示例）。
 
 ### 26.7 验证
 
@@ -4070,3 +4101,148 @@ submitFrame → fetchBlocking → presentFrame
 | 查询池实现边界 | — | 只覆盖 occlusion / pipeline-statistics；timestamp 仍是 `SequenceBase` 的旧池；每帧 WAIT 阻塞读取未做延迟异步化 |
 | 多 binding 实现边界 | — | 固定绑定 0（逐顶点）+ 1（逐实例）、固定 `InstanceData` 48 B stride；更多槽位或自定义 stride 要继续扩展 `VertexInputAtlas` |
 | 窗口缩放 | — | 三个新示例都用固定 800×600 启动 extent，与参考一致；resize 时投影按当前 extent 重算，但离屏/查询资源未重建 |
+
+---
+
+## 29. Saba `Model/` 迁移：多格式模型加载框架重构
+
+本轮目标是「提升 `render_demo` 对其它格式模型文件的加载能力」，输入是 `D:/saba/src/Saba/Model`（Saba 的 MMD / OBJ / XFile 模型解析层）。结论不是「再抄四个解析器」：`examples/common/ModelLoader.*` 早就有了 `IModelLoader` 策略、注册表与统一后处理链，但每加一个格式仍要改注册表构造函数、加一个 `#include`、再往后处理链的 `if` 序列里塞分支。所以本轮先做**框架重构**（29.2），再用重构后的扩展点落地四种格式（29.4）。
+
+### 29.1 逐个盘点：`Saba/Model` 与迁移前状态
+
+`D:/saba/src/Saba/Model` 共 34 个文件，分三个子目录：
+
+| Saba 子目录 | 文件数 | 内容 | 迁移决策 |
+| --- | --- | --- | --- |
+| `OBJ/` | 3 | `OBJModel.{h,cpp}` + 自带 `tinyobjloader.cpp` | **已覆盖**：`ObjModelLoader` 走同一格式、同一 `tiny_obj_loader`，无需重复 |
+| `XFile/` | 2 | `XFileModel.{h,cpp}`，内部用 `tinyxfileloader.h` 解析文本 `.x` | **本轮迁移**：只取 Frame / Mesh / Normals / TexCoords / MaterialList，重写为零依赖的 tolerant 解析器 |
+| `MMD/` | 29 | `PMDFile`、`PMXFile`、`VMDFile`、`VPDFile`、`MMDModel`/`PMDModel`/`PMXModel`、`MMDNode`/`MMDMorph`/`MMDIkSolver`/`MMDPhysics`/`VMDAnimation`/`MMDCamera*`/`SjisToUnicode` | **部分迁移**：文件格式层 PMX/PMD/VMD 三个迁移；运行时层（骨骼动画求解、IK、物理、morph、相机动画、SjisToUnicode 全量表）不迁，理由见 29.7 |
+
+迁移前 `render_demo` 的加载层是 3 个策略（glTF / OBJ / assimp）+ 一个注册表 + 8 个硬编码后处理步骤，14 个示例调用 `loadModel()`。逐项对照后，能力缺口落在**扩展成本**而不是数据模型上：`ModelAsset.h` 的 `Model` / `Skin` / `AnimationClip` 足以承载 MMD 的骨骼权重与关键帧，缺的是让新格式「不碰框架代码就能进来」的接缝。
+
+### 29.2 框架重构：三个设计模式
+
+| 模式 | 重构前 | 重构后 | 落地文件 |
+| --- | --- | --- | --- |
+| 插件式工厂 + RAII 自注册（开闭原则） | `ModelLoaderRegistry` 构造函数 `#include` 并 `make_unique` 三个具体类；加格式必须改框架 | 注册表只认值类型 `ModelLoaderDescriptor{name, extensions, priority, magicProbe, factory}`；内置格式集中在 `BuiltinModelLoaders.cpp` 的一张工厂表里 | `ModelLoaderPlugin.h`、`BuiltinModelLoaders.cpp`、`ModelLoader.cpp` |
+| 责任链（内容嗅探） | `find()` 只看扩展名；错扩展名 / 无扩展名 / 格式撞车无法处理 | `IModelLoader::probe(header)` 让每个插件对同一段头部投票，最高分（magic ≥ 100）胜过文件名；扩展名只作兜底 | `ModelLoader.h/.cpp` |
+| 流水线 + 模板方法钩子 | `load()` 里 8 个 `if`，顺序只写在注释里 | `PostProcessPipeline` 是有序、可查询、可 `addStep()` 的 `Step` 列表；链末尾调用 `IModelLoader::postProcess()` 钩子 | `ModelPostProcess.h/.cpp` |
+
+#### 29.2.1 插件式工厂：为什么不用「纯」静态自注册
+
+`ModelLoaderRegistrar` 是标准 RAII 自注册：构造时把描述符推进单例注册表，任何 TU 放一个静态对象即可接入，框架无需知道它存在。但**内置加载器不用它**——`example_common` 是静态库，MSVC 链接器只会拉入「被引用符号所在」的目标文件；一个没人显式引用的 `static ModelLoaderRegistrar` 会被整份丢弃，表现为「格式莫名其妙没注册」。因此：
+
+- `BuiltinModelLoaders.cpp` 是**链接锚点**：注册表构造函数调用 `registerBuiltinModelLoaders(*this)`，该函数引用了每个加载器的工厂函数，链接器必须把这些 `.obj` 拉进来。
+- 新增格式 = 新增 `.h/.cpp` + 在内置表**加一行**，其余框架文件零改动：
+
+```cpp
+{"pmx", {"pmx"}, 10, true, &makeLoader<PmxModelLoader>},
+```
+
+- `priority` 解决扩展名撞车：assimp 声明了 `.obj`/`.gltf`/`.glb` 以便 `--loader assimp` 做 A/B，但 rank = `priority*1000 + 注册序号` 保证手写加载器（obj=30、gltf=20）默认胜过 assimp(0)——第三方库升级不会悄悄改变既有示例的输出。
+- 顺带消除了框架对具体类的最后一处硬依赖：`AssimpModelLoader::runtimeDiagnostic()` 改为虚函数 `IModelLoader::diagnostic()`，注册表遍历收集，`ModelLoader.cpp` 现在不含任何具体加载器头文件。
+- `ModelLoaderRegistrar` 留给**外部/测试插件**：29.6 的自检里用一个 `FakeLoader` 现场注册并覆盖分派，验证的就是这条路径。
+
+#### 29.2.2 责任链内容嗅探
+
+`resolve(path)` 读前 64 字节，按注册顺序让每个 loader 的 `probe()` 投票并记下 `trace`；只要最高分 > 0 就由 magic 定案，否则退回扩展名匹配。所有新增虚函数都带默认实现（`probe` 返回 0 = 不表态），既有三个加载器因此**一行未改**。
+
+这解决的是 MMD/XFile 的真实问题：`PMX`/`Pmd`/`xof`/`Vocaloid Motion Data` 四个 magic 互不冲突，而 `.x` 同时有文本与二进制 flavour、`.pmx` 2.0/2.1 的差异在头里、真实模型文件名常带非 ASCII 字符。`--probe` 会把整个决策过程打出来：
+
+```
+probe assimp -> 0 / probe gltf -> 0 / probe obj -> 0 / probe pmx -> 100 / ...
+winner magic: pmx (score 100)
+```
+
+#### 29.2.3 后处理流水线与模板方法钩子
+
+`makeDefaultPipeline(loader)` 返回 10 个显式排序的步骤：`flatten > deduplicate > flipV > normals > tangents > scale > normalize > center > bounds > loader-hook:<name>`。顺序从「注释里的约定」变成数据；每个 `Step` 自带 `enabled(options, plan)` 与 `apply(...)`，日志打印**实际执行**的链及细节，例如：
+
+```
+chain: deduplicate > normals(0 set(s)) > tangents(26 set(s)) > bounds > loader-hook:pmx
+```
+
+最后一步是模板方法钩子 `IModelLoader::postProcess()`：格式专属语义不必塞进通用链。MMD 用它统一施加「双面绘制、按 diffuse alpha 决定混合、Phong shininess → PBR roughness」；XFile 复用同一套 Phong 转换。29.6 的自检会验证 shininess 20 → `sqrt(2/22) ≈ 0.3015`。
+
+**兼容性**：`IModelLoader` 新增的 6 个虚函数全部有默认实现，14 个 `loadModel()` 调用点与 `ModelLoadOptions` 一字未改；重构后 `model_loading` 示例的输出仍是 `49060 vertices / 67907 triangles`，只是多打了 `resolved by` 与 `chain` 两段可观测信息。
+
+### 29.3 共享基础设施与两个踩过的坑
+
+四个格式共用三件东西，避免 N 份重复的 bookkeeping：
+
+| 组件 | 作用 |
+| --- | --- |
+| `ModelBuilder.h`（Builder 模式） | 统一构造 `Model`：`addPrimitive()` 记录 `firstIndex`，`addIndex()` 只往末尾追加，天然保证「每个 primitive 占一段自包含索引窗口」；`build()` 校验 `boneIndices/boneWeights` 与 `vertices` 平行，否则直接抛错 |
+| `ModelBinaryReader.h` | 小端安全游标：每次读取边界检查并带字节偏移报错；`signedIndex(1/2/4)` 统一 PMX 头的变长索引与全 1 = -1 语义；`lengthString()` 处理 PMX 的 UTF-16LE/UTF-8，`fixedString()` 处理 PMD/VMD 的定长 Shift-JIS |
+| `ModelFormatsCommon.h` | Phong→PBR 材质语义、side-car 贴图容错加载、VMD 名字寻址通道的 `bindAnimationChannelsToModel()`；`ModelAsset.h` 增加向后兼容的 `Material::shininess` 与 `AnimationChannel::nodeName` |
+
+两个实测踩过的坑，都写进了自检：
+
+1. **PMX header 的 globals 是 8 个，不是 9 个**：`dataSize` 之后是 `encode`、`addUVNum` 和 **6** 个 index size（vertex/texture/material/bone/morph/rigidbody）。合成生成器最初写了 7 个 index size，多出 1 字节让后面所有字段错位，表现为「读到一个 3585 字节的字符串长度」。生成脚本与解析器现在都是 6 个。
+2. **XFile 矩阵不要二次转置**：XFile 按行主序写 16 个 float 供 DirectX 行向量约定使用；`glm::make_mat4()` 按列主序读这段数据**本身就已经完成了转置**，再 `glm::transpose()` 会把平移从第 4 列挪回最后一行（`transform[3][1]` 变成 0）。
+
+### 29.4 四种新格式
+
+| 格式 | magic / 扩展名 | 映射进 `Model` | 主要限制 |
+| --- | --- | --- | --- |
+| PMX 2.0/2.1 | `PMX ` / `.pmx` | 顶点/法线/UV → 交错 VBO；材质按 `numFaceVertices` 切 primitive；骨骼树 → `nodes` + `Skin.joints` + `inverseBindMatrix`；权重 → `boneIndices/boneWeights` | 解析到骨骼段为止，morph/显示帧/刚体/关节段不读 |
+| PMD | `Pmd` / `.pmd` | 同上；`u16` 面索引、定长 SJIS 名字、双骨骼权重 `w/100` 与 `1-w/100` | 不含英文扩展头；IK/morph/物理扩展段不读 |
+| DirectX X（文本） | `xof ` / `.x` | `Frame`/`FrameTransformMatrix` → `nodes` 层级；`Mesh`/`MeshNormals`/`MeshTextureCoords` → 顶点；`MeshMaterialList` 的逐面材质号 → 每材质一个 primitive | 二进制 `xof 0302bin` 明确报错；多边形按扇形三角化；`TextureFilename` 只记路径 |
+| VMD | `Vocaloid Motion Data` / `.vmd` | 骨骼关键帧 → `AnimationClip`（30 fps、按名字的 `AnimationChannel`）；不产生几何 | `isAnimationOnly()`，`loadModel()` 会给出「请用 `loadModelAnimation()`」的可读错误；只解码骨骼段 |
+
+PMX 的五种顶点权重都收敛到 `glm::uvec4 + glm::vec4`：
+
+| 权重类型 | 索引 | 权重 | 处理 |
+| --- | --- | --- | --- |
+| BDEF1 | 1 | `(1,0,0,0)` | 直接 |
+| BDEF2 | 2 | `(w, 1-w, 0, 0)` | 头里只存 `w` |
+| BDEF4 / QDEF | 4 | 4 个 float | 原样 |
+| SDEF | 2 | `(w, 1-w, 0, 0)` | 跳过 C/R0/R1（SDEF 的形变修正属于运行时层） |
+
+VMD 按骨骼名寻址，而 `AnimationChannel` 原本只有 `nodeIndex`。新增 `nodeName` 字段 + `bindAnimationChannelsToModel(clip, model)`：加载器不需要 Model，绑定在拿到 Model 之后一次完成。29.6 自检里 3 个关键帧 → 2 条通道 → 全部绑定到 PMX 的 `root`/`child` 节点。
+
+### 29.5 合成测试资源与真实文件冒烟
+
+`tools/gen_model_formats.py` 生成四个**可复现、无版权、极小**的合成文件（路径相对脚本解析，避免跨盘散落）：
+
+| 文件 | 大小 | 内容 |
+| --- | --- | --- |
+| `sample.pmx` | 748 B | 8 顶点立方体 / 12 三角形 / 1 材质 / 2 骨骼；前 4 顶点 BDEF1、后 4 顶点 BDEF2 |
+| `sample.pmd` | 827 B | 同上，双骨骼权重 |
+| `sample.x` | 1960 B | 两层 `Frame`（第二层带 `(0,1,0)` 平移）+ Mesh / Normals / TexCoords / MaterialList |
+| `sample.vmd` | 407 B | 3 个关键帧 / 2 条骨骼通道 / 30 fps |
+
+合成文件让 29.6 的解析校验可以**逐项精确对拍**（8 / 36 / 12 / 1 / 2），而不是只好看不中用的「没崩就行」。真实模型有版权与体积问题（Saba 自带的角色模型 1.3 MB + 6.6 MB 贴图、中文文件名），因此**不入库**，只做本地端到端冒烟：把 `神里绫华.pmx` 复制到 ASCII 临时路径后 `--model ... --stats` 得到 **19123 顶点 / 25675 三角形 / 26 材质 / 284 骨骼节点 / 1 skin**，证明 UTF-16 字符串、变长索引与带 IK flag 的骨骼段都能正确消费；再用 `--dump` 渲染出完整人物（0 VUID）。
+
+### 29.6 构建与验证状态
+
+| 项 | 结果 |
+| --- | --- |
+| 全量构建 | **41 个示例** + `myEngine` + `example_common`：0 error（`CONFIGURE_DEPENDS` 检测到 4 个新 `.cpp` 后需再构建一轮让 MSBuild 采用新列表） |
+| `--self-test` | **65 / 65** 通过，纯 CPU、不创建 Vulkan 设备：注册表 / magic 嗅探 / 错扩展名分派 / 四种格式逐项对拍 / 皮肤并行数组 / Phong 钩子 / 流水线顺序 / 读取器越界 / UTF-16 解码 / 插件自注册 / `preferredLoader` 覆盖 / animation-only 拒绝 |
+| `--verify` | PMX / PMD / XFile 三种格式各回读 VBO `8 × 56 B` 与 IBO `36 × 4 B`，与 CPU 数组逐字节相同 |
+| 确定性 | 同参数两次 `--dump` 的 PPM MD5 一致（`a572fa71…`）；`--format` 三者的 tint 差异为 97698 / 480000 像素 |
+| `--dump` 目视 | 合成文件为带光照与棋盘格的 3D 立方体（三面可见）；真实 PMX 为完整人物模型 |
+| 真实文件 | 19123 顶点 / 25675 三角形 / 26 材质 / 284 节点，渲染 0 VUID |
+| Validation | 新示例 0 VUID；41 个示例全量回归 0 VUID（扫描口径同 28.5） |
+
+全量回归按 `--dump --dump-after 1` 逐个跑（不支持该开关的用短窗口超时），统计每个日志里的 `VUID|Validation Error`：
+
+| 项 | 结果 |
+| --- | --- |
+| 示例数 | 41 / 41 完成冒烟，`model_formats` 走 `--dump --dump-after 1` 正常产出 PPM 后退出（rc=0） |
+| VUID / Validation Error | 全部 0 |
+| 非 0 退出码 | 仅 `gltfscenerendering` 被 `timeout` 主动终止（rc=124，表示持续渲染），无崩溃、无异常退出 |
+
+### 29.7 剩余限制与后续
+
+| 限制 | 说明 |
+| --- | --- |
+| MMD 运行时层未迁 | `MMDModel`/`MMDNode`/`MMDMorph`/`MMDIkSolver`/`MMDPhysics`/`VMDAnimation`/`MMDCamera*` 属于动画求解与物理仿真，不是文件格式；本轮只把静态几何、骨骼权重与关键帧数据落到 `Model`/`AnimationClip`。要做 MMD 播放，需要把 `SkeletonAnimator` 扩展到关节层级与 IK |
+| PMX/PMD 尾段未读 | morph、显示帧、刚体、关节、soft body 段不解析；解析器在骨骼段结束即返回，几何/材质/骨骼已完整 |
+| VMD 只读骨骼段 | morph / 相机 / 灯光 / 阴影 / IK 段按 count=0 跳过；VPD 姿势文件未迁 |
+| DirectX X 仅文本 | `xof 0302bin` 在 `load()` 里明确报错；二进制模板、动画集、渐进网格未支持 |
+| Shift-JIS | 只做 ASCII 直通 + 半角片假名精确映射，其余多字节降级 U+FFFD；不引入 SJIS 全量转换表。名字只用于标签与日志 |
+| 贴图 | side-car 按模型目录容错加载；MMD 的 toon/sphere 叠加、球面映射模式与共享 toon 索引只记录不渲染 |
+| 骨骼绑定 | `inverseBindMatrix` 取 `translate(-bone.position)`（PMX/PMD 头只存位置，bind pose 无旋转）；带旋转的绑定姿势需要更完整的矩阵推导 |
+| 展示侧拟合 | `test41` 上传前把顶点居中缩放到 ±1 以便任意尺寸模型入镜，这是**示例的展示辅助**，不改变加载器返回的 `Model`；真实渲染应应用 `computeNodeWorldMatrices` 而不是烘焙缩放 |

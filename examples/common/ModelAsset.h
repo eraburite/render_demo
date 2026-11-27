@@ -58,6 +58,9 @@ struct Material {
     // map on the floor would lose information the file did carry.  PBR shaders
     // simply ignore it.
     int specularTexture = -1;
+    // Phong specular exponent carried by MMD / DirectX X materials.  PBR
+    // shaders ignore it; the MMD post-process hook derives a roughness from it.
+    float shininess = 0.0f;
 };
 
 // Attribute presence bits.  Loaders fill the ones the file really carried;
@@ -148,6 +151,11 @@ struct QuaternionKey {
 // only, and a missing track means "keep the bind value", not "identity".
 struct AnimationChannel {
     int nodeIndex = -1;
+    // File-level node/bone name.  Formats such as VMD address bones by name and
+    // carry no scene to resolve them against at load time; a caller binds the
+    // name to nodeIndex once a Model is available (see
+    // bindAnimationChannelsToModel in ModelFormatsCommon.h).
+    std::string nodeName;
     std::vector<VectorKey> positions;
     std::vector<QuaternionKey> rotations;
     std::vector<VectorKey> scales;

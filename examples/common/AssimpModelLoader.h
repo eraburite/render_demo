@@ -36,8 +36,10 @@ public:
     PostProcessPlan defaultPlan(const std::string &path) const override;
 
     // Empty string when the importer is usable; otherwise the reason, suitable
-    // for appending to a "no loader for this file" message.
+    // for appending to a "no loader for this file" message.  Exposed through
+    // the virtual diagnostic() so the registry never names this class.
     static std::string runtimeDiagnostic();
+    std::string diagnostic() const override { return runtimeDiagnostic(); }
 
 private:
     static bool isTopLeftV(const std::string &path);
