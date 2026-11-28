@@ -13,7 +13,7 @@
 // Command line:
 //   --width <n> --height <n>   image size, both even (default 64 x 64)
 //   --input <file>             packed RAW12 input; synthetic pattern when omitted
-//   --out <dir>                output directory (default <root>/assets/images)
+//   --out <dir>                output directory (default <system temp>/render_demo/raw2rgb)
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -45,7 +45,6 @@
 #include "RenderManager.h"
 
 #include "Raw2RgbLayoutConfig.h"
-#include "root_directory.h"
 
 #include "shader/raw2rgb_v2_comp.hpp"
 #include "shader/rawunpack_comp.hpp"
@@ -88,10 +87,22 @@ uint32_t parseCount(const char *flag, const char *text)
     }
 }
 
+// All three artefacts are disposable derivatives of --width/--height and the
+// synthetic pattern (or of --input), so they are written outside the source tree:
+// a plain run never leaves files behind in the repository.  `--out` still points
+// them somewhere else when a run needs to be kept.
+std::filesystem::path defaultOutputDir()
+{
+    std::error_code error;
+    const std::filesystem::path temp = std::filesystem::temp_directory_path(error);
+    const std::filesystem::path base = error || temp.empty() ? std::filesystem::current_path(error) / "dump" : temp;
+    return base / "render_demo" / "raw2rgb";
+}
+
 AppOptions parseOptions(int argc, char **argv)
 {
     AppOptions options;
-    options.outputDir = std::filesystem::path(std::string(PROJECT_ROOT_PATH)) / "assets" / "images";
+    options.outputDir = defaultOutputDir();
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         const bool hasValue = i + 1 < argc;
@@ -309,6 +320,7 @@ void test(int argc, char **argv)
 {
     const AppOptions options = parseOptions(argc, argv);
     const ImageSize &size = options.size;
+    std::cout << "[raw2rgb] output dir: " << options.outputDir.string() << "\n";
 
     auto camera = std::make_shared<Camera>(glm::vec3(0.0f, 0.0f, 3.0f));
     GLFWwindow window(800, 600, camera);

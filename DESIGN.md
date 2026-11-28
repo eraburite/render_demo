@@ -42,7 +42,6 @@ render_demo/
 │   ├── fonts/                      # Antonio-Bold.ttf + SIL OFL 许可（文字渲染的字形来源，见 26.2）
 │   ├── heightmaps/                 # iceland_heightmap.png（见 22）
 │   ├── levels/{one,two,three,four}.lvl  # Breakout 的四张关卡（见 27.7）
-│   ├── images/                     # raw2rgb 的输出目录（运行期由示例创建，内容全部被忽略，见 32.6）
 │   └── ltc/{ltc1.f32,ltc2.f32}     # LTC 1/2 查找表（64×64 RGBA32F 小端，各 64 KB，见 25.4）
 ├── doc/                            # 设计讨论存档（当前为空）
 ├── external/                       # 全部入库（见 30.3）：glm（含 share/）/ glfw（含 lib/glfw3.lib）/ stb_image.h / tiny_obj_loader.h / tinygltf（json.hpp + tiny_gltf.h）/ assimp 头文件（仅头，见 19.2）/ freetype 头文件（仅头，见 26.6）；仅 *.bak 备份被忽略
@@ -1014,7 +1013,7 @@ dstAccess = MemoryRead | ColorRead | ColorWrite | DepthStencilAttachmentWrite
 离线图像处理：RAW12 原始数据经 `rawunpack` 解包、再经 `raw2rgb_v2` 去马赛克，结果回读到主机、与 CPU 参考实现逐值比对后存盘。
 
 - **输入**：默认程序生成的 64×64 合成 RGGB 图案（`makeSyntheticRaw12()`，6144 B 紧凑 RAW12）；`--input <file>` 可指定真实 RAW12 转储，`--width/--height` 可按需放大（两者必须为偶数且 ≥ 4）。
-- **输出**：`<out>/output_unpack_raw16_<W>x<H>.raw` 与 `<out>/output_rgb_<W>x<H>.ppm`（P6，头部 `#` 注释记录来源、布局、最大误差）；合成输入还会另存 `input_raw12_<W>x<H>.raw`，可再用 `--input` 灌回验证往返一致。
+- **输出**：默认写**系统临时目录** `<temp>/render_demo/raw2rgb/`（日志首行打印绝对路径，见 32.8），文件为 `output_unpack_raw16_<W>x<H>.raw` 与 `output_rgb_<W>x<H>.ppm`（P6，头部 `#` 注释记录来源、布局、最大误差）；合成输入还会另存 `input_raw12_<W>x<H>.raw`，可再用 `--input` 灌回验证往返一致。`--out <dir>` 指定别的目录（相对路径按当前 cwd 解析）。
 - **同步**：两段 compute 用 `CmdOpGroup` 合成**一次提交**，中间夹 `CmdOpComputeBarrier`。之前的实现是两次 `OnceSequence::submit()` + 两次 fence 等待：既多一次往返，又只靠提交顺序提供执行顺序，SSBO 的内存可见性其实没有保证。一次提交 + 显式屏障两者都解决。
 - **回读与存盘**：unpack 输出为 raw16（两个 16-bit 样本打包在一个 uint32，左对齐）；RGB 输出为 3 个 float/像素。PPM 走 `WritePpmRgb8()`（与第 13 章调试存盘同一个写入器），所以头部注释格式一致。
 - **自校验**：`unpackReference()` 与 `demosaicReference()` 逐运算复刻两个 shader（同样的 4-tap 绿通道估计、同样的 RGGB 相位、同样的 `word` 拆包），比较后打印
@@ -1232,8 +1231,10 @@ python tools/gltf2obj.py assets/models/deer.gltf /tmp/deer.obj             # 用
 # compute 示例的开关
 ./build/examples/particle/particle --frames 30 --verify          # 30 帧后回读并检查覆盖
 ./build/examples/particle/particle --local-size 128              # 特化工作组宽度
-./build/examples/raw2rgb/raw2rgb --width 128 --height 96         # 换尺寸并自校验
-./build/examples/raw2rgb/raw2rgb --input assets/images/input_raw12_64x64.raw  # 该输入由上一次合成模式写出（见 32.6）
+./build/examples/raw2rgb/raw2rgb --width 128 --height 96         # 换尺寸并自校验；产物写系统临时目录
+./build/examples/raw2rgb/raw2rgb --out dump/raw2rgb              # 想留档就显式给 --out（dump/ 已被忽略）
+./build/examples/raw2rgb/raw2rgb --out dump/raw2rgb --input dump/raw2rgb/input_raw12_64x64.raw
+                                                                 # 把上一次留下的合成输入灌回去，验证往返一致
 ```
 
 调试产物默认写到**当前工作目录**下的 `dump/`（已加入 `.gitignore`），文件名形如
@@ -4315,7 +4316,7 @@ VMD 按骨骼名寻址，而 `AnimationChannel` 原本只有 `nodeIndex`。新�
 | 三类能力实测 | 模型：`model_loading` 经 `ObjModelLoader` 加载 backpack → 49060 顶点 / 67907 三角形（与 19 章一致）；纹理：`texture` → 512×512 / 10 mips；dump：`dump/*.ppm` 产出 49 张 PPM |
 | Validation | 41 / 41 示例 `--dump --dump-after 1` 冒烟：**0 VUID、0 Validation Error、0 崩溃**（rc=124 为持续渲染示例被 timeout 主动终止，非异常退出） |
 | `external` 入库 | 440 个新文件；仅 `stb_image.h.bak` 仍被忽略 |
-| 提交卫生 | 全量扫描回写的 `assets/images/output_rgb_64x64.ppm` / `output_unpack_raw16_64x64.raw` 作 `git restore` 处理；当时这两个文件**仍在版本库里**（restore 只恢复内容、不取消跟踪），已在 32.6 取消失踪并加入 `.gitignore` |
+| 提交卫生 | 全量扫描回写的 `assets/images/output_rgb_64x64.ppm` / `output_unpack_raw16_64x64.raw` 作 `git restore` 处理；当时这两个文件**仍在版本库里**（restore 只恢复内容、不取消跟踪），已在 32.6 取消失踪并加入 `.gitignore`。那批忽略规则本身也已被 32.8 删除——输出不再写进 `assets/` |
 
 ### 30.6 剩余限制与后续
 
@@ -4507,7 +4508,7 @@ swapchain img : UNDEFINED → TRANSFER_DST → (copy) → PRESENT_SRC
 | `data/levels/` | `assets/levels/` | 4 | `{one,two,three,four}.lvl` |
 | `data/heightmaps/` | `assets/heightmaps/` | 2 | `iceland_heightmap.png` + 来源说明 |
 
-合并后 `assets/` 是唯一资源根，7 个子目录各自对应一类资源（`models` / `textures` / `fonts` / `heightmaps` / `levels` / `images` / `ltc`）。用 `git mv` 而非删除重建，58 个文件在 `git status` 里都显示为 `R`（rename），`git log --follow` 仍可追溯每个资源的来历。
+合并后 `assets/` 是唯一资源根，6 个子目录各自对应一类资源（`models` / `textures` / `fonts` / `heightmaps` / `levels` / `ltc`；第 7 个 `images/` 曾是 raw2rgb 的运行产物目录，在 32.8 之后不再存在）。用 `git mv` 而非删除重建，58 个文件在 `git status` 里都显示为 `R`（rename），`git log --follow` 仍可追溯每个资源的来历。
 
 **踩到的一个坑**：`git mv data/textures assets/textures` 在目标目录**已存在**时，会把源目录整个塞进去变成 `assets/textures/textures/`（`models` 因为事先 `rmdir` 了空目录才没中招）。发现后逐个把子项重新 `git mv` 上一层再 `rmdir` 空目录；这条对任何"合并两个已存在的目录"的操作都适用，`git mv` 没有"合并目录"语义。
 
@@ -4544,7 +4545,7 @@ swapchain img : UNDEFINED → TRANSFER_DST → (copy) → PRESENT_SRC
 
 ### 32.5 约定
 
-- **新资源一律放 `assets/`**，不再新增第二个资源根。放哪一类看 32.2 的七个子目录；新类别就新开一个子目录，并在第 2 章的目录树里登记。
+- **新资源一律放 `assets/`**，不再新增第二个资源根。放哪一类看 32.2 的六个子目录；新类别就新开一个子目录，并在第 2 章的目录树里登记。
 - 资源路径**优先用 `PROJECT_ROOT_PATH` 拼接**：仓库里已入库的三方库（glm/glfw）也是这个口径，好处是 exe 在任何 cwd 下都能跑。只有需要"允许用户在 cwd 覆盖同名资源"的场合才走 `loadTexture` 那条 cwd 优先的回退路径。
 - 二进制资源用 `git mv` 迁移，保留 rename 历史；不要"删了再拷"。
 
@@ -4569,7 +4570,9 @@ swapchain img : UNDEFINED → TRANSFER_DST → (copy) → PRESENT_SRC
 /assets/images/output_rgb_*.ppm
 ```
 
-安全性来自 `test6.cpp:435` 的 `create_directories(options.outputDir)`：目录不需要入库，示例自己会建。产物是确定性派生物（固定尺寸 + 固定合成图案 + 固定去马赛克），随时可重算，没有"金标准基线"价值。副作用是 DESIGN 第 14 章那条 `--input assets/images/input_raw12_64x64.raw` 的命令在干净 clone 下**首次**会找不到文件，已在该行注明"由上一次合成模式写出"。
+安全性来自 `test6.cpp` 的 `create_directories(options.outputDir)`：目录不需要入库，示例自己会建。产物是确定性派生物（固定尺寸 + 固定合成图案 + 固定去马赛克），随时可重算，没有"金标准基线"价值。
+
+> 上面这三条忽略规则只是**当时的止血**：写进 `assets/` 的运行产物虽被忽略，但仍在资源根里堆文件，且 `--input` 示例在干净 clone 下首次会找不到文件。32.8 把默认输出改到系统临时目录后，这三条规则连同 `assets/images/` 目录一并删除——从根上不再产生这类文件。
 
 **未修的四项**（性质不同，逐一说明）：
 
@@ -4600,7 +4603,7 @@ grep -rn "data/\(models\|textures\|fonts\|levels\|heightmaps\)" --exclude-dir={b
 | exe 名 ↔ 目录名 | **0 不符**（48 个示例目录，文档引用到的 41 个全部对得上；`multi-lighting` 这类带连字符的目录名也一致） |
 | 源码里不存在的 flag | **1 类 2 处：`--threads`**。`multithreading` 的 `test()` 就是 `(void)argc; (void)argv;`，线程数固定取 `hardware_concurrency()` 钳在 2..8——文档凭空多了一个开关，照着敲会被静默忽略。7 章命令块与 14.5 差异表各一处，已改 |
 | 没换掉的占位符 | **1 处**：29 章 `--format x --model my.x`，`my.x` 根本不存在；改为入库的 `assets/models/formats/sample.x`，实测 `vertices=8 indices=36 triangles=12`、`rc=0` |
-| `assets/` 路径不存在 | **0**（含 `tools/gltf2obj.py`、`assets/images/input_raw12_64x64.raw` 这条需先跑一次合成模式的例外，见 32.6） |
+| `assets/` 路径不存在 | **0**（含 `tools/gltf2obj.py`；原先 `assets/images/input_raw12_64x64.raw` 那条"需先跑一次合成模式"的例外已随 32.8 消失） |
 | 历史章节里的旧位置注释 | **1 处**：14.3 "`data/models/` 只放…"，改为 `assets/models/`（它是"资源在哪"类注释，属于 32.5 说明的例外） |
 | cmake / git / grep 自己的开关 | 不在核对范围（`--build` / `--config` / `--parallel` / `--cached` / `--follow` / `--exclude-dir`），人工确认无误 |
 
@@ -4633,3 +4636,28 @@ grep -rn "data/\(models\|textures\|fonts\|levels\|heightmaps\)" --exclude-dir={b
 这条差异**刻意不修**：改 `backpack.mtl` 的大小写会让文件 MD5 偏离上游（失去"原样入库"的可核对性），改 vendored 头文件则引入本地补丁。而且 19.6 已写明示例只用 `texture(diffuseMap, uv)` 着色，normal/specular 目前是"数据层如实保留"——补图的价值是**资源自洽 + assimp 路径数据完整**，不是画面变化。
 
 **"不改画面"是实测的**：缺图副本（1 image）与仓库原路径（2 image）各跑一次 `--dump`，`0000_model.ppm` 的 MD5 同为 `96832267b39de748df4a6dd0cbf70fb6`，`coverage=0.119404 uniqueColors=996` 也逐位相同，且与 19.5 记录的历史基线一致。贴图数量变化只影响材质槽位的填充，不进入光栅化路径。
+
+### 32.8 raw2rgb 输出改到系统临时目录（不污染工程目录）
+
+**问题**：raw2rgb 的默认 `--out` 是 `<PROJECT_ROOT_PATH>/assets/images`，每跑一次就往**资源根**里落三个文件（`input_raw12_*` / `output_unpack_raw16_*` / `output_rgb_*`）。32.6 用 `.gitignore` 把它们藏了起来，但"被忽略"不等于"不在工程目录里"——`assets/` 是唯一资源根（见 32.2），混进运行产物会让人分不清哪些是资源、哪些是垃圾；而且 `--input assets/images/...` 那条示例在干净 clone 下第一次必然失败。
+
+**改法**（`examples/raw2rgb/test6.cpp`）：
+
+- 新增 `defaultOutputDir()`：`std::filesystem::temp_directory_path()` 下的 `render_demo/raw2rgb`；取不到临时目录时退回 `<cwd>/dump`（`dump/` 已在 `.gitignore` 里）。
+- 启动时打印 `[raw2rgb] output dir: <绝对路径>`，结束时仍逐条打印三个写入路径，产物位置不需要猜。
+- `--out <dir>` 保留且语义不变（相对路径按 cwd 解析）；想留档就 `--out dump/raw2rgb`。
+
+**连带清掉的东西**：`.gitignore` 里那三条 `/assets/images/...` 规则；仓库里的 `assets/images/` 目录（内容只有这三类产物，删前已确认新路径的产出与旧文件 MD5 逐个相同）。第 2 章目录树与 32.2 的"7 个子目录"同步改为 6。
+
+**验证**（Release，只重建 `raw2rgb` 一个目标）：
+
+| 项 | 结果 |
+| --- | --- |
+| 默认运行 | 首行 `[raw2rgb] output dir: C:/Users/.../AppData/Local/Temp/render_demo/raw2rgb`，`rc=0` |
+| 产物落点 | 三个文件全在临时目录；工程目录零新增（`git status` 只有本次改的 `.gitignore` 与 `test6.cpp`） |
+| 与旧产物一致 | 三个文件与原先 `assets/images/` 里的同名文件 **MD5 逐个相同**（`5eebd737` / `a8a2b128` / `b41f9314`）——只换了位置，字节未变 |
+| 自校验未退化 | `unpack: 0 / 2048 words differ`、`demosaic: max gpu-cpu = 5.960e-08`，与 6.7 的历史基线一致 |
+| `--out` 覆盖 | `--out dump/raw2rgb` 写出 `dump/raw2rgb/output_rgb_128x96.ppm` 等，相对路径按 cwd 解析 |
+| `--input` 往返 | 用上一步留下的 `input_raw12_128x96.raw` 回灌：`0 / 6144 words differ`、误差 `1.192e-07`，与合成模式逐项相同 |
+
+**为什么默认不用 `dump/`**：`dump/` 是第 13 章调试存盘的地盘，语义是"这次要留着看图"；raw2rgb 的三个文件是**可丢弃的中间产物**（确定性重算即可），落在系统临时目录更贴合语义，也让两类输出各有明确归属。需要留档时 `--out dump/raw2rgb` 一句话切过去。

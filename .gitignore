@@ -26,8 +26,5 @@
 # 渲染调试存盘（Debug View / PPM dump，见 DESIGN.md 13.4）
 /dump
 **/dump
-# raw2rgb 示例的运行产物（见 DESIGN.md 32.6）：合成输入副本 + 解包/转 RGB 的输出，
-# 全部可由 --width/--height 与合成图案确定性重算，不入库；目录本身由示例自行创建
-/assets/images/input_raw12_*.raw
-/assets/images/output_unpack_raw16_*.raw
-/assets/images/output_rgb_*.ppm
+# raw2rgb 的运行产物不再需要忽略规则：自 DESIGN.md 32.8 起默认写系统临时目录
+# （<temp>/render_demo/raw2rgb），仓库里不再产生 input_raw12 / output_* 文件
