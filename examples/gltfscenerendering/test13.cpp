@@ -59,7 +59,7 @@ struct SceneNode {
 };
 
 struct Options {
-    std::string model = PROJECT_ROOT_PATH "/data/models/deer.gltf";
+    std::string model = PROJECT_ROOT_PATH "/assets/models/deer.gltf";
     int toggleNode = -1;
 };
 

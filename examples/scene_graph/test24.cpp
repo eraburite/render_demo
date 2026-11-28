@@ -62,7 +62,7 @@
 
 namespace {
 
-constexpr const char *kPlanetPath = PROJECT_ROOT_PATH "/data/models/planet/planet.obj";
+constexpr const char *kPlanetPath = PROJECT_ROOT_PATH "/assets/models/planet/planet.obj";
 
 // One diffuse map plus the 1x1 white fallback the other model examples use: a
 // material without a map still has something bound.

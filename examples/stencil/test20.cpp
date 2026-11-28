@@ -152,7 +152,7 @@ void test(int argc, char **argv)
     uint32_t resizeAfter = 0;
     uint32_t dumpAfter = 0;
     float outlineWidth = 0.035f;
-    std::string modelPath = PROJECT_ROOT_PATH "/data/models/suzanne.gltf";
+    std::string modelPath = PROJECT_ROOT_PATH "/assets/models/suzanne.gltf";
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--dump") {

@@ -72,7 +72,7 @@
 
 namespace {
 
-const char *kHeightmapPath = "data/heightmaps/iceland_heightmap.png";
+const char *kHeightmapPath = "assets/heightmaps/iceland_heightmap.png";
 
 // One world unit per texel: the terrain is 2624 x 1756 units across, exactly
 // like the reference.  The near/far planes have to cover that, which is why this

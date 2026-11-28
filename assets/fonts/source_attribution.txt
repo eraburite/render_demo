@@ -10,7 +10,7 @@ Why it is here
 --------------
 examples/text_rendering rasterises this font into a single-channel glyph atlas
 with FreeType (see DESIGN.md 26.2).  The reference example loads the same file
-from LearnOpenGL's resources/ folder; keeping a copy under data/fonts makes the
+from LearnOpenGL's resources/ folder; keeping a copy under assets/fonts makes the
 example runnable from this repository alone.
 
 Only ASCII 32..126 is baked into the atlas by default, so the font's full

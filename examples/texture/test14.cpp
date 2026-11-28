@@ -85,7 +85,7 @@ void test(int argc, char **argv)
     auto mgr = RenderManager::Create(window, MAX_FRAMES_IN_FLIGHT);
 
     const auto vertices = makeQuad();
-    KtxTexture ktx = loadKtx(PROJECT_ROOT_PATH "/data/textures/metalplate01_rgba.ktx", /*preferSrgb=*/true);
+    KtxTexture ktx = loadKtx(PROJECT_ROOT_PATH "/assets/textures/metalplate01_rgba.ktx", /*preferSrgb=*/true);
 
     // The plate is a tiling texture, so the sampler must repeat; the framework
     // default (clamp) is what the per-face meshes need, not this one.

@@ -10,7 +10,7 @@ from pathlib import Path
 
 # Resolve relative to this file so the generator works from any working
 # directory and cannot scatter files across drives (see DESIGN.md 29.4).
-OUT = Path(__file__).resolve().parent.parent / "data" / "models" / "formats"
+OUT = Path(__file__).resolve().parent.parent / "assets" / "models" / "formats"
 OUT.mkdir(parents=True, exist_ok=True)
 
 # A unit cube: 8 vertices, 12 triangles.  MMD is +Y up, +Z toward the viewer.

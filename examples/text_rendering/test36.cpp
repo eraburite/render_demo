@@ -106,7 +106,7 @@ struct TextRun {
 };
 
 struct Options {
-    std::string font = "data/fonts/Antonio-Bold.ttf";
+    std::string font = "assets/fonts/Antonio-Bold.ttf";
     uint32_t fontSize = 48;   // reference: FT_Set_Pixel_Sizes(face, 0, 48)
     uint32_t atlasWidth = 0;  // 0 = let the packer choose
     std::optional<std::string> text;

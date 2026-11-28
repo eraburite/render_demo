@@ -102,14 +102,14 @@ void test(int argc, char **argv)
     auto mgr = RenderManager::Create(window, MAX_FRAMES_IN_FLIGHT);
 
     // ----- Assets ---------------------------------------------------------
-    KtxTexture ktx = loadKtx(PROJECT_ROOT_PATH "/data/textures/texturearray_rgba.ktx", /*preferSrgb=*/false);
+    KtxTexture ktx = loadKtx(PROJECT_ROOT_PATH "/assets/textures/texturearray_rgba.ktx", /*preferSrgb=*/false);
     if (ktx.layers < 2) {
         throw std::runtime_error("texturearray: the asset does not contain an array texture");
     }
     const uint32_t layerCount = ktx.layers;
     TextureImageSpec arraySpec = ktx.imageSpec();
 
-    Model gltf = loadModel(PROJECT_ROOT_PATH "/data/models/sphere.gltf");
+    Model gltf = loadModel(PROJECT_ROOT_PATH "/assets/models/sphere.gltf");
     if (!gltf.valid()) {
         throw std::runtime_error("texturearray: no triangle geometry in sphere.gltf");
     }

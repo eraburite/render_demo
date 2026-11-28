@@ -178,8 +178,8 @@ void test(int argc, char **argv)
     // ---- geometry ---------------------------------------------------------
     // samplebuilding has 12 meshes spread over 72 nodes; samplebuilding_glass
     // adds the transparent panes in the same world space.
-    SceneMesh building = mergeModel(loadModel(PROJECT_ROOT_PATH "/data/models/samplebuilding.gltf"));
-    SceneMesh glass = mergeModel(loadModel(PROJECT_ROOT_PATH "/data/models/samplebuilding_glass.gltf"));
+    SceneMesh building = mergeModel(loadModel(PROJECT_ROOT_PATH "/assets/models/samplebuilding.gltf"));
+    SceneMesh glass = mergeModel(loadModel(PROJECT_ROOT_PATH "/assets/models/samplebuilding_glass.gltf"));
     if (building.vertices.empty()) {
         throw std::runtime_error("subpasses: samplebuilding.gltf produced no geometry");
     }
@@ -193,7 +193,7 @@ void test(int argc, char **argv)
     normalizeMesh(building, center, scale);
     normalizeMesh(glass, center, scale);
 
-    KtxTexture glassTexture = loadKtx(PROJECT_ROOT_PATH "/data/textures/colored_glass_rgba.ktx",
+    KtxTexture glassTexture = loadKtx(PROJECT_ROOT_PATH "/assets/textures/colored_glass_rgba.ktx",
                                       /*preferSrgb=*/true);
     TextureImageSpec glassSpec = glassTexture.imageSpec();
     glassSpec.addressMode = vk::SamplerAddressMode::eRepeat;

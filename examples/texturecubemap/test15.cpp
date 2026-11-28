@@ -123,18 +123,18 @@ void test(int argc, char **argv)
     auto mgr = RenderManager::Create(window, MAX_FRAMES_IN_FLIGHT);
 
     // ----- Assets ---------------------------------------------------------
-    KtxTexture ktx = loadKtx(PROJECT_ROOT_PATH "/data/textures/cubemap_yokohama_rgba.ktx",
+    KtxTexture ktx = loadKtx(PROJECT_ROOT_PATH "/assets/textures/cubemap_yokohama_rgba.ktx",
                              /*preferSrgb=*/false);
     if (ktx.faces != 6) {
         throw std::runtime_error("texturecubemap: the cube map asset has no 6 faces");
     }
     TextureImageSpec cubeSpec = ktx.imageSpec();
 
-    EngineModel skybox = loadEngineModel(PROJECT_ROOT_PATH "/data/models/cube.gltf");
+    EngineModel skybox = loadEngineModel(PROJECT_ROOT_PATH "/assets/models/cube.gltf");
 
     std::vector<ReflectiveObject> objects;
-    objects.push_back({"sphere", loadEngineModel(PROJECT_ROOT_PATH "/data/models/sphere.gltf"), glm::mat4(1.0f)});
-    objects.push_back({"teapot", loadEngineModel(PROJECT_ROOT_PATH "/data/models/teapot.gltf"), glm::mat4(1.0f)});
+    objects.push_back({"sphere", loadEngineModel(PROJECT_ROOT_PATH "/assets/models/sphere.gltf"), glm::mat4(1.0f)});
+    objects.push_back({"teapot", loadEngineModel(PROJECT_ROOT_PATH "/assets/models/teapot.gltf"), glm::mat4(1.0f)});
 
     // The meshes are normalised to a 2 unit box, so a unit scale gives a
     // radius of ~1; +-1.8 keeps both objects apart and inside the 45 degree

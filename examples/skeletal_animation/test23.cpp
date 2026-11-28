@@ -166,7 +166,7 @@ struct SkeletonBlock {
 static_assert(sizeof(SkeletonBlock) == (3 + kMaxJoints) * 64, "std140: three mat4 plus the joint array");
 
 struct Options {
-    std::string modelPath = PROJECT_ROOT_PATH "/data/models/vampire/dancing_vampire.dae";
+    std::string modelPath = PROJECT_ROOT_PATH "/assets/models/vampire/dancing_vampire.dae";
     std::string loader; // "" = extension dispatch
     int clip = 0;
     bool hasTime = false;

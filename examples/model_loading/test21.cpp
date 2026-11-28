@@ -80,7 +80,7 @@ struct ModelViewBlock {
 static_assert(sizeof(ModelViewBlock) == 192, "std140 block must be 3 mat4");
 
 struct Options {
-    std::string modelPath = PROJECT_ROOT_PATH "/data/models/backpack/backpack.obj";
+    std::string modelPath = PROJECT_ROOT_PATH "/assets/models/backpack/backpack.obj";
     std::string loader; // "" = extension dispatch
     bool dump = false;
     uint32_t dumpAfter = 0;

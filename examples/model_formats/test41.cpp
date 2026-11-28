@@ -47,7 +47,7 @@
 
 namespace {
 
-constexpr const char *kFormatDir = PROJECT_ROOT_PATH "/data/models/formats/";
+constexpr const char *kFormatDir = PROJECT_ROOT_PATH "/assets/models/formats/";
 
 struct Options {
     bool list = false;
@@ -193,7 +193,7 @@ bool runSelfTest(const Options &options)
     std::filesystem::remove(tempPath);
 
     // Extension fallback still picks the hand-written loader over assimp.
-    const ModelResolveInfo obj = registry.resolve(PROJECT_ROOT_PATH "/data/models/backpack/backpack.obj");
+    const ModelResolveInfo obj = registry.resolve(PROJECT_ROOT_PATH "/assets/models/backpack/backpack.obj");
     check(obj.loader != nullptr && std::string(obj.loader->name()) == "obj",
           "extension fallback keeps .obj on the hand-written loader");
 

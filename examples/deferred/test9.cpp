@@ -150,7 +150,7 @@ void test(int argc, char **argv)
     std::vector<glm::mat4> models;
 
     try {
-        Model gltf = loadModel(PROJECT_ROOT_PATH "/data/models/armor/armor.gltf");
+        Model gltf = loadModel(PROJECT_ROOT_PATH "/assets/models/armor/armor.gltf");
         if (gltf.valid()) {
             vertices = toEngineVertices(gltf);
             // The framework's index-buffer binding infers the index type from the

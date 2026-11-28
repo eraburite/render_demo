@@ -37,7 +37,7 @@ namespace {
 
 std::string parseModelPath(int argc, char **argv)
 {
-    std::string path = PROJECT_ROOT_PATH "/data/models/deer.gltf";
+    std::string path = PROJECT_ROOT_PATH "/assets/models/deer.gltf";
     for (int i = 1; i + 1 < argc; ++i) {
         if (std::string(argv[i]) == "--model") {
             path = argv[i + 1];

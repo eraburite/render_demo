@@ -36,14 +36,16 @@ render_demo/
 │   ├── set_package_info.cmake
 │   └── ...
 ├── configuration/root_directory.h.in   # 生成 PROJECT_ROOT_PATH 宏
-├── assets/
-│   ├── textures/                   # 示例贴图
-│   └── images/                     # raw2rgb 输入/输出
+├── assets/                         # ===== 示例运行期资源（单一根，见 32）=====
+│   ├── models/                     # 迁移示例的模型：glTF（suzanne / deer / sphere / armor / plane / cube / teapot / torusknot / samplebuilding + glass / deferred_floor）、backpack/{obj,mtl,diffuse.jpg}（见 19）、planet/（见 22）、vampire/{dancing_vampire.dae,textures/}（见 21）、formats/{sample.pmx,pmd,x,vmd}（见 29）
+│   ├── textures/                   # awesomeface / container2（+specular）；KTX（metalplate01 / yokohama cubemap / texturearray / rocks 颜色+法线高度 / colored_glass，见 15）；breakout/ 12 张精灵与粒子贴图（见 27.3）
+│   ├── fonts/                      # Antonio-Bold.ttf + SIL OFL 许可（文字渲染的字形来源，见 26.2）
+│   ├── heightmaps/                 # iceland_heightmap.png（见 22）
+│   ├── levels/{one,two,three,four}.lvl  # Breakout 的四张关卡（见 27.7）
+│   ├── images/                     # raw2rgb 输入/输出
+│   └── ltc/{ltc1.f32,ltc2.f32}     # LTC 1/2 查找表（64×64 RGBA32F 小端，各 64 KB，见 25.4）
 ├── doc/                            # 设计讨论存档（当前为空）
 ├── external/                       # 全部入库（见 30.3）：glm（含 share/）/ glfw（含 lib/glfw3.lib）/ stb_image.h / tiny_obj_loader.h / tinygltf（json.hpp + tiny_gltf.h）/ assimp 头文件（仅头，见 19.2）/ freetype 头文件（仅头，见 26.6）；仅 *.bak 备份被忽略
-├── data/models/                    # 迁移示例的 glTF 模型（suzanne / deer / sphere / armor / plane / cube / teapot / torusknot / samplebuilding + glass）；backpack/{obj,mtl,diffuse.jpg}（见 19）；vampire/{dancing_vampire.dae,textures/}（见 21）
-├── data/textures/                  # 迁移示例的 KTX 纹理（metalplate01 / yokohama cubemap / texturearray / rocks 颜色+法线高度 / colored_glass）
-├── data/fonts/                     # Antonio-Bold.ttf + SIL OFL 许可（文字渲染的字形来源，见 26.2）
 ├── extensions/                     # ===== 框架拓展能力（静态库 frameworkExtensions，与 src 平级，见 30）=====
 │   ├── CMakeLists.txt              # 拓展库定义 + 三方依赖策略 + assimp 运行期 DLL 探测
 │   ├── model/                      # 模型加载：加载器中立数据层 / 注册表 / 插件 / 后处理流水线 / 7 种格式加载器 / 骨骼动画
@@ -140,13 +142,6 @@ render_demo/
 │   ├── raytracing_reflections/{test46.cpp,shader/}         # 递归反射：payload 结构 + spec 常量控制弹射数（见 31.3）
 │   ├── ray_query/{test47.cpp,shader/}                      # rayQueryEXT：无需 RT 管线的查询式追踪（见 31.3）
 │   └── compute_raytracing/{test48.cpp,shader/}             # SDF raymarching：不依赖任何 RT 扩展的降级路径（见 31.3）
-├── data/                               # 示例运行期资源，统一由 assetPath() 相对 PROJECT_ROOT_PATH 解析
-│   ├── levels/{one,two,three,four}.lvl  # Breakout 的四张关卡（见 27.7）
-│   ├── textures/breakout/               # 12 张精灵/粒子贴图（见 27.3）
-│   ├── fonts/Antonio-Bold.ttf           # 26 的 FreeType 字体
-│   ├── models/formats/{sample.pmx,sample.pmd,sample.x,sample.vmd}  # 29 的合成测试资源
-│   └── models/vampire/                  # 21 的蒙皮模型与贴图
-├── assets/ltc/{ltc1.f32,ltc2.f32}    # LTC 1/2 查找表（64×64 RGBA32F 小端，各 64 KB，见 25.4）
 ├── tools/gltf2obj.py               # glTF -> OBJ 导出，用于生成往返验证资源（见 18.5）
 ├── tools/gen_model_formats.py      # 生成 29 的四个合成模型（可复现、无版权、见 29.5）
 └── build_vs/                       # Visual Studio 构建目录（含各示例可执行程序）
@@ -4485,3 +4480,70 @@ swapchain img : UNDEFINED → TRANSFER_DST → (copy) → PRESENT_SRC
 | 完全没有光追硬件 | `compute_raytracing` 是参考实现：解析 SDF 步进 + 手写求交，零光追扩展，`--self-test` 用 CPU 镜像 SDF 校验几何 |
 | `--self-test` | `ShaderBindingLayout` 是纯 CPU 类型，在**没有光追硬件**的机器上也能验证对齐算术 |
 | 递归深度 | 设备 `maxRayTracingRecursionDepth` 本机 31；示例只用到 1/2/4，靠特化常量而非编译期常量控制 |
+
+## 32. 资源根统一：`data/` 并入 `assets/`
+
+### 32.1 为什么会有两个根
+
+`assets/` 是仓库最早的一批示例（`simplest` / `texture` / `raw2rgb` + LTC 查找表）用的资源根；`data/` 则是第 14 章起迁移 Sascha Willems 与 LearnOpenGL 示例时，照参考仓库（Vulkan-Samples）的目录名新建的。结果同一个仓库并存两个资源根：
+
+| 问题 | 具体表现 |
+| --- | --- |
+| 同类资源两处分散 | 贴图既有 `assets/textures/awesomeface.png`，也有 `data/textures/breakout/awesomeface.png`；模型全在 `data/`，而 `assets/models/` 是个空目录 |
+| 目录名有歧义 | `assets/` 听起来像"全部资源"，实际只装 3 张 PNG + 2 个 LTC 表；新读者无法从目录名判断该把模型放哪 |
+| 命名来源已失效 | `data/` 之所以叫这个名字，只是因为参考仓库这么叫。参考侧的 `data/shaders/glsl/` 在本框架里根本不存在（GLSL 已随各示例进 `examples/*/shader/`），这个名字失去了唯一依据 |
+
+第 31 章把示例数推到 48、资源类型扩到 6 类（模型 / 纹理 / 字体 / 高度图 / 关卡 / 图像）之后，两个根的维护成本从"审美问题"变成"每次新增示例都要先想一下放哪"。
+
+### 32.2 目录映射（58 个文件，全部 `git mv`）
+
+| 原路径 | 新路径 | 文件数 | 内容 |
+| --- | --- | --- | --- |
+| `data/models/` | `assets/models/` | 31 | glTF（suzanne / deer / sphere / armor / plane / cube / teapot / torusknot / samplebuilding + glass / deferred_floor）、`backpack/`、`planet/`、`vampire/`、`formats/` |
+| `data/textures/` | `assets/textures/` | 18 | 6 个 KTX + `breakout/` 12 张精灵；与该目录原有的 3 张 PNG（awesomeface / container2 / container2_specular）并存，互不重名 |
+| `data/fonts/` | `assets/fonts/` | 3 | `Antonio-Bold.ttf` + SIL OFL + 来源说明 |
+| `data/levels/` | `assets/levels/` | 4 | `{one,two,three,four}.lvl` |
+| `data/heightmaps/` | `assets/heightmaps/` | 2 | `iceland_heightmap.png` + 来源说明 |
+
+合并后 `assets/` 是唯一资源根，7 个子目录各自对应一类资源（`models` / `textures` / `fonts` / `heightmaps` / `levels` / `images` / `ltc`）。用 `git mv` 而非删除重建，58 个文件在 `git status` 里都显示为 `R`（rename），`git log --follow` 仍可追溯每个资源的来历。
+
+**踩到的一个坑**：`git mv data/textures assets/textures` 在目标目录**已存在**时，会把源目录整个塞进去变成 `assets/textures/textures/`（`models` 因为事先 `rmdir` 了空目录才没中招）。发现后逐个把子项重新 `git mv` 上一层再 `rmdir` 空目录；这条对任何"合并两个已存在的目录"的操作都适用，`git mv` 没有"合并目录"语义。
+
+### 32.3 代码改造：45 处字面量，3 种解析口径
+
+路径全部以字符串字面量出现在示例里，三种口径**都只需要改前缀、不需要改逻辑**：
+
+| 口径 | 用法 | 出现在 |
+| --- | --- | --- |
+| `PROJECT_ROOT_PATH "/<path>"` | 编译期绝对路径，与 cwd 无关 | 15 个示例的默认资源路径 |
+| `assetPath("<path>")` | 示例内局部 helper = `PROJECT_ROOT_PATH + "/" + path` | `breakout` 的 17 处（关卡 / 精灵 / 字体 / 粒子贴图） |
+| 裸相对路径 + 回退 | 先查 cwd，miss 再拼 `PROJECT_ROOT_PATH`（`loadTexture` / `FontAtlas::resolveAsset`） | `heightmap_terrain` 的高度图、`text_rendering` 的字体 |
+
+替换规则是五个前缀的统一映射（`data/models`→`assets/models` 等），共 **45 行**：`models` 19（18 处路径 + 1 处注释）、`textures` 19（18 + 1 注释）、`levels` 4、`fonts` 2、`heightmaps` 1，分布在 **18 个示例** + `extensions/model/GltfModelLoader.cpp`、`extensions/texture/KtxLoader.h` 的注释里。
+
+两个刻意**不动**的地方：
+
+1. `examples/parallaxmapping/shader/*.frag|vert` 注释里的 `data/shaders/glsl/parallaxmapping/` —— 那是**参考仓库**的路径，改成 `assets/` 反而错。
+2. `tools/gen_model_formats.py` 的 `OUT` 用 `Path` 分段拼接（`/"data"/"models"/"formats"`），字符串整体替换命不中，手工改成 `/"assets"/"models"/"formats"`。这类"路径不是一整串字面量"的地方，纯文本替换一定会漏，改完必须用 grep 复核。
+
+同类残留还有 `assets/fonts/source_attribution.txt` 里的一句"keeping a copy under data/fonts"——说明性文本也要跟着改，否则新人照着找会扑空。
+
+### 32.4 验证
+
+| 项 | 结果 |
+| --- | --- |
+| 全量 Release 构建 | **0 error**，48 个 exe（改的是字符串字面量，但仍全量重建以覆盖 `KtxLoader.h` 注释触发的连带编译） |
+| 有 `--dump` 的 10 个资源示例 | `deferred` / `heightmap_terrain` / `model_formats` / `model_loading` / `scene_graph` / `skeletal_animation` / `stencil` / `subpasses` / `text_rendering` / `breakout`：全部 `rc=0` 并产出 PPM |
+| 无 `--dump` 的 8 个资源示例 | `geometryshader` / `gltfloading` / `gltfscenerendering` / `parallaxmapping` / `tessellation` / `texture` / `texturearray` / `texturecubemap`：5 s 冒烟，日志里 `[model] gltf: D:/Study/Git/render_demo/assets/models/...` 实际读到了新路径，0 条 `error` / `not found` |
+| 加载数字与历史基线一致 | `model_loading`：**49060 顶点 / 67907 三角形**（与 30.5 记录相同）；`texture`：512×512 / 10 mips / 1398100 B（与 30.5 相同）；`texturearray` 256×256 / 7 层；`texturecubemap` 512×512 / 6 面 / 10 mips |
+| 逐项自检 | `model_formats --self-test` **65/65**；`--verify` VBO 8×56 B / IBO 36×4 B 与 CPU 一致；`--probe assets/models/formats/sample.pmx` → pmx 得分 **100**；`breakout --verify` 99 个砖块实例与 CPU 数组一致；`text_rendering --verify` 1632 B 实例缓冲与 CPU 版式一致 |
+| 输出可复现 | `scene_graph --dump` → `coverage=0.452869 uniqueColors=3180`，与历史记录逐位相同 |
+| 残留扫描 | 全仓（排除 `build_vs` / `external` / `dump`）已无 `data/models`、`data/textures`、`data/fonts`、`data/levels`、`data/heightmaps` 引用；仅 `DESIGN.md` 的历史章节保留原样（见下方说明） |
+
+### 32.5 约定
+
+- **新资源一律放 `assets/`**，不再新增第二个资源根。放哪一类看 32.2 的七个子目录；新类别就新开一个子目录，并在第 2 章的目录树里登记。
+- 资源路径**优先用 `PROJECT_ROOT_PATH` 拼接**：仓库里已入库的三方库（glm/glfw）也是这个口径，好处是 exe 在任何 cwd 下都能跑。只有需要"允许用户在 cwd 覆盖同名资源"的场合才走 `loadTexture` 那条 cwd 优先的回退路径。
+- 二进制资源用 `git mv` 迁移，保留 rename 历史；不要"删了再拷"。
+
+> **历史路径说明**：第 14–31 章里出现的 `data/models/...`、`data/textures/...`、`data/fonts/...`、`data/levels/...`、`data/heightmaps/...` 描述的是**当时**的位置；本轮之后它们都在 `assets/` 下同名子目录里，历史叙述不改写，按 32.2 的映射表理解。

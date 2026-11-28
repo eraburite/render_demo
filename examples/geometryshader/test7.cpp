@@ -98,7 +98,7 @@ void test(int argc, char **argv)
     auto mgr = RenderManager::Create(window, MAX_FRAMES_IN_FLIGHT, req);
 
     // ----- Load model -------------------------------------------------------
-    std::string modelPath = PROJECT_ROOT_PATH "/data/models/suzanne.gltf";
+    std::string modelPath = PROJECT_ROOT_PATH "/assets/models/suzanne.gltf";
     Model gltf = loadModel(modelPath);
     if (!gltf.valid()) {
         throw std::runtime_error("geometryshader: failed to load " + modelPath);

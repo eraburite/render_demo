@@ -107,14 +107,14 @@ void test(int argc, char **argv)
     auto mgr = RenderManager::Create(window, MAX_FRAMES_IN_FLIGHT);
 
     // ----- Assets ---------------------------------------------------------
-    Model gltf = loadModel(PROJECT_ROOT_PATH "/data/models/plane.gltf");
+    Model gltf = loadModel(PROJECT_ROOT_PATH "/assets/models/plane.gltf");
     if (!gltf.valid()) {
         throw std::runtime_error("parallaxmapping: no triangle geometry in plane.gltf");
     }
     const std::vector<Vertex> vertices = toEngineModel(gltf);
 
-    KtxTexture colorKtx = loadKtx(PROJECT_ROOT_PATH "/data/textures/rocks_color_rgba.ktx", /*preferSrgb=*/true);
-    KtxTexture normalHeightKtx = loadKtx(PROJECT_ROOT_PATH "/data/textures/rocks_normal_height_rgba.ktx",
+    KtxTexture colorKtx = loadKtx(PROJECT_ROOT_PATH "/assets/textures/rocks_color_rgba.ktx", /*preferSrgb=*/true);
+    KtxTexture normalHeightKtx = loadKtx(PROJECT_ROOT_PATH "/assets/textures/rocks_normal_height_rgba.ktx",
                                          /*preferSrgb=*/false);
     if (!colorKtx.valid() || !normalHeightKtx.valid()) {
         throw std::runtime_error("parallaxmapping: failed to load the rocks texture pair");

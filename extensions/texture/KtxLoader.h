@@ -6,7 +6,7 @@
 #include "typedefs.h"
 
 // Minimal KTX 1.0 reader for the asset pack that ships with the reference
-// examples.  Every texture in data/textures is uncompressed (RGBA8 or R16), so
+// examples.  Every texture in assets/textures is uncompressed (RGBA8 or R16), so
 // the loader only accepts those and fails loudly on anything else instead of
 // silently producing garbage.
 //

@@ -755,17 +755,17 @@ struct SpriteKindSpec {
 };
 
 constexpr SpriteKindSpec kSpriteKinds[] = {
-    {"background", "data/textures/breakout/background.jpg", 1},
-    {"block_solid", "data/textures/breakout/block_solid.png", kMaxBricks},
-    {"block", "data/textures/breakout/block.png", kMaxBricks},
-    {"paddle", "data/textures/breakout/paddle.png", 1},
-    {"powerup_speed", "data/textures/breakout/powerup_speed.png", kMaxPowerUps},
-    {"powerup_sticky", "data/textures/breakout/powerup_sticky.png", kMaxPowerUps},
-    {"powerup_passthrough", "data/textures/breakout/powerup_passthrough.png", kMaxPowerUps},
-    {"powerup_increase", "data/textures/breakout/powerup_increase.png", kMaxPowerUps},
-    {"powerup_confuse", "data/textures/breakout/powerup_confuse.png", kMaxPowerUps},
-    {"powerup_chaos", "data/textures/breakout/powerup_chaos.png", kMaxPowerUps},
-    {"ball", "data/textures/breakout/awesomeface.png", 1},
+    {"background", "assets/textures/breakout/background.jpg", 1},
+    {"block_solid", "assets/textures/breakout/block_solid.png", kMaxBricks},
+    {"block", "assets/textures/breakout/block.png", kMaxBricks},
+    {"paddle", "assets/textures/breakout/paddle.png", 1},
+    {"powerup_speed", "assets/textures/breakout/powerup_speed.png", kMaxPowerUps},
+    {"powerup_sticky", "assets/textures/breakout/powerup_sticky.png", kMaxPowerUps},
+    {"powerup_passthrough", "assets/textures/breakout/powerup_passthrough.png", kMaxPowerUps},
+    {"powerup_increase", "assets/textures/breakout/powerup_increase.png", kMaxPowerUps},
+    {"powerup_confuse", "assets/textures/breakout/powerup_confuse.png", kMaxPowerUps},
+    {"powerup_chaos", "assets/textures/breakout/powerup_chaos.png", kMaxPowerUps},
+    {"ball", "assets/textures/breakout/awesomeface.png", 1},
 };
 static_assert(std::size(kSpriteKinds) == static_cast<size_t>(Sprite::eCount), "sprite table and enum disagree");
 
@@ -1109,14 +1109,14 @@ void runSelfTests()
     bool threw = false;
     try {
         Level level;
-        level.load(assetPath("data/levels/does-not-exist.lvl"), 1280.0f, 360.0f);
+        level.load(assetPath("assets/levels/does-not-exist.lvl"), 1280.0f, 360.0f);
     } catch (const std::exception &) {
         threw = true;
     }
     check(threw, "a missing level file throws instead of producing an empty level");
 
     Level one;
-    one.load(assetPath("data/levels/one.lvl"), 1280.0f, 360.0f);
+    one.load(assetPath("assets/levels/one.lvl"), 1280.0f, 360.0f);
     check(!one.bricks.empty() && !one.completed(), "one.lvl loads bricks and is not already completed");
 
     // 15x8 grid at 1280x360: bricks are 85.33 x 45 px, all inside the playfield.
@@ -1133,7 +1133,7 @@ void runSelfTests()
             Level level;
             // resetLevel() reloads from sourcePath, so this must be an absolute
             // path (the same one assetPath() gives the real level loader).
-            level.sourcePath = assetPath("data/levels/one.lvl");
+            level.sourcePath = assetPath("assets/levels/one.lvl");
             GameObject brick;
             brick.position = glm::vec2(10.0f, 10.0f);
             brick.size = glm::vec2(50.0f, 20.0f);
@@ -1257,7 +1257,7 @@ void test(int argc, char **argv)
     std::vector<Level> levels(4);
     static const char *levelFiles[] = {"one.lvl", "two.lvl", "three.lvl", "four.lvl"};
     for (size_t i = 0; i < levels.size(); ++i) {
-        levels[i].load(assetPath((std::string("data/levels/") + levelFiles[i]).c_str()), gameWidth,
+        levels[i].load(assetPath((std::string("assets/levels/") + levelFiles[i]).c_str()), gameWidth,
                        gameHeight / 2.0f);
     }
 
@@ -1267,7 +1267,7 @@ void test(int argc, char **argv)
     game.rng = Rng(options.seed);
     game.initialise(levels, options.startLevel);
 
-    const FontAtlas atlas = FontAtlas::load(assetPath("data/fonts/Antonio-Bold.ttf"), 24, 32, 126, 0);
+    const FontAtlas atlas = FontAtlas::load(assetPath("assets/fonts/Antonio-Bold.ttf"), 24, 32, 126, 0);
 
     // ----- passes -----------------------------------------------------------
     const vk::SampleCountFlagBits maxSamples = mgr->getMaxUsableSampleCount();
@@ -1382,7 +1382,7 @@ void test(int argc, char **argv)
     // ----- particles --------------------------------------------------------
     // Same shader pair as the sprites but a different instance record and an
     // additive blend state, so it needs its own pipeline.
-    const LoadedTexture particleTexture = loadTexture(assetPath("data/textures/breakout/particle.png").c_str());
+    const LoadedTexture particleTexture = loadTexture(assetPath("assets/textures/breakout/particle.png").c_str());
     auto particleLayout = std::make_shared<DescriptorLayoutAtlas>(MAX_FRAMES_IN_FLIGHT);
     auto particleCameraSet = DescriptorLayoutAtlas::makeSet<SpriteComponent, SpriteComponentTable>(
         0, {SpriteComponent::eCamera}, UpdateFrequency::eEachFrame, false);

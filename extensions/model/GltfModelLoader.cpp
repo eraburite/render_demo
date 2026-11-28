@@ -183,7 +183,7 @@ glm::mat4 nodeTransform(const tinygltf::Node &node)
 // Resolves a side-car URI against the model's directory.  Previously the
 // loader handed the raw URI to stb_image, which resolved it against the
 // process working directory -- correct only when the sample happened to be run
-// from data/models.
+// from assets/models.
 std::string resolveUri(const std::string &baseDirectory, const std::string &uri)
 {
     if (uri.empty()) return {};
