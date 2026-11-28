@@ -42,7 +42,7 @@ render_demo/
 │   ├── fonts/                      # Antonio-Bold.ttf + SIL OFL 许可（文字渲染的字形来源，见 26.2）
 │   ├── heightmaps/                 # iceland_heightmap.png（见 22）
 │   ├── levels/{one,two,three,four}.lvl  # Breakout 的四张关卡（见 27.7）
-│   ├── images/                     # raw2rgb 输入/输出
+│   ├── images/                     # raw2rgb 的输出目录（运行期由示例创建，内容全部被忽略，见 32.6）
 │   └── ltc/{ltc1.f32,ltc2.f32}     # LTC 1/2 查找表（64×64 RGBA32F 小端，各 64 KB，见 25.4）
 ├── doc/                            # 设计讨论存档（当前为空）
 ├── external/                       # 全部入库（见 30.3）：glm（含 share/）/ glfw（含 lib/glfw3.lib）/ stb_image.h / tiny_obj_loader.h / tinygltf（json.hpp + tiny_gltf.h）/ assimp 头文件（仅头，见 19.2）/ freetype 头文件（仅头，见 26.6）；仅 *.bak 备份被忽略
@@ -1233,7 +1233,7 @@ python tools/gltf2obj.py data/models/deer.gltf /tmp/deer.obj             # 用�
 ./build/examples/particle/particle --frames 30 --verify          # 30 帧后回读并检查覆盖
 ./build/examples/particle/particle --local-size 128              # 特化工作组宽度
 ./build/examples/raw2rgb/raw2rgb --width 128 --height 96         # 换尺寸并自校验
-./build/examples/raw2rgb/raw2rgb --input assets/images/input_raw12_64x64.raw
+./build/examples/raw2rgb/raw2rgb --input assets/images/input_raw12_64x64.raw  # 该输入由上一次合成模式写出（见 32.6）
 ```
 
 调试产物默认写到**当前工作目录**下的 `dump/`（已加入 `.gitignore`），文件名形如
@@ -4313,7 +4313,7 @@ VMD 按骨骼名寻址，而 `AnimationChannel` 原本只有 `nodeIndex`。新�
 | 三类能力实测 | 模型：`model_loading` 经 `ObjModelLoader` 加载 backpack → 49060 顶点 / 67907 三角形（与 19 章一致）；纹理：`texture` → 512×512 / 10 mips；dump：`dump/*.ppm` 产出 49 张 PPM |
 | Validation | 41 / 41 示例 `--dump --dump-after 1` 冒烟：**0 VUID、0 Validation Error、0 崩溃**（rc=124 为持续渲染示例被 timeout 主动终止，非异常退出） |
 | `external` 入库 | 440 个新文件；仅 `stb_image.h.bak` 仍被忽略 |
-| 提交卫生 | 全量扫描回写的 `assets/images/output_rgb_64x64.ppm` / `output_unpack_raw16_64x64.raw` 已 `git restore`，不入库 |
+| 提交卫生 | 全量扫描回写的 `assets/images/output_rgb_64x64.ppm` / `output_unpack_raw16_64x64.raw` 作 `git restore` 处理；当时这两个文件**仍在版本库里**（restore 只恢复内容、不取消跟踪），已在 32.6 取消失踪并加入 `.gitignore` |
 
 ### 30.6 剩余限制与后续
 
@@ -4547,3 +4547,44 @@ swapchain img : UNDEFINED → TRANSFER_DST → (copy) → PRESENT_SRC
 - 二进制资源用 `git mv` 迁移，保留 rename 历史；不要"删了再拷"。
 
 > **历史路径说明**：第 14–31 章里出现的 `data/models/...`、`data/textures/...`、`data/fonts/...`、`data/levels/...`、`data/heightmaps/...` 描述的是**当时**的位置；本轮之后它们都在 `assets/` 下同名子目录里，历史叙述不改写，按 32.2 的映射表理解。
+
+### 32.6 全仓路径复查（迁移后的第二轮扫描）
+
+32.4 只验证了"示例能不能跑通"，没有回答"仓库里还有没有别的路径错"。迁移提交后再做了一轮不依赖运行的全仓静态扫描，四个维度：
+
+| 维度 | 方法 | 结论 |
+| --- | --- | --- |
+| 旧根残留 | `data/{models,textures,fonts,levels,heightmaps}` 全文搜索（含注释、脚本、CMake） | **0 处**。仅 `parallax.frag/.vert` 注释里的 `data/shaders/glsl/...` 保留——那是**参考仓库**的路径（见 32.3） |
+| 字面量可达性 | 抽出代码里 43 条 `assets/...` 字面量，逐条 `stat` 磁盘 | 42 条存在，1 条 `does-not-exist.lvl` 是 `breakout --self-test` 里的负向用例（断言"缺关卡应抛异常"） |
+| 资源内部引用 | 解析全部 `.gltf` 的 `buffers[].uri` / `images[].uri` 与 `.mtl` 的 `map_*`，按**文件自身所在目录**解析 | 4 条引用中 2 条断链，见下方"既有问题" |
+| 构建链可达性 | 解析 169 条 `vulkan_compile_shader(INFILE ...)` 与各 `OUTFILE` 父目录 | 输入 169/169 存在，输出目录全部存在；48 个示例目录与 `examples/CMakeLists.txt` 的清单**一一对应**，无遗漏无悬空 |
+
+**修掉的一处（文档与事实矛盾）**：30.5 表格曾写"`output_rgb_64x64.ppm` / `output_unpack_raw16_64x64.raw` 已 `git restore`，不入库"，但 `git ls-files` 显示两者**一直在版本库里**（自 `8b505e5` 起）——`git restore` 对已跟踪文件只恢复内容、不取消跟踪，所以每跑一次 `raw2rgb` 都会产生 diff，前两轮提交都得手工 restore 一遍。本轮做了 `git rm --cached` 并在 `.gitignore` 补两条：
+
+```gitignore
+/assets/images/input_raw12_*.raw      # 合成输入副本
+/assets/images/output_unpack_raw16_*.raw
+/assets/images/output_rgb_*.ppm
+```
+
+安全性来自 `test6.cpp:435` 的 `create_directories(options.outputDir)`：目录不需要入库，示例自己会建。产物是确定性派生物（固定尺寸 + 固定合成图案 + 固定去马赛克），随时可重算，没有"金标准基线"价值。副作用是 DESIGN 第 14 章那条 `--input assets/images/input_raw12_64x64.raw` 的命令在干净 clone 下**首次**会找不到文件，已在该行注明"由上一次合成模式写出"。
+
+**未修的四项**（性质不同，逐一说明）：
+
+| 项 | 现象 | 为何不动 |
+| --- | --- | --- |
+| `.clangd` 的 5 条 `-I` | 全部是 `D:/Study/Git/render_demo/...` 与 `D:/Tools/VulkanSDK/1.4.341.1/Include` 绝对路径 | 仓库里**没有** `compile_commands.json`（未开 `CMAKE_EXPORT_COMPILE_COMMANDS`），这 5 条是 clangd 唯一的头文件来源，删掉索引就废。正确的长期解是导出编译数据库后把 `.clangd` 收缩成 `CompilationDatabase: build_vs`，属于工具链改造、有破坏 IDE 的风险，留待独立一轮 |
+| `render_demo.code-workspace` 的 `clangd.path` | `D:/Tools/clang_llvm-22.1.3/bin/clangd.exe` | 同上，本机路径；换机器必须改，但改成什么值取决于用户的安装位置，无法在仓库里给出通用答案 |
+| `cmake/cpack-configs/nsis.cmake` | `CPACK_NSIS_MUI_ICON` 指向 `${CMAKE_SOURCE_DIR}/docs/images/kompute.ico`，`docs/` 不存在；整个 cpack 目录还带 Kompute 的文案与 URL | 该链**从未接线**：主 `CMakeLists.txt` 没有 `include(set_package_info.cmake)`，`file(GLOB ...)` 只在被 include 后才生效。死文件不影响任何构建；删除或重写取决于是否要做安装包，属于产品决策 |
+| `assets/models/backpack/backpack.mtl` | `map_Bump normal.png` / `map_Ks specular.jpg` 指向的文件从未入库（`e10a05e` 起只有 `diffuse.jpg`） | 历史遗留，非本轮迁移造成：`model_loading` 走 OBJ 加载器时只取 `map_Kd`，assimp 路径也不会因缺 normal/specular 失败。要修得先有这两张贴图，属于补资源而非改路径；已记在 `assets/models/backpack/source_attribution.txt` |
+
+**另有一处"陈旧产物"**：`build_vs/examples/*/Debug/*.exe`（25 个，`2026-11-26` 构建）内部仍是 `data/models/...` 字符串，而源码是 `11-28` 的。`build_vs/` 被 `.gitignore` 排除、不入库，但直接运行这些 Debug 版会去找已不存在的 `data/`。Release 侧已全量重建、确认干净；Debug 侧要么重建要么视为废弃——**构建目录不是真理源，只有 `Release` 的验证结论算数**。
+
+**扫描脚本的可复用结论**：这三条正则足以覆盖本仓库的路径风险，比"看一眼目录"可靠得多——
+
+```
+# 1) 旧根残留
+grep -rn "data/\(models\|textures\|fonts\|levels\|heightmaps\)" --exclude-dir={build_vs,external,.git,dump} .
+# 2) 字面量可达性：抽 assets/... 逐条 stat（Python 脚本，见本轮会话）
+# 3) 构建链可达性：抽 vulkan_compile_shader 的 INFILE/OUTFILE 逐条 stat
+```
