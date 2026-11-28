@@ -1,0 +1,101 @@
+classDiagram
+    class RenderManager {
+        +Create(window, frames) RenderManager
+        +CreateShaderAssetGroup(input, desc) ShaderAssetGroup
+        +CreateShaderAssetGroup(desc) ShaderAssetGroup
+        +CreateRenderPass(detail, attachments) IRenderPass
+        +CreatePipeline(input, desc, asset, rp, subpass) GraphicsPipeline
+        +CreateComputePipeline(desc, asset, spirvEntry) ComputePipeline
+        +UploadSequence() OnceSequence
+        +DrawFrameSequence() LoopSequence
+        +getSwapChain() / getInstance() / getLogicalDevice()
+        +getGraphicsQueue() / getComputeQueue() / getPresentQueue()
+        +getQueueFamilyIndices() / getComputeQueueFamilyIndex()
+        +DefaultDepthFormat() / getMaxUsableSampleCount()
+        +checkAndResetResize() / reCreateSwapChain()
+    }
+    class SequenceBase {
+        <<abstract>>
+        #device / graphicsQueue / presentQueue / limits
+        +OnUpdateRawData(asset, type, T)
+        +OnUpdateRawData(asset, id, T)
+        +EnableTimestampLogging(bool)
+        #CreateTimestampQueryPool()
+        #LogExecutionTime()
+    }
+    class LoopSequence {
+        +prepareFrame() bool
+        +beginRecording() / endRecording()
+        +beginComputeRecording() / endComputeRecording()
+        +recordDispatch(pipe, dispatchSize) / recordComputeBarrier()
+        +BeginRenderPass / EndRenderPass / nextSubpass
+        +recordDraw(pipe) / record(op)
+        +recordPass(rp, callable)
+        +submitFrame() / presentFrame() bool
+        +InvalidateDescriptorBindings()
+    }
+    class OnceSequence {
+        +emitToDevice(asset)
+        +submit(op)
+        +ReadBack(asset, key, byteSize) bytes
+    }
+    class ShaderAssetGroup {
+        +addShaderSpirvCode(name, spv)
+        +UpdateInputResourceData()
+        +UpdateDescriptorResourceData()
+        +UpdateConstantsResource()
+        +SyncDataToDevice(cmd, frame)
+        +bindToPipeline(cmd)
+        +PushConstantData(frame)
+    }
+    class GraphicsPipeline {
+        +BuiltUp(renderPass, subpass)
+        +recordDrawCommand(cmd, frame)
+        +recordDrawCommand(cmd, frame, bindingState)
+        #descriptorSetFor(frame, setId)
+    }
+    class ComputePipeline {
+        +BuiltUp()
+        +recordDispatchCommand(cmd, frame, dispatchSize)
+        +recordDispatchCommand(cmd, frame, dispatchSize, bindingState)
+        #descriptorSetFor(frame, setId)
+    }
+    class DescriptorBindingState {
+        +Reset()
+        +OnPipelineLayoutBound(layout)
+        +FirstUnboundSet(setCount)
+        +MarkBoundRange(firstSet, count)
+        -layout / boundMask
+    }
+    class IRenderPass {
+        <<interface>>
+        +begin / end / nextSubpass
+        +createFramebuffers()
+        +sampleCount() / colorAttachmentCount()
+    }
+    class IDeviceResource {
+        <<interface>>
+        +updateRawData(data)
+        +Transfer() / InputBinder() / ResourceUpdater()
+    }
+    SequenceBase <|-- OnceSequence
+    SequenceBase <|-- LoopSequence
+    RenderManager --> LoopSequence : 创建
+    RenderManager --> OnceSequence : 创建
+    RenderManager --> ShaderAssetGroup : 创建
+    RenderManager --> GraphicsPipeline : 创建
+    RenderManager --> ComputePipeline : 创建
+    RenderManager --> IRenderPass : 创建
+    LoopSequence --> GraphicsPipeline : recordDraw
+    LoopSequence --> ComputePipeline : recordDispatch
+    LoopSequence --> DescriptorBindingState : 持有/每帧复位
+    GraphicsPipeline --> DescriptorBindingState : 读取已绑定层
+    ComputePipeline --> DescriptorBindingState : 读取已绑定层
+    OnceSequence --> ShaderAssetGroup : 同步
+    GraphicsPipeline --> ShaderAssetGroup
+    ComputePipeline --> ShaderAssetGroup
+    GraphicsPipeline --> IRenderPass
+    GraphicsPipeline --> IDescriptorSetLayoutGroup
+    ComputePipeline --> IDescriptorSetLayoutGroup
+    ShaderAssetGroup --> IDeviceResource
+    RenderManager --> IAttachmentDetail : build

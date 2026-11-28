@@ -1,0 +1,12 @@
+sequenceDiagram
+    participant App as 示例程序
+    participant OS as OnceSequence
+    participant SAG as ShaderAssetGroup
+    participant Q as Queue
+    App->>OS: OnUpdateRawData(asset, resourceId, texture)
+    OS->>SAG: 对每个 frame-in-flight 更新描述符资源
+    App->>OS: emitToDevice(asset)
+    OS->>Q: 分配 cmd + eOneTimeSubmit 录制
+    OS->>SAG: SyncDataToDevice → recordCopyFromStagingToDevice（含布局转换/barrier）
+    OS->>Q: submit + waitForFences
+    OS->>Q: freeCommandBuffer

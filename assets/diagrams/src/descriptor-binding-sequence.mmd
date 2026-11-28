@@ -1,0 +1,20 @@
+sequenceDiagram
+    participant App as 示例程序
+    participant LS as LoopSequence
+    participant BS as DescriptorBindingState
+    participant GP as GraphicsPipeline
+    App->>LS: beginRecording()
+    LS->>BS: Reset()
+    App->>LS: recordDraw(pipelineA) # 物体1
+    LS->>GP: recordDrawCommand(cmd, frame, state)
+    GP->>BS: OnPipelineLayoutBound(layoutA)
+    GP->>BS: FirstUnboundSet(5) -> 0
+    GP->>GP: bindDescriptorSets(0..4)
+    GP->>BS: MarkBoundRange(0, 5)
+    App->>LS: recordDraw(pipelineA) # 物体2
+    LS->>GP: recordDrawCommand(cmd, frame, state)
+    GP->>BS: FirstUnboundSet(5) -> 5
+    Note over GP: 全部已绑定，跳过 bindDescriptorSets，直接 draw
+    App->>LS: recordDraw(pipelineB) # 另一套 layout
+    GP->>BS: OnPipelineLayoutBound(layoutB) -> 清空
+    GP->>GP: bindDescriptorSets(0..4)

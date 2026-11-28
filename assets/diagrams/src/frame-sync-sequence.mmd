@@ -1,0 +1,13 @@
+sequenceDiagram
+    participant App as 示例程序
+    participant LS as LoopSequence
+    participant GPU as GPU/Queue
+    App->>LS: prepareFrame()
+    LS->>LS: wait inFlightFence[frame] + acquire(imageAvailable[frame])
+    App->>LS: compute 录制与提交
+    LS->>GPU: compute submit, signal computeFinished[frame]
+    App->>LS: submitFrame()
+    LS->>GPU: graphics submit: wait imageAvailable[frame] (+ computeFinished[frame]), signal renderFinished[imageIndex]
+    App->>LS: presentFrame()
+    LS->>GPU: queuePresent: wait renderFinished[imageIndex]
+    Note over LS,GPU: 下一轮同 image 被 acquire 时，其上一次 present 已完成

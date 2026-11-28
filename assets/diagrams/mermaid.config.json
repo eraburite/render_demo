@@ -1,0 +1,18 @@
+{
+  "theme": "default",
+  "flowchart": {
+    "htmlLabels": true,
+    "useMaxWidth": true
+  },
+  "class": {
+    "htmlLabels": true
+  },
+  "sequence": {
+    "useMaxWidth": true,
+    "wrap": false
+  },
+  "themeVariables": {
+    "fontFamily": "Segoe UI, PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif",
+    "fontSize": "15px"
+  }
+}

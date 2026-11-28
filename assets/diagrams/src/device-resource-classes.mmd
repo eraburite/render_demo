@@ -1,0 +1,27 @@
+classDiagram
+    class ITransferable {
+        <<interface>>
+        +recordCopyFromStagingToDevice(cmd)
+        +recordCopyFromDeviceToStaging(cmd)
+    }
+    class IInputBindable {
+        <<interface>>
+        +bindToPipeline(cmd)
+    }
+    class IDescriptorUpdater {
+        <<interface>>
+        +constructWriteDescriptorSet(set, type, binding)
+    }
+    class IDeviceResource {
+        <<interface>>
+        +updateRawData(data)
+        +Transfer() / InputBinder() / ResourceUpdater()
+        +accept(visitor)
+    }
+    IDeviceResource <|-- BaseDeviceResource
+    BaseDeviceResource <|-- BufferObject
+    IDeviceResource <|-- TextureSamplerCombine
+    ITransferable <|.. DefaultBufferTransfer
+    IInputBindable <|.. DefaultInputBinder
+    IDescriptorUpdater <|.. DefaultBufferUpdater
+    IDescriptorUpdater <|.. DefaultTextureSamplerUpdater

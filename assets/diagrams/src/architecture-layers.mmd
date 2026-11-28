@@ -1,0 +1,45 @@
+graph TD
+    subgraph App["examples/ 应用层"]
+        T1["simplest/test1<br/>单 pass + MSAA"]
+        T2["multi-lighting/test2<br/>多光源 + 多 subpass"]
+        T3["offscreen/test3<br/>离屏 + 后处理"]
+        T4["gbuffer/test4<br/>G-Buffer + 延迟着色"]
+        T5["particle/test5<br/>compute + 顶点读 SSBO"]
+        T6["raw2rgb/test6<br/>双 compute stage + 回读"]
+        CM["common/<br/>GLFWwindow/Camera/Geometry/RenderCommon/TextureLoader/*Config.h"]
+    end
+    subgraph Facade["对外接口层"]
+        RM["RenderManager<br/>设备/交换链/工厂方法"]
+    end
+    subgraph Seq["命令序列层"]
+        SB["SequenceBase<br/>设备与队列/上传模板/时间戳"]
+        OS["OnceSequence<br/>一次性上传"]
+        LS["LoopSequence<br/>每帧录制/提交/呈现"]
+        OP["CmdOpBase<br/>CmdOpDrawFrame / CmdOpComputeDispatch / CmdSyncDevice<br/>CmdOpGroup / CmdOpComputeBarrier"]
+    end
+    subgraph Res["资源与管线层"]
+        SAG["ShaderAssetGroup<br/>VBO/UBO/SSBO/纹理/PushConstant"]
+        GP["GraphicsPipeline<br/>SetLayout/Pool/Sets/Pipeline"]
+        CP["ComputePipeline<br/>SetLayout/Pool/Sets/Dispatch"]
+        DR["IDeviceResource<br/>BufferObject / TextureSamplerCombine"]
+        RP["IRenderPass<br/>BasicRenderPass + Framebuffers"]
+    end
+    subgraph Core["设备与窗口层"]
+        SW["SwapChain"]
+        EV["EventManager + 监听器"]
+        PD["PhysicalDeviceUtils / GraphicsDebugger"]
+        WIN["IUnifiedWindow / GLFWwindow"]
+    end
+    T1 & T2 & T3 & T4 & T5 & T6 --> CM
+    T1 & T2 & T3 & T4 & T5 & T6 --> RM
+    T1 & T2 & T3 & T4 & T5 & T6 --> LS & OS
+    RM --> LS & OS
+    RM --> SAG & GP & CP & RP & SW
+    LS --> OP --> GP & CP
+    OS --> OP --> SAG
+    SAG --> DR
+    GP --> DR
+    GP --> SAG
+    RP --> IRenderPass
+    SW --> WIN
+    RM --> EV & PD

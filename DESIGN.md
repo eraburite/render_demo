@@ -72,6 +72,7 @@
 - **交叉引用**写作 `见 N.M`：N 是章号、M 是节号，均以本文**当前编排**为准。章号经过一次整体重排（见附录 A），历史叙述里出现的路径与章号是"当时"的，以 `git log` 为准。
 - **✅ / ⚠️** 出现在限制表里：前者表示该项已解决或已实现，后者表示已知但未处理。
 - **资源路径**一律相对仓库根，`assets/` 是唯一资源根；示例侧用 `assetPath()` 或 `PROJECT_ROOT_PATH` 两种口径解析，见 30.3。
+- **插图**一律是提交进仓库的 SVG（`assets/diagrams/`），正文用 `[![](...)](...)` 引用，源码是同名的 `assets/diagrams/src/*.mmd`。**不再写 mermaid 代码块**——GitHub 的 mermaid 走跨域 iframe，`flowchart` / `classDiagram` 经常整张渲染失败，原因与重生成命令见 31.6。
 - **代码块里的 `#`** 是 shell 注释或备注，不是 Markdown 标题；文中出现的 `--flag` 都是各示例自己解析的真实开关。
 - **数字口径**：顶点数、三角形数、像素 MD5 等都取自 Release 构建的实测输出，生成命令写在对应章里。
 
@@ -110,13 +111,14 @@ render_demo/
 │   ├── check_vulkan_version.cmake
 │   └── ...
 ├── configuration/root_directory.h.in   # 生成 PROJECT_ROOT_PATH 宏
-├── assets/                         # ===== 示例运行期资源（单一根，见 30）=====
+├── assets/                         # ===== 资源根（单一根，见 30；diagrams/ 供文档用，不参与运行）=====
 │   ├── models/                     # 迁移示例的模型：glTF（suzanne / deer / sphere / armor / plane / cube / teapot / samplebuilding + glass）、backpack/{obj,mtl,diffuse.jpg,normal.png,specular.jpg}（见 15 / 31.3）、planet/（见 19）、vampire/{dancing_vampire.dae,textures/}（见 18）、formats/{sample.pmx,pmd,x,vmd}（见 16）
 │   ├── textures/                   # awesomeface / container2（+specular）；KTX（metalplate01 / yokohama cubemap / texturearray / rocks 颜色+法线高度 / colored_glass，见 11）；breakout/ 12 张精灵与粒子贴图（见 24.3）
 │   ├── fonts/                      # Antonio-Bold.ttf + SIL OFL 许可（文字渲染的字形来源，见 23.2）
 │   ├── heightmaps/                 # iceland_heightmap.png（见 19）
 │   ├── levels/{one,two,three,four}.lvl  # Breakout 的四张关卡（见 24.7）
-│   └── ltc/{ltc1.f32,ltc2.f32}     # LTC 1/2 查找表（64×64 RGBA32F 小端，各 64 KB，见 22.4）
+│   ├── ltc/{ltc1.f32,ltc2.f32}     # LTC 1/2 查找表（64×64 RGBA32F 小端，各 64 KB，见 22.4）
+│   └── diagrams/{src/*.mmd,*.svg}  # 设计书插图的 mermaid 源码与预渲染 SVG（不参与运行，见 31.6）
 ├── doc/                            # 设计讨论存档（当前为空）
 ├── external/                       # 全部入库（见 26.3）：glm（含 share/）/ glfw（含 lib/glfw3.lib）/ stb_image.h / tiny_obj_loader.h / tinygltf（json.hpp + tiny_gltf.h）/ assimp 头文件（仅头，见 15.2）/ freetype 头文件（仅头，见 23.6）；仅 *.bak 备份被忽略
 ├── extensions/                     # ===== 框架拓展能力（静态库 frameworkExtensions，与 src 平级，见 26）=====
@@ -228,220 +230,33 @@ render_demo/
 
 ### 3.1 分层架构
 
-```mermaid
-graph TD
-    subgraph App["examples/ 应用层"]
-        T1["simplest/test1<br/>单 pass + MSAA"]
-        T2["multi-lighting/test2<br/>多光源 + 多 subpass"]
-        T3["offscreen/test3<br/>离屏 + 后处理"]
-        T4["gbuffer/test4<br/>G-Buffer + 延迟着色"]
-        T5["particle/test5<br/>compute + 顶点读 SSBO"]
-        T6["raw2rgb/test6<br/>双 compute stage + 回读"]
-        CM["common/<br/>GLFWwindow/Camera/Geometry/RenderCommon/TextureLoader/*Config.h"]
-    end
-    subgraph Facade["对外接口层"]
-        RM["RenderManager<br/>设备/交换链/工厂方法"]
-    end
-    subgraph Seq["命令序列层"]
-        SB["SequenceBase<br/>设备与队列/上传模板/时间戳"]
-        OS["OnceSequence<br/>一次性上传"]
-        LS["LoopSequence<br/>每帧录制/提交/呈现"]
-        OP["CmdOpBase<br/>CmdOpDrawFrame / CmdOpComputeDispatch / CmdSyncDevice<br/>CmdOpGroup / CmdOpComputeBarrier"]
-    end
-    subgraph Res["资源与管线层"]
-        SAG["ShaderAssetGroup<br/>VBO/UBO/SSBO/纹理/PushConstant"]
-        GP["GraphicsPipeline<br/>SetLayout/Pool/Sets/Pipeline"]
-        CP["ComputePipeline<br/>SetLayout/Pool/Sets/Dispatch"]
-        DR["IDeviceResource<br/>BufferObject / TextureSamplerCombine"]
-        RP["IRenderPass<br/>BasicRenderPass + Framebuffers"]
-    end
-    subgraph Core["设备与窗口层"]
-        SW["SwapChain"]
-        EV["EventManager + 监听器"]
-        PD["PhysicalDeviceUtils / GraphicsDebugger"]
-        WIN["IUnifiedWindow / GLFWwindow"]
-    end
-    T1 & T2 & T3 & T4 & T5 & T6 --> CM
-    T1 & T2 & T3 & T4 & T5 & T6 --> RM
-    T1 & T2 & T3 & T4 & T5 & T6 --> LS & OS
-    RM --> LS & OS
-    RM --> SAG & GP & CP & RP & SW
-    LS --> OP --> GP & CP
-    OS --> OP --> SAG
-    SAG --> DR
-    GP --> DR
-    GP --> SAG
-    RP --> IRenderPass
-    SW --> WIN
-    RM --> EV & PD
-```
+[![分层架构与模块依赖](assets/diagrams/architecture-layers.svg)](assets/diagrams/architecture-layers.svg)
+
+*图 3-1　分层架构与模块依赖*
 
 ### 3.2 核心类关系
 
-```mermaid
-classDiagram
-    class RenderManager {
-        +Create(window, frames) RenderManager
-        +CreateShaderAssetGroup(input, desc) ShaderAssetGroup
-        +CreateShaderAssetGroup(desc) ShaderAssetGroup
-        +CreateRenderPass(detail, attachments) IRenderPass
-        +CreatePipeline(input, desc, asset, rp, subpass) GraphicsPipeline
-        +CreateComputePipeline(desc, asset, spirvEntry) ComputePipeline
-        +UploadSequence() OnceSequence
-        +DrawFrameSequence() LoopSequence
-        +getSwapChain() / getInstance() / getLogicalDevice()
-        +getGraphicsQueue() / getComputeQueue() / getPresentQueue()
-        +getQueueFamilyIndices() / getComputeQueueFamilyIndex()
-        +DefaultDepthFormat() / getMaxUsableSampleCount()
-        +checkAndResetResize() / reCreateSwapChain()
-    }
-    class SequenceBase {
-        <<abstract>>
-        #device / graphicsQueue / presentQueue / limits
-        +OnUpdateRawData(asset, type, T)
-        +OnUpdateRawData(asset, id, T)
-        +EnableTimestampLogging(bool)
-        #CreateTimestampQueryPool()
-        #LogExecutionTime()
-    }
-    class LoopSequence {
-        +prepareFrame() bool
-        +beginRecording() / endRecording()
-        +beginComputeRecording() / endComputeRecording()
-        +recordDispatch(pipe, dispatchSize) / recordComputeBarrier()
-        +BeginRenderPass / EndRenderPass / nextSubpass
-        +recordDraw(pipe) / record(op)
-        +recordPass(rp, callable)
-        +submitFrame() / presentFrame() bool
-        +InvalidateDescriptorBindings()
-    }
-    class OnceSequence {
-        +emitToDevice(asset)
-        +submit(op)
-        +ReadBack(asset, key, byteSize) bytes
-    }
-    class ShaderAssetGroup {
-        +addShaderSpirvCode(name, spv)
-        +UpdateInputResourceData()
-        +UpdateDescriptorResourceData()
-        +UpdateConstantsResource()
-        +SyncDataToDevice(cmd, frame)
-        +bindToPipeline(cmd)
-        +PushConstantData(frame)
-    }
-    class GraphicsPipeline {
-        +BuiltUp(renderPass, subpass)
-        +recordDrawCommand(cmd, frame)
-        +recordDrawCommand(cmd, frame, bindingState)
-        #descriptorSetFor(frame, setId)
-    }
-    class ComputePipeline {
-        +BuiltUp()
-        +recordDispatchCommand(cmd, frame, dispatchSize)
-        +recordDispatchCommand(cmd, frame, dispatchSize, bindingState)
-        #descriptorSetFor(frame, setId)
-    }
-    class DescriptorBindingState {
-        +Reset()
-        +OnPipelineLayoutBound(layout)
-        +FirstUnboundSet(setCount)
-        +MarkBoundRange(firstSet, count)
-        -layout / boundMask
-    }
-    class IRenderPass {
-        <<interface>>
-        +begin / end / nextSubpass
-        +createFramebuffers()
-        +sampleCount() / colorAttachmentCount()
-    }
-    class IDeviceResource {
-        <<interface>>
-        +updateRawData(data)
-        +Transfer() / InputBinder() / ResourceUpdater()
-    }
-    SequenceBase <|-- OnceSequence
-    SequenceBase <|-- LoopSequence
-    RenderManager --> LoopSequence : 创建
-    RenderManager --> OnceSequence : 创建
-    RenderManager --> ShaderAssetGroup : 创建
-    RenderManager --> GraphicsPipeline : 创建
-    RenderManager --> ComputePipeline : 创建
-    RenderManager --> IRenderPass : 创建
-    LoopSequence --> GraphicsPipeline : recordDraw
-    LoopSequence --> ComputePipeline : recordDispatch
-    LoopSequence --> DescriptorBindingState : 持有/每帧复位
-    GraphicsPipeline --> DescriptorBindingState : 读取已绑定层
-    ComputePipeline --> DescriptorBindingState : 读取已绑定层
-    OnceSequence --> ShaderAssetGroup : 同步
-    GraphicsPipeline --> ShaderAssetGroup
-    ComputePipeline --> ShaderAssetGroup
-    GraphicsPipeline --> IRenderPass
-    GraphicsPipeline --> IDescriptorSetLayoutGroup
-    ComputePipeline --> IDescriptorSetLayoutGroup
-    ShaderAssetGroup --> IDeviceResource
-    RenderManager --> IAttachmentDetail : build
-```
+[![核心类关系](assets/diagrams/architecture-classes.svg)](assets/diagrams/architecture-classes.svg)
+
+*图 3-2　核心类关系：RenderManager、命令序列与资源管线*
 
 ### 3.3 每帧时序（LoopSequence）
 
-```mermaid
-sequenceDiagram
-    participant App as 示例程序
-    participant LS as LoopSequence
-    participant Q as Queue
-    App->>LS: beginComputeRecording()
-    LS->>LS: 等待 compute 帧槽, 复位命令池与绑定缓存
-    App->>LS: recordDispatch(computePipeline, size)
-    LS->>LS: bindPipeline(compute) → bindDescriptorSets → dispatch
-    App->>LS: endComputeRecording()
-    LS->>LS: compute→vertex 的 release 屏障 + end
-    App->>LS: beginRecording()
-    LS->>LS: resetCommandPool + begin + resetQueryPool
-    App->>LS: recordPass(rp, callable)
-    LS->>LS: beginRenderPass → bindPipeline / bindDescriptorSets / pushConstants / draw → endRenderPass
-    App->>LS: endRecording()
-    App->>LS: submitFrame()
-    LS->>Q: graphics submit：等 imageAvailable(+computeFinished), signal renderFinished
-    App->>LS: presentFrame()
-    LS->>Q: queuePresent：等 renderFinished
-```
+[![每帧时序（LoopSequence）](assets/diagrams/frame-loop-sequence.svg)](assets/diagrams/frame-loop-sequence.svg)
+
+*图 3-3　一帧的时序（LoopSequence）*
 
 一次性上传（OnceSequence）的时序：
 
-```mermaid
-sequenceDiagram
-    participant App as 示例程序
-    participant OS as OnceSequence
-    participant SAG as ShaderAssetGroup
-    participant Q as Queue
-    App->>OS: OnUpdateRawData(asset, resourceId, texture)
-    OS->>SAG: 对每个 frame-in-flight 更新描述符资源
-    App->>OS: emitToDevice(asset)
-    OS->>Q: 分配 cmd + eOneTimeSubmit 录制
-    OS->>SAG: SyncDataToDevice → recordCopyFromStagingToDevice（含布局转换/barrier）
-    OS->>Q: submit + waitForFences
-    OS->>Q: freeCommandBuffer
-```
+[![一次性上传时序（OnceSequence）](assets/diagrams/once-upload-sequence.svg)](assets/diagrams/once-upload-sequence.svg)
+
+*图 3-4　一次性上传的时序（OnceSequence）*
 
 ### 3.4 描述符分层与多 Pass 组合
 
-```mermaid
-graph LR
-    Set0["Set0 eStatic<br/>基础贴图/材质 SSBO<br/>单份，跨帧共享"]
-    Set1["Set1 eEnvironment<br/>相机矩阵 UBO<br/>每帧（双缓冲）"]
-    Set2["Set2 eEachFrame<br/>视点/光照 UBO+SSBO<br/>每帧（双缓冲）"]
-    Set3["Set3 eEachInstance<br/>模型矩阵 SSBO<br/>每帧（双缓冲）"]
-    Set4["Set4 离屏采样<br/>G-Buffer/后处理输入<br/>每帧（渲染目标，不可共享）"]
-    PC["PushConstant<br/>模型矩阵"]
-    P1["Pipeline A<br/>G-Buffer/MRT/Phong"] --> Set0 & Set1 & Set2 & Set3 & PC
-    P2["Pipeline B<br/>延迟着色/后处理"] --> Set4 & Set2 & PC
-    RP1["RenderPass A<br/>离屏，finalLayout=ShaderReadOnly"] --> P1
-    RP2["RenderPass B<br/>交换链，finalLayout=PresentSrcKHR"] --> P2
-    RP1 -. 颜色附件 .-> Set4
-    BO["增量绑定：同一 layout 下，<br/>首次 draw 绑定 [0,N)，<br/>后续 draw 只补未绑定的层"]
-    P1 -.-> BO
-    P2 -.-> BO
-```
+[![描述符分层与多 Pass 组合](assets/diagrams/descriptor-layers.svg)](assets/diagrams/descriptor-layers.svg)
+
+*图 3-5　描述符分层与多 Pass 组合*
 
 > 层的排列顺序 = 更新频率由低到高。`DescriptorBindingState` 记录「当前 layout 下已绑定的层」，同一个 layout 连续绘制时只补绑缺失的层；切换布局才整体失效。
 
@@ -548,35 +363,9 @@ graph LR
 
 ### 4.6 资源层（IDeviceResource 体系）
 
-```mermaid
-classDiagram
-    class ITransferable {
-        <<interface>>
-        +recordCopyFromStagingToDevice(cmd)
-        +recordCopyFromDeviceToStaging(cmd)
-    }
-    class IInputBindable {
-        <<interface>>
-        +bindToPipeline(cmd)
-    }
-    class IDescriptorUpdater {
-        <<interface>>
-        +constructWriteDescriptorSet(set, type, binding)
-    }
-    class IDeviceResource {
-        <<interface>>
-        +updateRawData(data)
-        +Transfer() / InputBinder() / ResourceUpdater()
-        +accept(visitor)
-    }
-    IDeviceResource <|-- BaseDeviceResource
-    BaseDeviceResource <|-- BufferObject
-    IDeviceResource <|-- TextureSamplerCombine
-    ITransferable <|.. DefaultBufferTransfer
-    IInputBindable <|.. DefaultInputBinder
-    IDescriptorUpdater <|.. DefaultBufferUpdater
-    IDescriptorUpdater <|.. DefaultTextureSamplerUpdater
-```
+[![资源层类关系（IDeviceResource 体系）](assets/diagrams/device-resource-classes.svg)](assets/diagrams/device-resource-classes.svg)
+
+*图 4-1　资源层（IDeviceResource 体系）*
 
 - 「能力接口」拆分让同一资源可以同时具备传输、绑定、描述符写入三种能力，而调用方各取所需。
 - `ResourceObjectRepository<Key,T>` 用 `std::any` 包装 `shared_ptr<T>` 实现异构资源表，同时保留强类型 `findValue()`。
@@ -627,28 +416,9 @@ classDiagram
 
 增量绑定的执行过程：
 
-```mermaid
-sequenceDiagram
-    participant App as 示例程序
-    participant LS as LoopSequence
-    participant BS as DescriptorBindingState
-    participant GP as GraphicsPipeline
-    App->>LS: beginRecording()
-    LS->>BS: Reset()
-    App->>LS: recordDraw(pipelineA) # 物体1
-    LS->>GP: recordDrawCommand(cmd, frame, state)
-    GP->>BS: OnPipelineLayoutBound(layoutA)
-    GP->>BS: FirstUnboundSet(5) -> 0
-    GP->>GP: bindDescriptorSets(0..4)
-    GP->>BS: MarkBoundRange(0, 5)
-    App->>LS: recordDraw(pipelineA) # 物体2
-    LS->>GP: recordDrawCommand(cmd, frame, state)
-    GP->>BS: FirstUnboundSet(5) -> 5
-    Note over GP: 全部已绑定，跳过 bindDescriptorSets，直接 draw
-    App->>LS: recordDraw(pipelineB) # 另一套 layout
-    GP->>BS: OnPipelineLayoutBound(layoutB) -> 清空
-    GP->>GP: bindDescriptorSets(0..4)
-```
+[![增量绑定的判定过程](assets/diagrams/descriptor-binding-sequence.svg)](assets/diagrams/descriptor-binding-sequence.svg)
+
+*图 4-2　增量绑定的判定过程（DescriptorBindingState）*
 
 约束与注意：
 
@@ -957,21 +727,9 @@ dstAccess = MemoryRead | ColorRead | ColorWrite | DepthStencilAttachmentWrite
 
 > `renderFinished` 必须按 image 索引：它参与 `queuePresent`，present 持有它的时间可能超过 graphics fence 的信号时刻；按帧复用会在图像尚未重新 acquire 时被再次 signal（VUID-00067，见 4.14）。
 
-```mermaid
-sequenceDiagram
-    participant App as 示例程序
-    participant LS as LoopSequence
-    participant GPU as GPU/Queue
-    App->>LS: prepareFrame()
-    LS->>LS: wait inFlightFence[frame] + acquire(imageAvailable[frame])
-    App->>LS: compute 录制与提交
-    LS->>GPU: compute submit, signal computeFinished[frame]
-    App->>LS: submitFrame()
-    LS->>GPU: graphics submit: wait imageAvailable[frame] (+ computeFinished[frame]), signal renderFinished[imageIndex]
-    App->>LS: presentFrame()
-    LS->>GPU: queuePresent: wait renderFinished[imageIndex]
-    Note over LS,GPU: 下一轮同 image 被 acquire 时，其上一次 present 已完成
-```
+[![一帧内的同步关系](assets/diagrams/frame-sync-sequence.svg)](assets/diagrams/frame-sync-sequence.svg)
+
+*图 6-1　一帧内的同步关系*
 
 **屏障与布局转换**
 
@@ -4415,7 +4173,7 @@ ReadBack() → PrepareReadback(key) → OnReadbackRequested() → 重建 staging
 | `data/levels/` | `assets/levels/` | 4 | `{one,two,three,four}.lvl` |
 | `data/heightmaps/` | `assets/heightmaps/` | 2 | `iceland_heightmap.png` + 来源说明 |
 
-合并后 `assets/` 是唯一资源根，6 个子目录各自对应一类资源（`models` / `textures` / `fonts` / `heightmaps` / `levels` / `ltc`；第 7 个 `images/` 曾是 raw2rgb 的运行产物目录，在 31.4 之后不再存在）。用 `git mv` 而非删除重建，58 个文件在 `git status` 里都显示为 `R`（rename），`git log --follow` 仍可追溯每个资源的来历。
+合并后 `assets/` 是唯一资源根，6 个运行期资源子目录各自对应一类（`models` / `textures` / `fonts` / `heightmaps` / `levels` / `ltc`；第 7 个 `images/` 曾是 raw2rgb 的运行产物目录，在 31.4 之后不再存在；另有一个不参与运行的 `diagrams/`，放设计书插图，见 31.6）。用 `git mv` 而非删除重建，58 个文件在 `git status` 里都显示为 `R`（rename），`git log --follow` 仍可追溯每个资源的来历。
 
 **踩到的一个坑**：`git mv data/textures assets/textures` 在目标目录**已存在**时，会把源目录整个塞进去变成 `assets/textures/textures/`（`models` 因为事先 `rmdir` 了空目录才没中招）。发现后逐个把子项重新 `git mv` 上一层再 `rmdir` 空目录；这条对任何"合并两个已存在的目录"的操作都适用，`git mv` 没有"合并目录"语义。
 
@@ -4620,6 +4378,33 @@ grep -rn "data/\(models\|textures\|fonts\|levels\|heightmaps\)" --exclude-dir={b
 - 169 个入库 `shader/*.hpp`：它们是**构建输入**而不是产物，删了就会退化成"干净 clone 必须先装 `glslangValidator`"（28 章）
 - 跨示例重复的 shader 源码与生成头（bloom ↔ physically_based_bloom、occlusion_query ↔ pipeline_statistics、raytracing_* 系列、deferred ↔ gbuffer 的 `mrt_*`）：示例刻意自包含，抽公共 shader 属于重构，不是清理
 - `assets/textures/breakout/awesomeface.png` 与 `assets/textures/awesomeface.png` 同 MD5（44 KB）：breakout 用前者、simplest / offscreen / multi-lighting 用后者，合并要改 `assetPath`，为 44 KB 动引用不划算——记录为已知重复
+
+### 31.6 插图以 SVG 入库（绕开 GitHub 的 mermaid 渲染）
+
+**现象**：DESIGN 一直用 mermaid 代码块画架构图与时序图（8 张）。在 GitHub 上打开时，4 张 `flowchart` / `classDiagram` 的位置显示 **Unable to render rich display** 加一段源码，4 张 `sequenceDiagram` 却正常。
+
+**机制**：GitHub 不自己画 mermaid，而是把每个代码块交给 `viewscreen.githubusercontent.com` 的**跨域 iframe** 渲染，父页面只负责摆位置。`flowchart` / `classDiagram` 走 dagre 布局，渲染前必须用 `getBBox()` 量文字宽度；iframe 若还没拿到正常尺寸（或被网络、被扩展挡住），这一步直接抛 `svg element not in render tree`，整张图失败——GitHub 只能回退成「错误提示 + 源码」。`sequenceDiagram` 不依赖这套测量，于是同一份文档出现"一半能看、一半报错"。
+
+**实测（2026-11-28，Windows / Edge）**：
+
+| 项 | 结果 |
+| --- | --- |
+| 本地 mermaid 10.9.1 解析 8 块 | 8/8 通过 |
+| 本地 mermaid 11.17.2 解析 + 渲染 8 块 | 8/8 通过 |
+| GitHub 页面渲染 | 4 张 sequence 成图；2 张 flowchart + 2 张 classDiagram 失败 |
+| 失败图框内部报错 | `svg element not in render tree` |
+| 对照组：mermaid 官方仓库 README | 10 张图里 7 张同样失败 |
+
+**根因不在文档**：连 `flowchart TD A-->B` 这种最小样例在同样环境下也失败，说明是渲染链路的问题，改语法（去掉 `<br/>`、拆 `&` 链、给 subgraph 加引号）都不会有效。这条结论和 31.2 的"命令能不能跑"一样，都是**先证伪再动手**。
+
+**处置**：
+
+- 8 张图预渲染成 SVG 放 `assets/diagrams/`，源码放 `assets/diagrams/src/*.mmd`；
+- 正文改成 `[![alt](x.svg)](x.svg)` + 图号题注（图 3-1 … 图 6-1）；外面包一层链接是因为图很宽（分层架构 3010 px），正文按容器宽度缩放后字偏小，点开才是原尺寸；
+- 渲染配置 `assets/diagrams/mermaid.config.json`；两处**必须做**的后处理：根节点后插白底矩形（深色主题下不压字）、把 mermaid 在 `foreignObject` 里输出的未闭合 `<br>` 改成 `<br/>`（否则 SVG 不是合法 XML，浏览器整张拒渲染）；
+- 重生成命令、目录与命名对照写在 `assets/diagrams/README.md`。
+
+**代价**：改图变成两步（改 `.mmd` → 重生成 `.svg`），两个文件一起提交；换来的是任何浏览器、任何网络下都显示。**文档约定已固定：不再写 mermaid 代码块。**
 
 ---
 

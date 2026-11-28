@@ -1,0 +1,19 @@
+sequenceDiagram
+    participant App as 示例程序
+    participant LS as LoopSequence
+    participant Q as Queue
+    App->>LS: beginComputeRecording()
+    LS->>LS: 等待 compute 帧槽, 复位命令池与绑定缓存
+    App->>LS: recordDispatch(computePipeline, size)
+    LS->>LS: bindPipeline(compute) → bindDescriptorSets → dispatch
+    App->>LS: endComputeRecording()
+    LS->>LS: compute→vertex 的 release 屏障 + end
+    App->>LS: beginRecording()
+    LS->>LS: resetCommandPool + begin + resetQueryPool
+    App->>LS: recordPass(rp, callable)
+    LS->>LS: beginRenderPass → bindPipeline / bindDescriptorSets / pushConstants / draw → endRenderPass
+    App->>LS: endRecording()
+    App->>LS: submitFrame()
+    LS->>Q: graphics submit：等 imageAvailable(+computeFinished), signal renderFinished
+    App->>LS: presentFrame()
+    LS->>Q: queuePresent：等 renderFinished

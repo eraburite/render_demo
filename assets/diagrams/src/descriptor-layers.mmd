@@ -1,0 +1,15 @@
+graph LR
+    Set0["Set0 eStatic<br/>基础贴图/材质 SSBO<br/>单份，跨帧共享"]
+    Set1["Set1 eEnvironment<br/>相机矩阵 UBO<br/>每帧（双缓冲）"]
+    Set2["Set2 eEachFrame<br/>视点/光照 UBO+SSBO<br/>每帧（双缓冲）"]
+    Set3["Set3 eEachInstance<br/>模型矩阵 SSBO<br/>每帧（双缓冲）"]
+    Set4["Set4 离屏采样<br/>G-Buffer/后处理输入<br/>每帧（渲染目标，不可共享）"]
+    PC["PushConstant<br/>模型矩阵"]
+    P1["Pipeline A<br/>G-Buffer/MRT/Phong"] --> Set0 & Set1 & Set2 & Set3 & PC
+    P2["Pipeline B<br/>延迟着色/后处理"] --> Set4 & Set2 & PC
+    RP1["RenderPass A<br/>离屏，finalLayout=ShaderReadOnly"] --> P1
+    RP2["RenderPass B<br/>交换链，finalLayout=PresentSrcKHR"] --> P2
+    RP1 -. 颜色附件 .-> Set4
+    BO["增量绑定：同一 layout 下，<br/>首次 draw 绑定 [0,N)，<br/>后续 draw 只补未绑定的层"]
+    P1 -.-> BO
+    P2 -.-> BO
