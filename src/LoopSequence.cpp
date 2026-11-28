@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdio>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -109,7 +110,22 @@ LoopSequence::LoopSequence(std::shared_ptr<RenderManager> renderMgr, uint32_t ma
 
 LoopSequence::~LoopSequence()
 {
-    waitIdle();
+    // A destructor must not throw.  vulkan-hpp turns a non-success VkResult into
+    // vk::SystemError, and an exception escaping here becomes std::terminate --
+    // observed as a bare 0xC0000409 "stack buffer overrun" with no message when
+    // an example destroys GPU objects that a still-running frame references (the
+    // driver answers the following waitIdle with eErrorDeviceLost).  Call the C
+    // entry point instead so teardown always completes, and report once so a
+    // genuine device loss is not swallowed silently.  Examples that tear down a
+    // ray tracing pipeline wait for idle explicitly before destroying it; this is
+    // the last line of defence.
+    if (m_device) {
+        const VkResult idle = vkDeviceWaitIdle(static_cast<VkDevice>(*m_device));
+        if (idle != VK_SUCCESS) {
+            std::fprintf(stderr, "[teardown] vkDeviceWaitIdle returned %d, releasing anyway\n",
+                         static_cast<int>(idle));
+        }
+    }
 
     m_renderFinished.clear();
     m_imageAvailable.clear();
@@ -322,6 +338,7 @@ void LoopSequence::beginRecording()
         cmd.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, *m_timestampPools[frame], 0);
     }
     m_bindingState.Reset();
+    m_rawRecording = false;
 }
 
 void LoopSequence::endRecording()
@@ -349,6 +366,15 @@ void LoopSequence::record(const std::shared_ptr<CmdOpBase> &op)
         return;
     }
     op->Record(*m_commandBuffers[m_currentFrame], m_currentFrame, m_bindingState);
+}
+
+void LoopSequence::recordRaw(const std::function<void(vk::CommandBuffer, uint32_t imageIndex)> &body)
+{
+    if (!body) {
+        return;
+    }
+    m_rawRecording = true;
+    body(*m_commandBuffers[m_currentFrame], m_imageIndex);
 }
 
 void LoopSequence::recordPass(const std::shared_ptr<IRenderPass> &renderPass, const std::function<void()> &body)
@@ -410,7 +436,8 @@ void LoopSequence::submitFrame()
     // graphics pass, also wait on its completion semaphore; the image-available
     // semaphore still must be consumed or the next acquire finds it signaled.
     vk::Semaphore waitSemaphores[2] = {*m_imageAvailable[frame], {}};
-    vk::PipelineStageFlags waitStages[2] = {vk::PipelineStageFlagBits::eColorAttachmentOutput, {}};
+    vk::PipelineStageFlags waitStages[2] = {
+        m_rawRecording ? vk::PipelineStageFlagBits::eAllCommands : vk::PipelineStageFlagBits::eColorAttachmentOutput, {}};
     uint32_t waitCount = 1;
     if (m_computeActive) {
         waitSemaphores[waitCount] = *m_computeFinished[frame];

@@ -9,10 +9,29 @@ function(vulkan_compile_shader)
           return()
      endif()
 
-     cmake_parse_arguments(SHADER_COMPILE "" "INFILE;OUTFILE;NAMESPACE" "" ${ARGN})
+     cmake_parse_arguments(SHADER_COMPILE "" "INFILE;OUTFILE;NAMESPACE;TARGET_ENV" "" ${ARGN})
      set(SHADER_COMPILE_INFILE_FULL "${CMAKE_CURRENT_SOURCE_DIR}/${SHADER_COMPILE_INFILE}")
      set(SHADER_COMPILE_SPV_FILE_FULL "${CMAKE_CURRENT_BINARY_DIR}/${SHADER_COMPILE_INFILE}.spv")
      set(SHADER_COMPILE_HEADER_FILE_FULL "${CMAKE_CURRENT_SOURCE_DIR}/${SHADER_COMPILE_OUTFILE}")
+
+     ## Ray tracing stages require SPIR-V 1.4, but glslangValidator's plain -V
+     ## targets SPIR-V 1.0 and rejects GL_EXT_ray_tracing outright ("not supported
+     ## for current targeted SPIR-V version").  Deriving the target environment
+     ## from the stage-identifying extension keeps every existing example on the
+     ## exact command it used before; ray-query shaders live in ordinary .frag /
+     ## .comp files and opt in by passing TARGET_ENV explicitly (see 31.5).
+     set(SHADER_COMPILE_TARGET_ENV_EFFECTIVE "${SHADER_COMPILE_TARGET_ENV}")
+     if(NOT SHADER_COMPILE_TARGET_ENV_EFFECTIVE)
+          get_filename_component(SHADER_COMPILE_EXT "${SHADER_COMPILE_INFILE}" EXT)
+          if(SHADER_COMPILE_EXT MATCHES "\\.(rgen|rchit|rmiss|rcall|rahit|rint)$")
+               set(SHADER_COMPILE_TARGET_ENV_EFFECTIVE "vulkan1.2")
+          endif()
+     endif()
+     if(SHADER_COMPILE_TARGET_ENV_EFFECTIVE)
+          set(SHADER_COMPILE_TARGET_ENV_ARGS "--target-env" "${SHADER_COMPILE_TARGET_ENV_EFFECTIVE}")
+     else()
+          set(SHADER_COMPILE_TARGET_ENV_ARGS "")
+     endif()
 
      # Check if big or little endian
      include (TestBigEndian)
@@ -52,6 +71,7 @@ function(vulkan_compile_shader)
                         COMMAND ${CMAKE_COMMAND} -E make_directory "${SHADER_COMPILE_SPV_PATH}"
                         COMMAND "${GLS_LANG_VALIDATOR_PATH}"
                         ARGS "-V"
+                             ${SHADER_COMPILE_TARGET_ENV_ARGS}
                              "${SHADER_COMPILE_INFILE_FULL}"
                              "-o"
                              "${SHADER_COMPILE_SPV_FILE_FULL}"

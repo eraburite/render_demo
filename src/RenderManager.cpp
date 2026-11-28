@@ -19,6 +19,7 @@
 #include "TextureImage.h"
 
 #include <algorithm>
+#include <cstring>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -34,6 +35,42 @@ constexpr bool enableValidationLayers = true;
 #endif
 
 const std::vector<const char *> deviceRequiredExtensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+
+void appendUnique(std::vector<const char *> &dst, const std::vector<const char *> &src)
+{
+    for (const char *name : src) {
+        const bool present = std::any_of(dst.begin(), dst.end(), [name](const char *existing) {
+            return std::strcmp(existing, name) == 0;
+        });
+        if (!present) {
+            dst.push_back(name);
+        }
+    }
+}
+
+// The KHR ray tracing stack is a dependency chain, not one extension (see 31.2).
+// acceleration_structure needs deferred_host_operations + buffer_device_address;
+// ray_tracing_pipeline needs SPIR-V 1.4, which needs shader_float_controls;
+// descriptor_indexing is what lets shaders index into the acceleration structure
+// array.  ray_query shares the first three but not the pipeline extension.
+std::vector<const char *> rayTracingExtensionChain(const DeviceRequirement &req)
+{
+    std::vector<const char *> chain = {VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
+                                       VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
+                                       VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
+                                       VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME};
+    if (req.rayTracingPipeline) {
+        chain.push_back(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
+    }
+    if (req.rayQuery) {
+        chain.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+    }
+    if (req.rayTracingPipeline || req.rayQuery) {
+        chain.push_back(VK_KHR_SPIRV_1_4_EXTENSION_NAME);
+        chain.push_back(VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME);
+    }
+    return chain;
+}
 
 void check(vk::Result result, const char *what)
 {
@@ -145,9 +182,17 @@ void RenderManager::initVulkan()
     m_surface = m_window.createSurface(instanceView());
 
     // The engine always needs a compute queue and the swapchain extension;
-    // layer in caller-requested optional features on top.
+    // layer in caller-requested optional features on top.  The caller list is
+    // *merged* rather than overwritten: the ray tracing examples pass the KHR
+    // chain through DeviceRequirement and silently dropping it here would
+    // create a device without the extensions the device was selected for.
     m_requirement.compute = true;
-    m_requirement.extensions = deviceRequiredExtensions;
+    std::vector<const char *> extensions = deviceRequiredExtensions;
+    appendUnique(extensions, m_requirement.extensions);
+    if (m_requirement.rayTracingPipeline || m_requirement.rayQuery) {
+        appendUnique(extensions, rayTracingExtensionChain(m_requirement));
+    }
+    m_requirement.extensions = std::move(extensions);
     std::tie(m_physicalDevice, m_queueFamilyIndices) =
         PhysicalDeviceUtils::select(m_instance, m_surface, m_requirement);
 
@@ -235,7 +280,6 @@ void RenderManager::createInstance()
 
 void RenderManager::createDevice(const DeviceRequirement &req)
 {
-    (void)req;
     const uint32_t graphicsFamily = m_queueFamilyIndices.graphicsFamily.value();
     const uint32_t presentFamily = m_queueFamilyIndices.presentFamily.value();
     const uint32_t computeFamily = m_queueFamilyIndices.computeFamily.value_or(graphicsFamily);
@@ -263,9 +307,44 @@ void RenderManager::createDevice(const DeviceRequirement &req)
     vk::DeviceCreateInfo createInfo{};
     createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
     createInfo.pQueueCreateInfos = queueCreateInfos.data();
-    createInfo.pEnabledFeatures = &deviceFeatures;
-    createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceRequiredExtensions.size());
-    createInfo.ppEnabledExtensionNames = deviceRequiredExtensions.data();
+    createInfo.enabledExtensionCount = static_cast<uint32_t>(req.extensions.size());
+    createInfo.ppEnabledExtensionNames = req.extensions.data();
+
+    // Ray tracing features cannot be requested through the legacy
+    // VkPhysicalDeviceFeatures struct, so when the caller asks for them the
+    // whole feature set moves into a VkPhysicalDeviceFeatures2 pNext chain.
+    // pEnabledFeatures must then stay null (spec: the two are mutually
+    // exclusive).  Every non-RT example keeps the original code path, which
+    // matters because the chain is the only thing that changed here.
+    //
+    // The chain nodes have to outlive vkCreateDevice, so they live here at
+    // function scope rather than inside the branch that links them: as locals of
+    // an if-block they would be destroyed before the call that reads them, and
+    // the driver would follow a dangling pNext.
+    vk::PhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddress{};
+    vk::PhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{};
+    vk::PhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipelineFeatures{};
+    vk::PhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructureFeatures{};
+    vk::PhysicalDeviceFeatures2 features2{};
+
+    if (req.rayTracingPipeline || req.rayQuery) {
+        bufferDeviceAddress.bufferDeviceAddress = VK_TRUE;
+
+        rayQueryFeatures.rayQuery = req.rayQuery ? VK_TRUE : VK_FALSE;
+        rayQueryFeatures.pNext = &bufferDeviceAddress;
+
+        rayTracingPipelineFeatures.rayTracingPipeline = req.rayTracingPipeline ? VK_TRUE : VK_FALSE;
+        rayTracingPipelineFeatures.pNext = &rayQueryFeatures;
+
+        accelerationStructureFeatures.accelerationStructure = VK_TRUE;
+        accelerationStructureFeatures.pNext = &rayTracingPipelineFeatures;
+
+        features2.features = deviceFeatures;
+        features2.pNext = &accelerationStructureFeatures;
+        createInfo.pNext = &features2;
+    } else {
+        createInfo.pEnabledFeatures = &deviceFeatures;
+    }
 
     const std::vector<const char *> layers =
         m_debugger ? m_debugger->getRequiredLayerNames() : std::vector<const char *>{};

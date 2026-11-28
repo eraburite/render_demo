@@ -16,9 +16,9 @@
 | 数学库 | GLM |
 | 资源加载 | `stb_image` 解码；`tinygltf`（glTF/GLB）、`tiny_obj_loader`（OBJ/MTL）、KTX 1.0 解析器、assimp（`.dae/.fbx` 等，运行期动态绑定，可选，见 19.2）、手写 MMD（PMX/PMD/VMD）与 DirectX X 文本解析器（见 29） |
 | 构建 | CMake ≥ 3.22，需 `glslangValidator` 编译着色器并转成 `*.hpp` 字节码头 |
-| 目标产物 | `myEngine` 静态库 + `frameworkExtensions`（框架拓展层，见 30）+ `example_common` + **41 个**可执行示例（simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb，迁移示例 test7..test41，见 14–29） |
+| 目标产物 | `myEngine` 静态库 + `frameworkExtensions`（框架拓展层，见 30/31）+ `example_common` + **48 个**可执行示例（simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb，迁移示例 test7..test48，见 14–31） |
 
-依赖约定：`globalConfig` 接口目标统一提供 `src/`、`examples/common/`、`external/`、`external/glm/include`、`external/glfw/include`、`build_vs/generated`；`frameworkExtensions` 再以 PUBLIC 方式追加 `extensions/model`、`extensions/texture`、`extensions/debug` 三个头文件根，因此 41 个示例沿用无前缀的短 include 名（见 30）。`external/` 下三方依赖全部入库，fresh clone 无需外部 SDK 即可构建。
+依赖约定：`globalConfig` 接口目标统一提供 `src/`、`examples/common/`、`external/`、`external/glm/include`、`external/glfw/include`、`build_vs/generated`；`frameworkExtensions` 再以 PUBLIC 方式追加 `extensions/model`、`extensions/texture`、`extensions/debug`、`extensions/raytracing` 四个头文件根，因此 48 个示例沿用无前缀的短 include 名（见 30/31）。`external/` 下三方依赖全部入库，fresh clone 无需外部 SDK 即可构建。
 
 ---
 
@@ -48,7 +48,8 @@ render_demo/
 │   ├── CMakeLists.txt              # 拓展库定义 + 三方依赖策略 + assimp 运行期 DLL 探测
 │   ├── model/                      # 模型加载：加载器中立数据层 / 注册表 / 插件 / 后处理流水线 / 7 种格式加载器 / 骨骼动画
 │   ├── texture/                    # 纹理加载：stb_image 通用解码 + KTX 1.0 解析
-│   └── debug/                      # PPM dump：基于核心 ImageReadback 的离线调试存盘
+│   ├── debug/                      # PPM dump：基于核心 ImageReadback 的离线调试存盘
+│   └── raytracing/                 # 硬件光追：能力探测 / 动态入口 / AS 构建 / SBT 布局 / RT 管线（见 31）
 ├── src/                            # ===== 引擎核心（静态库 myEngine）=====
 │   ├── RenderManager.h/.cpp        # 对外唯一入口：设备、交换链、工厂方法
 │   ├── SequenceBase.h/.cpp         # 序列公共基类：设备/队列/limits/上传模板/时间戳
@@ -131,7 +132,14 @@ render_demo/
 │   ├── occlusion_query/{test38.cpp,shader/}                # 遮挡查询：深度剔除后统计通过样本数（见 28.2）
 │   ├── pipeline_statistics/{test39.cpp,shader/}            # 管线统计查询：6 个计数器与 CPU 绘制表对拍（见 28.2）
 │   ├── instancing/{test40.cpp,shader/}                     # 双 vertex binding：binding 1 逐实例属性（见 28.3）
-│   └── model_formats/{test41.cpp,shader/}                  # PMX/PMD/XFile/VMD 加载框架与验证（见 29）
+│   ├── model_formats/{test41.cpp,shader/}                  # PMX/PMD/XFile/VMD 加载框架与验证（见 29）
+│   ├── raytracing_basic/{test42.cpp,shader/}               # RT 管线最小闭环：BLAS/TLAS + SBT + traceRays（见 31.3）
+│   ├── raytracing_shadows/{test43.cpp,shader/}             # 二级阴影射线 + 多 miss/hit group（见 31.3）
+│   ├── raytracing_callable/{test44.cpp,shader/}            # executeCallableEXT 按实例分派材质（见 31.3）
+│   ├── raytracing_sbtdata/{test45.cpp,shader/}             # shaderRecordEXT：材质写在 SBT 记录里（见 31.3）
+│   ├── raytracing_reflections/{test46.cpp,shader/}         # 递归反射：payload 结构 + spec 常量控制弹射数（见 31.3）
+│   ├── ray_query/{test47.cpp,shader/}                      # rayQueryEXT：无需 RT 管线的查询式追踪（见 31.3）
+│   └── compute_raytracing/{test48.cpp,shader/}             # SDF raymarching：不依赖任何 RT 扩展的降级路径（见 31.3）
 ├── data/                               # 示例运行期资源，统一由 assetPath() 相对 PROJECT_ROOT_PATH 解析
 │   ├── levels/{one,two,three,four}.lvl  # Breakout 的四张关卡（见 27.7）
 │   ├── textures/breakout/               # 12 张精灵/粒子贴图（见 27.3）
@@ -1300,7 +1308,7 @@ stencil 示例还会单独抓一张 `0001_stencil-mask.ppm`：它是 depth-stenc
 | MMD 字符串 | PMD/VMD 的 Shift-JIS 名字只做 ASCII 直通 + 半角片假名精确映射，其余多字节字符降级为 U+FFFD；名字只用于材质/骨骼标签与日志，不影响几何或绘制（见 29.3） |
 | 模型贴图 | side-car 贴图按模型文件所在目录解析并容错加载（`stb_image`）；缺失或不可解码不致命。真实 MMD 常引用未随模型附带的 toon/sphere 文件，因此 `images` 可能为空（见 29.3） |
 | Vulkan-Samples 覆盖 | `D:/Vulkan-samples/examples` 共 82 个示例，本仓库直接迁移 16 个、间接覆盖 28 个、本轮新增 3 个，仍有 35 个未迁移（多为 ray tracing / 设备扩展 / headless），逐项原因见 28.1 |
-| Validation 状态 | VUID 与 `WRITE_AFTER_WRITE`/`READ_AFTER_WRITE` hazard 全部为 0；offscreen/GBuffer 每帧独立附件组，`eSwapChain` 依赖已覆盖 depth 写入，见 4.14；41 个示例的回归扫描见 25.6 / 26.7 / 27.8 / 28.5 / 29.6 |
+| Validation 状态 | VUID 与 `WRITE_AFTER_WRITE`/`READ_AFTER_WRITE` hazard 全部为 0；offscreen/GBuffer 每帧独立附件组，`eSwapChain` 依赖已覆盖 depth 写入，见 4.14；48 个示例的回归扫描见 25.6 / 26.7 / 27.8 / 28.5 / 29.6 / 31.8 |
 | 调试视图覆盖 | 仅 gbuffer / offscreen 接入 `DebugViewState`；其余示例可在各自 fragment shader 里按 13.2 的约定加分支 |
 | 交换链图像回读 | ✅ 已实现（见 16.2 / 17）：swapchain 申请了 `eTransferSrc`，`LoopSequence::getImageIndex()` 定位当前帧，`--dump` 可抓合成后的交换链帧；S8 平面回读见 17.4 |
 | 深度通道导出 | G-Buffer 与 offscreen 的深度 `storeOp = DontCare`，内容不留存，因此没有深度 PPM；深度用 position 通道反推（`eLinearDepth`） |
@@ -4323,3 +4331,157 @@ VMD 按骨骼名寻址，而 `AnimationChannel` 原本只有 `nodeIndex`。新�
 | 三个能力共处一个库 | 由 30.2 的实现宏约束决定；若将来拆库，需先把 stb / tinygltf 的实现抽成独立 `detail` TU |
 
 > **历史路径说明**：第 5、14–29 章的改动记录里出现的 `examples/common/ModelLoader.*`、`examples/common/ImageDump.*` 等路径描述的是**当时**的位置；本轮之后这些文件位于 `extensions/model|texture|debug/`，历史叙述不改写，按此映射理解。
+
+## 31. 硬件光线追踪：设备协商 + `extensions/raytracing/` + 7 个示例
+
+### 31.1 分层判据：什么该进 `src/`，什么该进拓展层
+
+Vulkan-Samples 的 raytracing 系列一共 8 个示例（`ray_tracing_basic`、`raytracing_shadows`、`raytracing_callable`、`raytracing_sbtdata`、`raytracing_reflections`、`ray_query`、`ray_tracing_compute`… 加上 `raytracing_extended` 的变体）。迁移时**没有**把它们做成"把 `VulkanSample` 基类的功能照搬进 `RenderManager`"，而是按第 30 章确立的四层依赖逐项判定：
+
+| 能力 | 归属 | 判据 |
+| --- | --- | --- |
+| 光追扩展链与 `VkPhysicalDeviceFeatures2` 协商 | **`src/`** | 候选物理设备筛选、`DeviceRequirement` 是核心的唯一职责；示例拿不到物理设备选择权 |
+| `LoopSequence::recordRaw()` | **`src/`** | 光追没有 render pass，核心必须提供"不经过 render pass 直接录命令 + 提交后 present"的出口 |
+| BLAS/TLAS 构建、scratch 缓冲 | `extensions/raytracing/` | 纯资源构造，核心零引用 |
+| SBT 布局算术 | `extensions/raytracing/` | **纯 CPU 类型**，可脱离 GPU 做 `--self-test` |
+| 光追管线 / shader group / `traceRays` | `extensions/raytracing/` | 依赖上面两项，且需要动态加载 PFN |
+| storage image → swapchain 拷贝 | `extensions/raytracing/` | 光追示例专用，核心的 `ImageReadback` 已够用 |
+
+因此 `src/` 本轮只增 4 处：`DeviceRequirement` 两个布尔量、`rayTracingExtensionChain()`、`checkDeviceSuitable()` 的与运算、`LoopSequence::recordRaw()`。**`src/` 不 include 拓展层任何头**（与 30.1 同一约束）。
+
+```cpp
+// src/typedefs.h —— 两个独立开关，默认 false，41 个既有示例拿到的设备与之前完全一致
+struct DeviceRequirement {
+    ...
+    bool rayTracingPipeline = false;  // VK_KHR_ray_tracing_pipeline + 依赖链
+    bool rayQuery = false;            // 仅 VK_KHR_ray_query（compute / fragment 里做查询）
+};
+```
+
+拆成两个开关而不是一个 `rayTracing`，是因为 `ray_query` 示例只需要 `VK_KHR_acceleration_structure` + `VK_KHR_ray_query`，不应被迫接受管线扩展；反过来管线示例也不需要 query。
+
+### 31.2 设备能力协商的两个坑
+
+光追特性**不能**走 `VkDeviceCreateInfo::pEnabledFeatures`（老式 `VkPhysicalDeviceFeatures`），必须挂 `VkPhysicalDeviceFeatures2` 的 pNext 链：
+
+```
+VkPhysicalDeviceFeatures2
+ ├─ VkPhysicalDeviceAccelerationStructureFeaturesKHR
+ ├─ VkPhysicalDeviceRayTracingPipelineFeaturesKHR
+ ├─ VkPhysicalDeviceRayQueryFeaturesKHR
+ └─ VkPhysicalDeviceBufferDeviceAddressFeatures
+```
+
+坑一（**崩溃级**）：链节点最初写在 `if (needRt) { ... }` 块内，块结束时四个结构体析构，而 `vkCreateDevice` 才刚开始读 `pNext` —— 悬垂指针导致随机 `vkCreateDevice` 段错误，或者偶发 `ErrorIncompatibleDriver`。修法是把链节点提到函数作用域，生命周期覆盖整个 `vkCreateDevice` 调用。这个 bug 表现成"有时能跑、有时崩"，极易误判成驱动问题。
+
+坑二：`PhysicalDeviceUtils::checkDeviceSuitable()` 必须**反向查**这些特性。扩展出现在 `extensions` 列表里不等于特性可用（`features.rayTracingPipeline == VK_FALSE` 也可能），所以筛选时再 `getFeatures2()` 一次并把结果与进 `rtFeaturesAdequate`，不满足就直接跳过该设备。
+
+`createDevice()` 里另有一处修正：原实现用常量 `deviceRequiredExtensions` 覆盖 `req.extensions`，示例传进来的扩展会被静默丢弃。现在改为合并（`deviceRequiredExtensions` + `req.extensions` + 光追链），并 `appendUnique` 去重。
+
+### 31.3 七个示例的覆盖度
+
+| 示例 | 目录 | 覆盖的点 | 校验手段 |
+| --- | --- | --- | --- |
+| `raytracing_basic` | `raytracing_basic/`（515 行 + 3 shader） | 最小闭环：1 BLAS + 1 实例 + 3 描述符（TLAS / storage image / camera UBO） | `--verify` 命中率 `0.46225`，与解析解 `2/2.486×2/3.496≈0.46` 吻合 |
+| `raytracing_shadows` | `raytracing_shadows/`（534 + 5） | 2 miss group + 2 hit group、递归 2、次级阴影射线 | 按最近参考色把像素分成 background/lit/shadow/blocker 四类，四类都必须非空 |
+| `raytracing_callable` | `raytracing_callable/`（546 + 6） | `executeCallableEXT`、3 个 callable group、`gl_InstanceCustomIndexEXT` 转发 | callable 区域起点 = group 3、表覆盖到区域末尾且 base 对齐；三块面板主色互不相同 |
+| `raytracing_sbtdata` | `raytracing_sbtdata/`（574 + 3） | `instanceShaderBindingTableRecordOffset` 逐实例选记录、`layout(shaderRecordEXT)` 块、**recordData 撑宽 stride** | 6 实例各读自己的记录（距离 0/1，次优 ≥154）；`recordStride == 64` |
+| `raytracing_reflections` | `raytracing_reflections/`（653 + 3） | raygen 里迭代反射、payload 四元组（色/距离/法线/反射率）、Cornell box、递归深度用特化常量 | 地面左右红绿不对称 `37.07` + **A/B**（反射率全置 0）`mean=12.9069 changedFraction=0.3009` |
+| `ray_query` | `ray_query/`（607 + 1 comp） | compute 阶段 `rayQueryEXT` 主查询 + 阴影查询 | A/B 关阴影开关：`meanShadowDepth=55.67 darkerShare=1` |
+| `compute_raytracing` | `compute_raytracing/`（446 + 1 comp） | **零光追扩展**：解析 SDF 光线步进（CPU 侧镜像同一 SDF 做自检） | A/B 关阴影：`meanShadowDepth=71.99 darkerShare=1` |
+
+`compute_raytracing` 对应 `ray_tracing_compute`（原示例用 RT 做 compute 着色），这里改为 SDF 步进，作为"没有光追硬件时的降级策略"的落地样板；`ray_tracing_compute` 里 compute + RT 的组合能力由 `ray_query` + `compute_raytracing` 两个示例分别覆盖。
+
+所有 7 个示例同参数两次 `--dump` 的 PPM MD5 完全一致（`2647c556…` / `4a242786…` / `86a28267…` / `6d765d62…` / `3c67cbdb…` / `137657be…` / `12bcb8fc…`），说明没有任何"每次运行取随机种子"的隐性差异。
+
+### 31.4 SBT 布局算术（纯 CPU，可脱离硬件自检）
+
+SBT 是最容易写错的一块，所以把它做成不碰 Vulkan 的类型 `ShaderBindingLayout::Compute(caps, raygen, miss, hit, callable)`，`caps` 只提供三个数字（本机 `shaderGroupHandleSize=32`、`shaderGroupHandleAlignment=32`、`shaderGroupBaseAlignment=64`）：
+
+```
+handleAligned = align(handleSize, handleAlignment)          // 32
+recordStride  = align(handleAligned + maxRecordData, align) // 普通示例 32；sbtdata 64
+region.size   = align(recordStride * groupCount, align)
+offset(region) = 上一 region 的 offset + size               // raygen → miss → hit → callable
+totalSize     = align(所有 region 之和, baseAlignment)
+```
+
+三条约束缺一不可：**handle 本身要按 `handleAlignment` 对齐**；**recordData 紧跟 handle 之后，且整体 stride 再按 `handleAlignment` 对齐**（sbtdata 的 16 字节 `vec4` payload 把 stride 从 32 撑到 64）；**整个表按 `baseAlignment` 收尾**，否则 `vkCmdTraceRaysKHR` 读到表尾外。
+
+`ShaderGroupDesc::recordData` 就是为此存在的：`vkGetRayTracingShaderGroupHandlesKHR` 只给 handle，payload 要自己拼在 handle 后面。示例侧自检断言了 `recordStride == 64`、region 起点、表尾对齐与"实例→记录是置换"。
+
+一个曾经写错的断言：最初要求 `totalSize == callable.offset + callable.byteSize`，实际表会补齐到 `baseAlignment`，改为 `totalSize >= callableEnd && totalSize % baseAlignment == 0`。
+
+### 31.5 shader 编译链：SPIR-V 1.4、Y 翻转、特化常量
+
+`cmake/vulkan_shader_compiler.cmake` 增加了 `TARGET_ENV` 参数，并按扩展名自动选 target env：
+
+| 扩展名 | 阶段 | target env |
+| --- | --- | --- |
+| `.rgen/.rmiss/.rchit/.rahit/.rcall/.rint` | 光追阶段 | `vulkan1.2`（RT 阶段强制 SPIR-V 1.4） |
+| `.frag/.comp` | 普通阶段 | 默认；做 ray query 时显式传 `TARGET_ENV vulkan1.2` |
+
+三个非显然的坑：
+
+1. **Y 轴翻转**：`glm::perspective` 给 OpenGL 约定 NDC（+Y 朝上），而 `gl_LaunchIDEXT.y` 是自上而下计行，raygen 里必须 `float y = 1.0 - (launchID.y + 0.5) / height` 之类地翻一次，否则整幅画面上下颠倒。这一点在 `raytracing_basic` 里用"命中率应当与解析投影面积相符"间接锁死了。
+2. **递归深度走特化常量**：`layout(constant_id = 0) const uint kMaxDepth`，管线创建时写 `specData`；`raytracing_reflections` 靠它把 `maxRecursionDepth` 变成可调参数（设备上限本机 31）。
+3. **`imageStore` 是逐字节写**：写 `rgba8` qualified image 时驱动**不做** sRGB 编码，即使图像格式是 `B8G8R8A8Srgb`。实测背景 `0.05` 落成字节 `13` 而不是 sRGB 编码后的 `62`。因此字节换算只有一个出口：
+
+```cpp
+// extensions/raytracing/RayTracingCommon.h —— 全库唯一的字节约定
+inline uint8_t StorageByte(float linear) {           // imageStore 逐字节写入，无 sRGB 编码
+    const float clamped = std::clamp(linear, 0.0f, 1.0f);
+    return static_cast<uint8_t>(std::lround(clamped * 255.0f));
+}
+```
+
+另一个踩过的坑不在 shader 而在 dump：`ImageDump` 把 **alpha < 0.5 的像素视为"未覆盖"并写成黑色**（G-Buffer 覆盖约定）。最初拿 alpha 当调试旁路（存反弹次数），结果整幅画面几乎全黑——alpha 不是免费的调试通道。
+
+### 31.6 storage image → swapchain 的一步拷贝
+
+光追没有 render pass，输出只能写 storage image，再拷到 swapchain。`LoopSequence::recordRaw()` 提供"不经过 render pass 录命令"的出口，`rt::RecordCopyToSwapchain()` 负责中间的状态迁移：
+
+```
+storage image : GENERAL ────────保持 GENERAL──────────────┐
+swapchain img : UNDEFINED → TRANSFER_DST → (copy) → PRESENT_SRC
+```
+
+调用方只需给出 storage image、swapchain image 与 extent，管线屏障与 image memory barrier 都在拓展层里。`recordRaw()` 会把 `submitFrame()` 的 image-available 等待阶段从 `COLOR_ATTACHMENT_OUTPUT` 放宽到 `eAllCommands`——写入发生在光追/传输阶段，不再落在颜色附件输出阶段，这一步是必须的。
+
+### 31.7 `ray_query` 的刻意偏差
+
+参考实现里 `ray_query` 是在 **fragment** 阶段做查询（光栅化 + 每像素射线查询）。本框架示例侧的 `DescriptorLayoutAtlas` 没有 acceleration structure 组件，把 AS 塞进 G-Buffer 管线需要改公共描述符表；为避免污染其余 41 个示例的公共路径，`ray_query` 改为 **compute 阶段**做同样的事：主射线求交 + 阴影射线查询，写入 storage image 后同样走 31.6 的拷贝。
+
+能力覆盖没有损失（`rayQueryEXT` 的三个入口 `rayQueryInitializeEXT` / `rayQueryProceedEXT` / `rayQueryGetIntersection*EXT` 全都用到），代价是示例不再展示"光栅化与光追混用"。这条偏差写在这里，避免后来者以为 fragment 阶段不可用。
+
+### 31.8 构建与验证
+
+硬件：**NVIDIA GeForce RTX 3050**，驱动暴露完整 KHR 光追链；Vulkan SDK `1.4.341.1`。`[rt]` 行运行时自报：`handleSize=32 handleAlign=32 baseAlign=64 maxRecursion=31`。
+
+| 项 | 结果 |
+| --- | --- |
+| 全量 Release 构建 | **0 error**；**48** 个 exe + 3 个库（`myEngine` / `example_common` / `frameworkExtensions`，光追部分 1257 行 8 文件） |
+| 设备协商 | 41 个既有示例仍拿到与迁移前相同的设备（两个开关默认 `false`，不追加任何扩展） |
+| 7 个光追示例 | 全部 `rc=0`；`--self-test` 全过；`--verify` 数字见 31.3；PPM MD5 两次运行一致 |
+| 图像复核 | 16 张 PPM 逐张目视（转 PNG）：条纹 / 棋盘 / 色带三块面板、六色网格、Cornell box、两组阴影方向均正确 |
+| 全量冒烟 | 48 / 48 启动无异常：12 个自带 `--frames` 退出的示例 `rc=0`，其余 36 个持续渲染示例由 5 s 超时主动终止（`kill`），**0 条 `Validation Error` / VUID / 异常输出** |
+
+**收尾时发现并修掉的一个真实缺陷**：`raytracing_sbtdata --frames 1` 会以 `0xC0000409`（STATUS_STACK_BUFFER_OVERRUN，实为 `std::terminate`）静默崩溃，无任何输出。逐层加临时探针定位后结论是：
+
+1. 循环退出后立刻 `pipeline.Destroy()`，而最后一帧的 `vkQueuePresentKHR` 还在进行中 —— 销毁**仍被在途命令引用**的管线与 SBT buffer 是未定义行为；
+2. 驱动把后果延后到下一次同步，`vkDeviceWaitIdle` 返回 `VK_ERROR_DEVICE_LOST(-4)`；
+3. `LoopSequence::~LoopSequence()` 里用的是 vulkan-hpp 的 `waitIdle()`，它把失败转成 `vk::SystemError`；异常逃出析构函数 → `std::terminate` → 平台码 `0xC0000409`。
+
+两处修法：示例在销毁光追管线/SBT 前显式 `device.waitIdle()`（`raytracing_basic` / `shadows` / `callable` / `reflections` 本来就有，`sbtdata` / `ray_query` / `compute_raytracing` 补齐）；`~LoopSequence()` 改用 C 入口 `vkDeviceWaitIdle`，失败只打一行 `[teardown]` 而不抛出——**析构函数不应成为崩溃源**。修复后 `--frames 1` 退出码 `0`、无告警，七个示例的 PPM MD5 与修复前完全一致（说明修复只影响收尾，不影响渲染结果）。
+
+> Release 构建里 `VK_LAYER_KHRONOS_validation` 按 `NDEBUG` 关闭（`enableValidationLayers`），所以上表的"0 Validation Error"来自各示例运行日志的文本扫描而非图层输出；要拿到 VUID 级证据需另建 Debug 配置。
+
+### 31.9 硬件依赖与降级策略
+
+| 情形 | 行为 |
+| --- | --- |
+| 设备无 KHR 光追链 | `checkDeviceSuitable()` 直接跳过该设备；若全部设备都不满足，创建失败并报错，不会退化成"跑起来但全黑" |
+| `ray_tracing` 但只需要查询 | 申请 `rayQuery = true` 即可，不要求 `rayTracingPipeline`（`ray_query` 示例就是这样拿到设备的） |
+| 完全没有光追硬件 | `compute_raytracing` 是参考实现：解析 SDF 步进 + 手写求交，零光追扩展，`--self-test` 用 CPU 镜像 SDF 校验几何 |
+| `--self-test` | `ShaderBindingLayout` 是纯 CPU 类型，在**没有光追硬件**的机器上也能验证对齐算术 |
+| 递归深度 | 设备 `maxRayTracingRecursionDepth` 本机 31；示例只用到 1/2/4，靠特化常量而非编译期常量控制 |

@@ -5,6 +5,8 @@
 #   model/    - loader-neutral model data + registry + built-in format loaders
 #   texture/  - stb_image / KTX 1.0 decoders
 #   debug/    - PPM dump built on the core's ImageReadback
+#   raytracing/ - KHR ray tracing: capability probe, acceleration structures,
+#                 shader binding table, pipeline (see DESIGN.md 31)
 #
 # Third-party dependency policy (DESIGN.md 30.2):
 #   * zero third-party: ModelAsset / ModelLoader / PostProcess / Builder /
@@ -29,7 +31,8 @@
 file(GLOB FRAMEWORK_EXT_SRC CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/model/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/texture/*.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/debug/*.cpp")
+    "${CMAKE_CURRENT_SOURCE_DIR}/debug/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/raytracing/*.cpp")
 add_library(frameworkExtensions STATIC ${FRAMEWORK_EXT_SRC})
 
 # Keep the short, unqualified #include "ModelLoader.h" style used by all 41
@@ -38,6 +41,7 @@ target_include_directories(frameworkExtensions PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/model
     ${CMAKE_CURRENT_SOURCE_DIR}/texture
     ${CMAKE_CURRENT_SOURCE_DIR}/debug
+    ${CMAKE_CURRENT_SOURCE_DIR}/raytracing
 )
 target_link_libraries(frameworkExtensions PUBLIC myEngine globalConfig)
 

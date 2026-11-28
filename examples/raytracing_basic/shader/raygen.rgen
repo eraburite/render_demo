@@ -1,0 +1,38 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+
+// Binding 0: the top-level acceleration structure built on the CPU side.
+layout(binding = 0, set = 0) uniform accelerationStructureEXT topLevelAS;
+// Binding 1: the storage image written with imageStore, later copied to the
+// swapchain by RecordCopyToSwapchain().
+layout(binding = 1, set = 0, rgba8) uniform image2D outImage;
+// Binding 2: inverse view / inverse projection, so the ray direction comes from
+// the same camera matrices the rasterising examples use.
+layout(binding = 2, set = 0) uniform CameraProperties
+{
+    mat4 viewInverse;
+    mat4 projInverse;
+} cam;
+
+layout(location = 0) rayPayloadEXT vec3 hitValue;
+
+void main()
+{
+    const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
+    const vec2 uv = pixelCenter / vec2(gl_LaunchSizeEXT.xy);
+    // gl_LaunchIDEXT counts rows top-down, while the projection matrix in the
+    // UBO comes from glm::perspective and therefore follows the OpenGL NDC
+    // convention (+Y up).  Flipping Y here is what keeps the ray-traced image
+    // upright and identical to the rasterising examples; without it the whole
+    // scene renders mirrored vertically.
+    const vec2 ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+
+    const vec4 origin = cam.viewInverse * vec4(0.0, 0.0, 0.0, 1.0);
+    const vec4 target = cam.projInverse * vec4(ndc.x, ndc.y, 1.0, 1.0);
+    const vec4 direction = cam.viewInverse * vec4(normalize(target.xyz / target.w), 0.0);
+
+    hitValue = vec3(0.0);
+    traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0, origin.xyz, 0.001, direction.xyz, 10000.0, 0);
+
+    imageStore(outImage, ivec2(gl_LaunchIDEXT.xy), vec4(hitValue, 1.0));
+}

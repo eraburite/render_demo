@@ -11,6 +11,15 @@
 #include <string>
 #include <utility>
 
+bool IsBgraFormat(vk::Format format)
+{
+    switch (format) {
+        case vk::Format::eB8G8R8A8Unorm:
+        case vk::Format::eB8G8R8A8Srgb: return true;
+        default: return false;
+    }
+}
+
 namespace {
 
 // Memory layout of one texel, for the formats the dump path understands.
@@ -25,9 +34,9 @@ TexelLayout layoutOf(vk::Format format)
 {
     switch (format) {
         case vk::Format::eR8G8B8A8Unorm:
-        case vk::Format::eR8G8B8A8Srgb: return TexelLayout{false, false, false, 4};
+        case vk::Format::eR8G8B8A8Srgb:
         case vk::Format::eB8G8R8A8Unorm:
-        case vk::Format::eB8G8R8A8Srgb: return TexelLayout{false, false, true, 4};
+        case vk::Format::eB8G8R8A8Srgb: return TexelLayout{false, false, IsBgraFormat(format), 4};
         case vk::Format::eR32G32B32A32Sfloat: return TexelLayout{true, false, false, 4};
         // HDR render targets.  The half-float texels are converted to float in
         // readTexel; eToneMap is what makes values above 1.0 visible in a PPM.

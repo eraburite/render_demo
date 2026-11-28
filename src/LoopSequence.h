@@ -27,6 +27,15 @@ public:
 
     void recordDispatch(const std::shared_ptr<CmdOpBase> &op);
     void record(const std::shared_ptr<CmdOpBase> &op);
+    // Records raw commands outside any render pass.  The callback receives the
+    // command buffer and the swapchain image index acquired for this frame, so a
+    // pass can dispatch into a storage image and copy the result to the
+    // swapchain instead of going through a render pass.  Ray tracing has no
+    // render pass at all (see DESIGN.md 31.6).  Using this widens the
+    // image-available wait stage in submitFrame() to eAllCommands, because the
+    // write then happens in the ray-tracing / transfer stages rather than
+    // COLOR_ATTACHMENT_OUTPUT.
+    void recordRaw(const std::function<void(vk::CommandBuffer, uint32_t imageIndex)> &body);
     void recordPass(const std::shared_ptr<IRenderPass> &renderPass, const std::function<void()> &body);
     // Same as above but opens the first subpass with the given contents, e.g.
     // eSecondaryCommandBuffers when the body executes secondary buffers.
@@ -62,6 +71,9 @@ private:
     uint32_t m_imageIndex = 0;
     uint32_t m_computeFamily = 0;
     bool m_computeActive = false;
+    // Set by recordRaw() and cleared at the start of every frame; widens the
+    // image-available wait stage in submitFrame() (see recordRaw).
+    bool m_rawRecording = false;
 
     std::shared_ptr<vk::Queue> m_computeQueue;
 

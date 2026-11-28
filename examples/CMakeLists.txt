@@ -19,7 +19,8 @@ foreach(example tessellation deferred terraintessellation gltfloading gltfscener
                 texture texturecubemap texturearray parallaxmapping texture3d subpasses stencil model_loading oit
                 skeletal_animation scene_graph heightmap_terrain csm hdr bloom gamma shadow_mapping point_shadow ssao
                 compute_shader physically_based_bloom area_lights text_rendering breakout
-                occlusion_query pipeline_statistics instancing model_formats)
+                occlusion_query pipeline_statistics instancing model_formats
+                raytracing_basic raytracing_shadows raytracing_callable raytracing_sbtdata raytracing_reflections ray_query compute_raytracing)
     # text_rendering is the only example with a link-time third-party dependency
     # (FreeType); without it the target would not link, so skip it instead.
     if(example STREQUAL "text_rendering" AND NOT RENDER_DEMO_HAS_FREETYPE)

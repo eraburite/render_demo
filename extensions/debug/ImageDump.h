@@ -43,6 +43,12 @@ inline const char *DumpEncodingName(DumpEncoding encoding)
     return "unknown";
 }
 
+// True when a texel of the format stores blue before red (the B8G8R8A8 family).
+// The PPM writer and any byte-level assertion built on a readback must agree on
+// this, so the answer lives here instead of being re-derived at each call site.
+// Formats outside the 8-bit colour set answer false.
+bool IsBgraFormat(vk::Format format);
+
 struct DumpRequest {
     std::string label; // file stem, e.g. "gbuffer-normal"
     vk::Image image{};

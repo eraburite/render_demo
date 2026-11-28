@@ -1,0 +1,74 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+
+layout(binding = 0, set = 0) uniform accelerationStructureEXT topLevelAS;
+layout(binding = 1, set = 0, rgba8) uniform image2D outImage;
+layout(binding = 2, set = 0) uniform CameraProperties
+{
+    mat4 viewInverse;
+    mat4 projInverse;
+} cam;
+
+// Reflection state travelling between the loop iterations.  One struct keeps the
+// four values in a single payload location, which is the only location a nested
+// trace would otherwise have to compete for.
+struct RayPayload
+{
+    vec3 color;
+    float distance;   // < 0 means the ray escaped
+    vec3 normal;
+    float reflectivity;
+};
+
+layout(location = 0) rayPayloadEXT RayPayload payload;
+
+// Bounce budget, injected as a specialization constant so the same SPIR-V can
+// run at any depth without a recompile (see DESIGN.md 31.5).
+layout(constant_id = 0) const int MAX_RECURSION = 1;
+
+void main()
+{
+    const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
+    const vec2 uv = pixelCenter / vec2(gl_LaunchSizeEXT.xy);
+    // Projection from glm::perspective is +Y up, launch indices count rows
+    // top-down (see DESIGN.md 31.5).
+    const vec2 ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+
+    vec3 origin = (cam.viewInverse * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+    const vec4 target = cam.projInverse * vec4(ndc.x, ndc.y, 1.0, 1.0);
+    vec3 direction = normalize((cam.viewInverse * vec4(normalize(target.xyz / target.w), 0.0)).xyz);
+
+    // Iterative reflection: the reference sample does the same, because a
+    // recursive traceRayEXT from inside a closest-hit shader would have to find a
+    // second payload location per level.  One payload, one loop, N bounces.
+    vec3 color = vec3(0.0);
+    vec3 throughput = vec3(1.0);
+
+    for (int bounce = 0; bounce < MAX_RECURSION; ++bounce) {
+        payload.color = vec3(0.0);
+        payload.distance = -1.0;
+        payload.normal = vec3(0.0, 1.0, 0.0);
+        payload.reflectivity = 0.0;
+
+        traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0, origin, 0.001, direction, 10000.0, 0);
+
+        color += throughput * payload.color;
+
+        // Escaped, or a surface that does not mirror: the path ends here.
+        if (payload.distance < 0.0 || payload.reflectivity <= 0.001) {
+            break;
+        }
+
+        const vec3 hitPosition = origin + direction * payload.distance;
+        origin = hitPosition + payload.normal * 0.002;
+        direction = reflect(direction, payload.normal);
+        throughput *= payload.reflectivity;
+    }
+
+    // Alpha stays at 1: the PPM dump treats alpha < 0.5 as "uncovered" and writes
+    // those texels black (the G-Buffer coverage convention, see 13.4), so the
+    // channel is not free to carry a debug value here.  --verify compares a
+    // reflective frame against the same frame with reflectivity patched to zero
+    // instead.
+    imageStore(outImage, ivec2(gl_LaunchIDEXT.xy), vec4(color, 1.0));
+}

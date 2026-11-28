@@ -1,0 +1,11 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+
+layout(location = 0) rayPayloadInEXT vec3 hitValue;
+
+void main()
+{
+    // Dark blue background, matched by --verify (see kBackgroundLinear in
+    // test43.cpp).
+    hitValue = vec3(0.02, 0.03, 0.10);
+}

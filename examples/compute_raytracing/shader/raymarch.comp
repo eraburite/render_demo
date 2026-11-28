@@ -1,0 +1,149 @@
+#version 460
+
+// Ray tracing in a compute shader with no ray tracing extension at all: the
+// scene is a signed distance field and the rays march it.  This is the fallback
+// shape of the technique -- it runs on any device with a compute queue, which is
+// why the reference sample keeps it alongside the hardware path.
+//
+// The reference (`computeraytracing`) voxelises Sponza; this port uses an
+// analytic SDF scene instead.  The capability being demonstrated is identical:
+// primary rays, secondary shadow rays and a per-pixel loop, all in compute.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 0, set = 0, rgba8) uniform image2D outImage;
+layout(binding = 1, set = 0) uniform CameraProperties
+{
+    mat4 viewInverse;
+    mat4 projInverse;
+    vec4 flags; // x = shadow rays enabled
+} cam;
+
+const vec3 kLightDirection = normalize(vec3(0.75, 0.60, 0.35));
+const vec3 kAlbedoFloor = vec3(0.62, 0.63, 0.66);
+const vec3 kAlbedoWarm = vec3(0.90, 0.62, 0.20);
+const vec3 kAlbedoCool = vec3(0.20, 0.42, 0.88);
+
+// ---- signed distance field -------------------------------------------------
+// Floor plane plus two boxes.  Must stay in sync with the C++ self-test.
+
+float sdBox(vec3 p, vec3 center, vec3 halfExtent)
+{
+    const vec3 q = abs(p - center) - halfExtent;
+    return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
+}
+
+float SceneDistance(vec3 p, out int material)
+{
+    float distance = p.y; // ground plane at y = 0
+    material = 0;
+
+    const float boxA = sdBox(p, vec3(-1.15, 0.55, 0.10), vec3(0.55));
+    if (boxA < distance) {
+        distance = boxA;
+        material = 1;
+    }
+    const float boxB = sdBox(p, vec3(1.30, 0.80, -1.10), vec3(0.80));
+    if (boxB < distance) {
+        distance = boxB;
+        material = 2;
+    }
+    return distance;
+}
+
+vec3 SceneNormal(vec3 p)
+{
+    // Tetrahedron gradient: four SDF samples instead of six.
+    const float epsilon = 0.0005;
+    int unused;
+    const vec2 k = vec2(1.0, -1.0);
+    return normalize(k.xyy * SceneDistance(p + k.xyy * epsilon, unused)
+                     + k.yyx * SceneDistance(p + k.yyx * epsilon, unused)
+                     + k.yxy * SceneDistance(p + k.yxy * epsilon, unused)
+                     + k.xxx * SceneDistance(p + k.xxx * epsilon, unused));
+}
+
+bool Occluded(vec3 origin, vec3 direction)
+{
+    // Shadow ray: march until something is hit or the distance proves the path is
+    // clear.  A coarse epsilon is fine -- the result is a binary term.
+    float travel = 0.004;
+    for (int step = 0; step < 96; ++step) {
+        int material;
+        const float distance = SceneDistance(origin + direction * travel, material);
+        if (distance < 0.001) {
+            return true;
+        }
+        travel += max(distance, 0.004);
+        if (travel > 40.0) {
+            break;
+        }
+    }
+    return false;
+}
+
+void main()
+{
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    const ivec2 size = imageSize(outImage);
+    if (pixel.x >= size.x || pixel.y >= size.y) {
+        return;
+    }
+
+    const vec2 uv = (vec2(pixel) + vec2(0.5)) / vec2(size);
+    const vec2 ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+
+    const vec3 origin = (cam.viewInverse * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+    const vec4 target = cam.projInverse * vec4(ndc.x, ndc.y, 1.0, 1.0);
+    const vec3 direction = normalize((cam.viewInverse * vec4(normalize(target.xyz / target.w), 0.0)).xyz);
+
+    vec3 color = vec3(0.0);
+
+    // ---- primary march ------------------------------------------------------
+    float travel = 0.0;
+    int material = -1;
+    bool hit = false;
+    for (int step = 0; step < 256; ++step) {
+        int currentMaterial;
+        const float distance = SceneDistance(origin + direction * travel, currentMaterial);
+        if (distance < 0.0008) {
+            hit = true;
+            material = currentMaterial;
+            break;
+        }
+        travel += distance;
+        if (travel > 64.0) {
+            break;
+        }
+    }
+
+    const float skyT = 0.5 * (direction.y + 1.0);
+    const vec3 skyColor = mix(vec3(0.06, 0.08, 0.16), vec3(0.44, 0.52, 0.76), skyT);
+
+    if (!hit) {
+        color = skyColor;
+    } else {
+        const vec3 position = origin + direction * travel;
+        const vec3 normal = SceneNormal(position);
+        const vec3 albedo = material == 0 ? kAlbedoFloor : (material == 1 ? kAlbedoWarm : kAlbedoCool);
+
+        float visibility = 1.0;
+        if (cam.flags.x > 0.5) {
+            visibility = Occluded(position + normal * 0.002, kLightDirection) ? 0.0 : 1.0;
+        }
+
+        // One bounce of indirect light from the sky keeps the shadowed side from
+        // going completely flat -- a raymarcher has no acceleration structure to
+        // spend on more.
+        const float nDotL = max(dot(normal, kLightDirection), 0.0);
+        const float sky = 0.5 + 0.5 * normal.y;
+        color = albedo * (0.12 + 0.75 * nDotL * visibility + 0.18 * sky);
+
+        // Grazing rays run out of marching budget before they reach the floor, so
+        // without a fade the horizon would end in a hard sawtooth.  Fading to the
+        // sky over the far range hides the cutoff and reads as distance haze.
+        color = mix(color, skyColor, smoothstep(10.0, 34.0, travel));
+    }
+
+    imageStore(outImage, pixel, vec4(color, 1.0));
+}

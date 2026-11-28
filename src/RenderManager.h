@@ -74,6 +74,12 @@ public:
     vk::Format DepthStencilFormat() const { return m_depthStencilFormat; }
     vk::SampleCountFlagBits getMaxUsableSampleCount() const { return m_msaaSamples; }
     uint32_t maxFramesInFlight() const { return m_maxFramesInFlight; }
+    // True when the device was created with the KHR ray tracing chain.  The
+    // extension layer uses this to decide between hardware tracing and its
+    // capability-probe / CPU self-test fallback (see 31.4).
+    bool rayTracingEnabled() const { return m_requirement.rayTracingPipeline; }
+    bool rayQueryEnabled() const { return m_requirement.rayQuery; }
+    const DeviceRequirement &deviceRequirement() const { return m_requirement; }
     // Shared PSO cache: compute pipelines created through this manager reuse it,
     // so re-specialising a shader does not pay for a cold compile every time.
     vk::PipelineCache pipelineCache() const { return m_pipelineCache ? *m_pipelineCache : vk::PipelineCache{}; }

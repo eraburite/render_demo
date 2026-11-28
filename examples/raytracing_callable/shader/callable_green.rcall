@@ -1,0 +1,13 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+
+layout(location = 0) callableDataInEXT vec3 outColor;
+
+void main()
+{
+    // Checkerboard, same 16-pixel cell size as the stripes so the three
+    // materials are visually distinguishable at a glance.
+    const vec2 cell = floor(vec2(gl_LaunchIDEXT) / 16.0);
+    const float checker = mod(cell.x + cell.y, 2.0);
+    outColor = vec3(0.15, 0.90, 0.25) * mix(0.80, 1.0, checker);
+}

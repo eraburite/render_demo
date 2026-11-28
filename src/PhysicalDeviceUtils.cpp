@@ -63,8 +63,38 @@ bool PhysicalDeviceUtils::checkDeviceSuitable(const vk::PhysicalDevice &device,
         && (!req.pipelineStatisticsQuery || supportedFeatures.pipelineStatisticsQuery)
         && (!req.fillModeNonSolid || supportedFeatures.fillModeNonSolid)
         && (!req.independentBlend || supportedFeatures.independentBlend);
+
+    // Ray tracing features live in a pNext chain, not in the legacy
+    // VkPhysicalDeviceFeatures struct.  Querying them only when the caller asked
+    // for them keeps every existing example on the exact same code path.  A
+    // device that lacks the extension simply reports the struct as all-false,
+    // which fails this test (see 31.2).
+    bool rtFeaturesAdequate = true;
+    if (req.rayTracingPipeline || req.rayQuery) {
+        vk::PhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddress{};
+        vk::PhysicalDeviceRayQueryFeaturesKHR rayQuery{};
+        vk::PhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipeline{};
+        vk::PhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructure{};
+        bufferDeviceAddress.pNext = nullptr;
+        rayQuery.pNext = &bufferDeviceAddress;
+        rayTracingPipeline.pNext = &rayQuery;
+        accelerationStructure.pNext = &rayTracingPipeline;
+        vk::PhysicalDeviceFeatures2 features2{};
+        features2.pNext = &accelerationStructure;
+        device.getFeatures2(&features2);
+
+        bool ok = accelerationStructure.accelerationStructure && bufferDeviceAddress.bufferDeviceAddress;
+        if (req.rayTracingPipeline) {
+            ok = ok && rayTracingPipeline.rayTracingPipeline;
+        }
+        if (req.rayQuery) {
+            ok = ok && rayQuery.rayQuery;
+        }
+        rtFeaturesAdequate = ok;
+    }
+
     return familyIndices.isComplete() && extensionsSupported && swapChainAdequate && featuresAdequate
-           && (!req.compute || familyIndices.computeFamily.has_value());
+           && rtFeaturesAdequate && (!req.compute || familyIndices.computeFamily.has_value());
 }
 
 QueueFamilyIndices PhysicalDeviceUtils::findQueueFamilies(const vk::PhysicalDevice &device,

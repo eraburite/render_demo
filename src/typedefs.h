@@ -85,6 +85,16 @@ struct DeviceRequirement {
     // VK_QUERY_TYPE_PIPELINE_STATISTICS needs the feature enabled at device
     // creation; occlusion queries need no feature at all (see 28.2).
     bool pipelineStatisticsQuery = false;
+    // Hardware ray tracing (see 31.2).  Both default to false so the existing
+    // examples keep the exact same device.  Requesting either one makes
+    // PhysicalDeviceUtils::checkDeviceSuitable query the RT feature chain
+    // (VkPhysicalDeviceFeatures2 + accelerationStructure / rayTracingPipeline /
+    // rayQuery / bufferDeviceAddress) and makes createDevice() enable every
+    // extension in that dependency chain.  rayTracingPipeline and rayQuery are
+    // independent: a device may expose one without the other, and rayQuery needs
+    // no ray tracing pipeline at all.
+    bool rayTracingPipeline = false;
+    bool rayQuery = false;
     bool samplerAnisotropy = true;
     // Per-color-attachment blend factors.  Enabled by default: it is required by
     // weighted-blended OIT (an additive target next to a multiplicative one in
