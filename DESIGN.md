@@ -37,7 +37,7 @@ render_demo/
 │   └── ...
 ├── configuration/root_directory.h.in   # 生成 PROJECT_ROOT_PATH 宏
 ├── assets/                         # ===== 示例运行期资源（单一根，见 32）=====
-│   ├── models/                     # 迁移示例的模型：glTF（suzanne / deer / sphere / armor / plane / cube / teapot / torusknot / samplebuilding + glass / deferred_floor）、backpack/{obj,mtl,diffuse.jpg}（见 19）、planet/（见 22）、vampire/{dancing_vampire.dae,textures/}（见 21）、formats/{sample.pmx,pmd,x,vmd}（见 29）
+│   ├── models/                     # 迁移示例的模型：glTF（suzanne / deer / sphere / armor / plane / cube / teapot / torusknot / samplebuilding + glass / deferred_floor）、backpack/{obj,mtl,diffuse.jpg,normal.png,specular.jpg}（见 19 / 32.7）、planet/（见 22）、vampire/{dancing_vampire.dae,textures/}（见 21）、formats/{sample.pmx,pmd,x,vmd}（见 29）
 │   ├── textures/                   # awesomeface / container2（+specular）；KTX（metalplate01 / yokohama cubemap / texturearray / rocks 颜色+法线高度 / colored_glass，见 15）；breakout/ 12 张精灵与粒子贴图（见 27.3）
 │   ├── fonts/                      # Antonio-Bold.ttf + SIL OFL 许可（文字渲染的字形来源，见 26.2）
 │   ├── heightmaps/                 # iceland_heightmap.png（见 22）
@@ -1047,7 +1047,7 @@ cmake --build build -j
 ./build/examples/gltfscenerendering/gltfscenerendering
 ./build/examples/multithreading/multithreading        # --threads N
 
-# 纹理家族（见 15）：KTX 资源在 data/textures/，采样器与视图类型由 TextureImageSpec 决定
+# 纹理家族（见 15）：KTX 资源在 assets/textures/，采样器与视图类型由 TextureImageSpec 决定
 ./build/examples/texture/texture                      # 512² × 10 mip，+/- 调 LOD 偏差
 ./build/examples/texturecubemap/texturecubemap        # cube map 天空盒 + 反射，+/- 调 LOD
 ./build/examples/texturearray/texturearray            # sampler2DArray，7 层一次 instanced draw
@@ -1068,14 +1068,14 @@ cmake --build build -j
 ./build/examples/stencil/stencil --dump --resize-after 20 --dump-after 45  # resize 后再抓，验证附件重建
 
 # 模型加载（见 18）：同一个 loadModel()，扩展名决定走哪个加载器
-./build/examples/gltfloading/gltfloading --model data/models/plane.gltf
-./build/examples/gltfloading/gltfloading --model data/models/plane.obj   # OBJ 通路
-./build/examples/stencil/stencil --dump --model data/models/plane.obj    # 两个格式的 dump 应逐字节一致
-python tools/gltf2obj.py data/models/deer.gltf /tmp/deer.obj             # 用官方脚本导出新 OBJ
+./build/examples/gltfloading/gltfloading --model assets/models/plane.gltf
+./build/examples/gltfloading/gltfloading --model assets/models/plane.obj   # OBJ 通路
+./build/examples/stencil/stencil --dump --model assets/models/plane.obj    # 两个格式的 dump 应逐字节一致
+python tools/gltf2obj.py assets/models/deer.gltf /tmp/deer.obj             # 用官方脚本导出新 OBJ
 
 # 模型加载 + 自动取景（见 19）：按包围盒取景，不依赖某个特定资源的比例
-./build/examples/model_loading/model_loading                            # 默认 data/models/backpack/backpack.obj
-./build/examples/model_loading/model_loading --model data/models/vampire/dancing_vampire.dae   # assimp 接管 .dae
+./build/examples/model_loading/model_loading                            # 默认 assets/models/backpack/backpack.obj
+./build/examples/model_loading/model_loading --model assets/models/vampire/dancing_vampire.dae   # assimp 接管 .dae
 ./build/examples/model_loading/model_loading --loader assimp            # 强制 assimp 走 .obj，与 tinyobj A/B
 ./build/examples/model_loading/model_loading --yaw 40 --dump            # 绕 Y 轴旋转后抓帧
 ./build/examples/model_loading/model_loading --yaw 40 --resize-after 3 --dump-after 6 --dump
@@ -1093,7 +1093,7 @@ python tools/gltf2obj.py data/models/deer.gltf /tmp/deer.obj             # 用�
 ./build/examples/oit/oit --dump --no-depth-test --resize-after 3 --dump-after 8
                                                         # 附件重建 + 描述符刷新后再验一次顺序无关性
 
-# 骨骼动画（见 21）：默认 data/models/vampire/dancing_vampire.dae
+# 骨骼动画（见 21）：默认 assets/models/vampire/dancing_vampire.dae
 ./build/examples/skeletal_animation/skeletal_animation                # 实时播放剪辑（时长 3.43 s，循环）
 ./build/examples/skeletal_animation/skeletal_animation --time 1.14 --dump
                                                         # 冻结在 1.14 s 抓帧，可复现（打印 jointFingerprint）
@@ -1213,7 +1213,7 @@ python tools/gltf2obj.py data/models/deer.gltf /tmp/deer.obj             # 用�
 
 # 多格式模型加载（见 29）：CPU 自检 / 注册表 / 嗅探都不创建 Vulkan 设备
 ./build/examples/model_formats/model_formats --list     # 七个插件、扩展名、十步后处理链
-./build/examples/model_formats/model_formats --probe data/models/formats/sample.pmx
+./build/examples/model_formats/model_formats --probe assets/models/formats/sample.pmx
                                                         # 打印每个 loader 的 probe 投票与胜出原因
 ./build/examples/model_formats/model_formats --self-test
                                                         # 65 项纯 CPU 检查（解析 / 嗅探 / 流水线 / 插件）
@@ -1828,7 +1828,7 @@ layout 转换与 `vkCmdCopyImageToBuffer`，其它层保持原布局。一个 PP
 `tinygltf/json.hpp` 与 `tiny_gltf.h` 作为 header-only vendored 到 `external/tinygltf/`（MIT），OBJ 走 `external/tiny_obj_loader.h`。加载器刻意停在**纯 CPU 数据层**：
 
 ```cpp
-Model m = loadModel(PROJECT_ROOT_PATH "/data/models/deer.gltf"); // 扩展名决定用哪个加载器
+Model m = loadModel(PROJECT_ROOT_PATH "/assets/models/deer.gltf"); // 扩展名决定用哪个加载器
 // m.vertices / m.indices / m.meshes[].primitives / m.materials / m.images
 // computeNodeWorldMatrices(m) -> 每个节点的世界矩阵
 // forEachMeshInstance(m, fn)  -> 按场景顺序遍历 (节点, mesh, primitive)
@@ -1918,7 +1918,7 @@ Model m = loadModel(PROJECT_ROOT_PATH "/data/models/deer.gltf"); // 扩展名决
 | tessellation | — | — |
 | deferred | — | `--dump`：首帧把 G-Buffer 各通道写成 `dump/*.ppm` |
 | terraintessellation | `W` 切换线框（也可 `--wireframe` 指定初始状态） | `--wireframe` |
-| gltfloading | — | `--model <path>`（默认 `data/models/deer.gltf`） |
+| gltfloading | — | `--model <path>`（默认 `assets/models/deer.gltf`） |
 | gltfscenerendering | `V` 循环隐藏下一个节点 | `--toggle-node N` |
 | multithreading | — | —（线程数 `std::thread::hardware_concurrency()`，钳在 2..8） |
 
@@ -1997,7 +1997,7 @@ cube 的 6 个面就是同一张 image 的 6 个 array layer，因此创建 imag
 只做解析，不碰 Vulkan 对象：
 
 ```cpp
-KtxTexture ktx = loadKtx(PROJECT_ROOT_PATH "/data/textures/rocks_color_rgba.ktx", /*preferSrgb=*/true);
+KtxTexture ktx = loadKtx(PROJECT_ROOT_PATH "/assets/textures/rocks_color_rgba.ktx", /*preferSrgb=*/true);
 TextureImageSpec spec = ktx.imageSpec();   // 维度/层数/面数/mip/格式/mipsInData 全部就绪
 syncOp->OnUpdateRawData(ResourceId(0, 0), 0u, ktx.data);
 ```
@@ -2563,7 +2563,7 @@ struct DrawRange {
 | 蒙皮/动画 | `dancing_vampire.dae` 只能渲染 bind pose | `Model` 没有 joint/weight 字段（见 18.6） |
 | 场景图 | 示例固定 `flattenScene = true` | 单物体演示不需要层级；需要逐节点绘制时应关掉它并保留 `ModelNode::transform` |
 | assimp 版本 | 绑定 vc140 的 5.x 产物的 C API，头文件来自 LearnOpenGL 的 vendored 副本 | 更高版本若改了 `aiScene` 布局需要重新对齐头文件 |
-| 资源 | `data/models/backpack/` 只入库 `obj` + `mtl` + `diffuse.jpg`（约 13 MB） | 同目录的 normal/specular/roughness/ao 未复制：示例不采样它们，且体积是主体 |
+| 资源 | `assets/models/backpack/` 入库 `obj` + `mtl` + `diffuse.jpg` + `normal.png` + `specular.jpg`（约 33 MB，见 32.7） | 目录里的 `roughness.jpg` / `ao.jpg` 仍未复制——`backpack.mtl` 没有引用它们（`map_Kd` / `map_Bump` / `map_Ks` 三个槽位已齐全） |
 
 ### 19.7 构建与验证状态
 
@@ -2826,7 +2826,7 @@ modelMatrix = scale(2 / longest) * translate(-center);   // 传给 shader 的 u.
 | 指标 | 帧缓冲像素 |
 | --- | --- |
 | 分辨率 | 1280 × 720（921600 像素） |
-| `skeletal_animation --bind-mesh --dump` vs `model_loading --model data/models/vampire/dancing_vampire.dae --dump` | **12 个像素差 1/255** |
+| `skeletal_animation --bind-mesh --dump` vs `model_loading --model assets/models/vampire/dancing_vampire.dae --dump` | **12 个像素差 1/255** |
 | 相机与统计 | 完全一致（eye `(0,0.45,3.32508)`、pitch `-7.7073°`、coverage `0.0547038`、uniqueColors `404`、mean `(0.250283,0.267325,0.327648)`） |
 
 那 12 个像素是两条归一化路径的浮点末位（`S·(0.01v − 0.01c)` 对 `S'·(v − c)`）。这一条同时证明了顶点布局、属性 location、`uvec4/vec4` 权重、std140 UBO 布局与矩阵乘序全部正确——任何一处转置或偏移都会让整张图崩掉，而不只是 12 个像素。
@@ -4546,7 +4546,7 @@ swapchain img : UNDEFINED → TRANSFER_DST → (copy) → PRESENT_SRC
 - 资源路径**优先用 `PROJECT_ROOT_PATH` 拼接**：仓库里已入库的三方库（glm/glfw）也是这个口径，好处是 exe 在任何 cwd 下都能跑。只有需要"允许用户在 cwd 覆盖同名资源"的场合才走 `loadTexture` 那条 cwd 优先的回退路径。
 - 二进制资源用 `git mv` 迁移，保留 rename 历史；不要"删了再拷"。
 
-> **历史路径说明**：第 14–31 章里出现的 `data/models/...`、`data/textures/...`、`data/fonts/...`、`data/levels/...`、`data/heightmaps/...` 描述的是**当时**的位置；本轮之后它们都在 `assets/` 下同名子目录里，历史叙述不改写，按 32.2 的映射表理解。
+> **历史路径说明**：第 14–31 章里出现的 `data/models/...`、`data/textures/...`、`data/fonts/...`、`data/levels/...`、`data/heightmaps/...` 描述的是**当时**的位置；本轮之后它们都在 `assets/` 下同名子目录里，历史叙述不改写，按 32.2 的映射表理解。唯一的例外是**读者会照着执行的**内容——命令行、代码片段、参数默认值、`# 资源在哪` 类注释——它们在 32.6 复查时已统一改成 `assets/`，因为复制一条指向已删除目录的命令只会浪费时间。
 
 ### 32.6 全仓路径复查（迁移后的第二轮扫描）
 
@@ -4576,7 +4576,7 @@ swapchain img : UNDEFINED → TRANSFER_DST → (copy) → PRESENT_SRC
 | `.clangd` 的 5 条 `-I` | 全部是 `D:/Study/Git/render_demo/...` 与 `D:/Tools/VulkanSDK/1.4.341.1/Include` 绝对路径 | 仓库里**没有** `compile_commands.json`（未开 `CMAKE_EXPORT_COMPILE_COMMANDS`），这 5 条是 clangd 唯一的头文件来源，删掉索引就废。正确的长期解是导出编译数据库后把 `.clangd` 收缩成 `CompilationDatabase: build_vs`，属于工具链改造、有破坏 IDE 的风险，留待独立一轮 |
 | `render_demo.code-workspace` 的 `clangd.path` | `D:/Tools/clang_llvm-22.1.3/bin/clangd.exe` | 同上，本机路径；换机器必须改，但改成什么值取决于用户的安装位置，无法在仓库里给出通用答案 |
 | `cmake/cpack-configs/nsis.cmake` | `CPACK_NSIS_MUI_ICON` 指向 `${CMAKE_SOURCE_DIR}/docs/images/kompute.ico`，`docs/` 不存在；整个 cpack 目录还带 Kompute 的文案与 URL | 该链**从未接线**：主 `CMakeLists.txt` 没有 `include(set_package_info.cmake)`，`file(GLOB ...)` 只在被 include 后才生效。死文件不影响任何构建；删除或重写取决于是否要做安装包，属于产品决策 |
-| `assets/models/backpack/backpack.mtl` | `map_Bump normal.png` / `map_Ks specular.jpg` 指向的文件从未入库（`e10a05e` 起只有 `diffuse.jpg`） | 历史遗留，非本轮迁移造成：`model_loading` 走 OBJ 加载器时只取 `map_Kd`，assimp 路径也不会因缺 normal/specular 失败。要修得先有这两张贴图，属于补资源而非改路径；已记在 `assets/models/backpack/source_attribution.txt` |
+| `assets/models/backpack/backpack.mtl` | `map_Bump normal.png` / `map_Ks specular.jpg` 曾指向未入库的文件（`e10a05e` 起只有 `diffuse.jpg`） | **已在 32.7 补齐**：两张图按上游原样入库，`.mtl` 的 4 条贴图引用现在 0 断链；`model_loading --loader assimp` 的 `image(s)` 计数从 1 变 3 即为证据 |
 
 **另有一处"陈旧产物"**：`build_vs/examples/*/Debug/*.exe`（25 个，`2026-11-26` 构建）内部仍是 `data/models/...` 字符串，而源码是 `11-28` 的。`build_vs/` 被 `.gitignore` 排除、不入库，但直接运行这些 Debug 版会去找已不存在的 `data/`。Release 侧已全量重建、确认干净；Debug 侧要么重建要么视为废弃——**构建目录不是真理源，只有 `Release` 的验证结论算数**。
 
@@ -4588,3 +4588,30 @@ grep -rn "data/\(models\|textures\|fonts\|levels\|heightmaps\)" --exclude-dir={b
 # 2) 字面量可达性：抽 assets/... 逐条 stat（Python 脚本，见本轮会话）
 # 3) 构建链可达性：抽 vulkan_compile_shader 的 INFILE/OUTFILE 逐条 stat
 ```
+### 32.7 补齐 backpack 的 normal / specular 贴图
+
+32.6 的扫描留下 2 条断链：`assets/models/backpack/backpack.mtl` 引用 `map_Bump normal.png` 与 `map_Ks specular.jpg`，而这两个文件自 `e10a05e` 迁移起就没入库。它们是同一份上游资源的成员，不是路径写错，所以修法是**补文件**而不是改引用。
+
+**来源与一致性**：从 `D:/LearnOpenGL/resources/objects/backpack/` 取，与仓库里已有的三份文件做 MD5 比对——`backpack.mtl`（`9b0ec611`）、`backpack.obj`（`eb074e4e`）、`diffuse.jpg`（`140d002e`）全部一致，证明是同一个上游副本，贴图与材质槽位天然匹配。补入：
+
+| 文件 | 规格 | 体积 | MD5 |
+| --- | --- | --- | --- |
+| `normal.png` | PNG 4096×4096，8-bit RGB（colortype 2） | 15.2 MB | `3c42db79` |
+| `specular.jpg` | JPEG 4096×4096 | 5.4 MB | `ca92f1bf` |
+
+同目录的 `roughness.jpg`（4.4 MB）与 `ao.jpg`（1.9 MB）**没有**复制：`backpack.mtl` 只声明了 `map_Kd` / `map_Bump` / `map_Ks` 三个槽位，这两张是 PBR 工作流的残留，搬进来只会是无人读取的死重量。补齐后目录 33 MB（原 13 MB）。
+
+**完整性校验**（不只是"文件存在"）：PNG 逐 chunk 校验 CRC32——1858 个 chunk 全通过、末 chunk 为 `IEND` 且偏移正好等于文件长度，排除截断；JPEG 校验 `SOI=ffd8` / `EOI=ffd9`，排除半包。
+
+**效果验证**：`model_loading` 的 `[model]` 行会打印 `image(s)` 计数，用它做 A/B（缺图副本放 `/tmp` 跑，不动仓库文件）：
+
+| 加载器 | 缺 normal/specular | 补齐后 | 说明 |
+| --- | --- | --- | --- |
+| `obj`（tinyobj，默认） | 1 image | **2 image** | 拿到 `diffuse.jpg` + `specular.jpg` |
+| `assimp`（`--loader assimp`） | 1 image | **3 image** | 三张全拿到，含 `normal.png` |
+
+**顺带查清的一个加载器差异**：补图后 tiny_obj 只到 2 image，少的正是 `normal.png`。原因在 vendored 的 `external/tiny_obj_loader.h:1231`——它只匹配**小写** `map_bump` / `bump` 关键字，而 `backpack.mtl` 写的是 `map_Bump`（大写 B），于是 `bump_texname` 为空，`ObjModelLoader` 的 `normal_texname.empty() ? bump_texname : normal_texname` 也就拿不到东西。assimp 的 MTL 解析对大小写不敏感，所以 3 张齐全。
+
+这条差异**刻意不修**：改 `backpack.mtl` 的大小写会让文件 MD5 偏离上游（失去"原样入库"的可核对性），改 vendored 头文件则引入本地补丁。而且 19.6 已写明示例只用 `texture(diffuseMap, uv)` 着色，normal/specular 目前是"数据层如实保留"——补图的价值是**资源自洽 + assimp 路径数据完整**，不是画面变化。
+
+**"不改画面"是实测的**：缺图副本（1 image）与仓库原路径（2 image）各跑一次 `--dump`，`0000_model.ppm` 的 MD5 同为 `96832267b39de748df4a6dd0cbf70fb6`，`coverage=0.119404 uniqueColors=996` 也逐位相同，且与 19.5 记录的历史基线一致。贴图数量变化只影响材质槽位的填充，不进入光栅化路径。
