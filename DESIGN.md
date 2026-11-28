@@ -31,13 +31,12 @@ render_demo/
 ├── DESIGN.md                       # 本文档
 ├── cmake/
 │   ├── vulkan_shader_compiler.cmake    # glslangValidator -> .spv -> .hpp
-│   ├── bin_file_to_header.cmake
+│   ├── bin_file_to_header.cmake        # 内联 bin2h.cmake：.spv -> .hpp 字节数组
 │   ├── check_vulkan_version.cmake
-│   ├── set_package_info.cmake
 │   └── ...
 ├── configuration/root_directory.h.in   # 生成 PROJECT_ROOT_PATH 宏
 ├── assets/                         # ===== 示例运行期资源（单一根，见 32）=====
-│   ├── models/                     # 迁移示例的模型：glTF（suzanne / deer / sphere / armor / plane / cube / teapot / torusknot / samplebuilding + glass / deferred_floor）、backpack/{obj,mtl,diffuse.jpg,normal.png,specular.jpg}（见 19 / 32.7）、planet/（见 22）、vampire/{dancing_vampire.dae,textures/}（见 21）、formats/{sample.pmx,pmd,x,vmd}（见 29）
+│   ├── models/                     # 迁移示例的模型：glTF（suzanne / deer / sphere / armor / plane / cube / teapot / samplebuilding + glass）、backpack/{obj,mtl,diffuse.jpg,normal.png,specular.jpg}（见 19 / 32.7）、planet/（见 22）、vampire/{dancing_vampire.dae,textures/}（见 21）、formats/{sample.pmx,pmd,x,vmd}（见 29）
 │   ├── textures/                   # awesomeface / container2（+specular）；KTX（metalplate01 / yokohama cubemap / texturearray / rocks 颜色+法线高度 / colored_glass，见 15）；breakout/ 12 张精灵与粒子贴图（见 27.3）
 │   ├── fonts/                      # Antonio-Bold.ttf + SIL OFL 许可（文字渲染的字形来源，见 26.2）
 │   ├── heightmaps/                 # iceland_heightmap.png（见 22）
@@ -1848,7 +1847,7 @@ Model m = loadModel(PROJECT_ROOT_PATH "/assets/models/deer.gltf"); // 扩展名�
 
 ### 14.3 资源策略
 
-大资源不入库：参考的 Sponza（268 MB + KTX）与 FlightHelmet（53 MB + 外置 PNG）被**轻量内嵌模型替代**——`assets/models/` 只放数据内嵌在 `.gltf` 里的 suzanne（376 KB）、deer（1.4 MB）、sphere（140 KB）、armor（1.2 MB）与 deferred_floor（4 KB）。因此：
+大资源不入库：参考的 Sponza（268 MB + KTX）与 FlightHelmet（53 MB + 外置 PNG）被**轻量内嵌模型替代**——`assets/models/` 只放数据内嵌在 `.gltf` 里的 suzanne（376 KB）、deer（1.4 MB）、sphere（140 KB）、armor（1.2 MB）。因此：
 
 - 加载器不需要 KTX 解码器；纹理数组（`VK_IMAGE_VIEW_TYPE_2D_ARRAY`）未实现也不构成阻塞。
 - KTX 依赖的 terraintessellation 改用**程序化高度场**（CPU 生成 sin/cos 叠加地形），既保留"高度驱动动态细分"的技术核心，又让工程自包含、可离线构建与冒烟测试。
@@ -4502,7 +4501,7 @@ swapchain img : UNDEFINED → TRANSFER_DST → (copy) → PRESENT_SRC
 
 | 原路径 | 新路径 | 文件数 | 内容 |
 | --- | --- | --- | --- |
-| `data/models/` | `assets/models/` | 31 | glTF（suzanne / deer / sphere / armor / plane / cube / teapot / torusknot / samplebuilding + glass / deferred_floor）、`backpack/`、`planet/`、`vampire/`、`formats/` |
+| `data/models/` | `assets/models/` | 31 | glTF（suzanne / deer / sphere / armor / plane / cube / teapot / samplebuilding + glass）、`backpack/`、`planet/`、`vampire/`、`formats/`（`torusknot.gltf` / `deferred_floor.gltf` 已在 32.9 删除） |
 | `data/textures/` | `assets/textures/` | 18 | 6 个 KTX + `breakout/` 12 张精灵；与该目录原有的 3 张 PNG（awesomeface / container2 / container2_specular）并存，互不重名 |
 | `data/fonts/` | `assets/fonts/` | 3 | `Antonio-Bold.ttf` + SIL OFL + 来源说明 |
 | `data/levels/` | `assets/levels/` | 4 | `{one,two,three,four}.lvl` |
@@ -4580,7 +4579,7 @@ swapchain img : UNDEFINED → TRANSFER_DST → (copy) → PRESENT_SRC
 | --- | --- | --- |
 | `.clangd` 的 5 条 `-I` | 全部是 `D:/Study/Git/render_demo/...` 与 `D:/Tools/VulkanSDK/1.4.341.1/Include` 绝对路径 | 仓库里**没有** `compile_commands.json`（未开 `CMAKE_EXPORT_COMPILE_COMMANDS`），这 5 条是 clangd 唯一的头文件来源，删掉索引就废。正确的长期解是导出编译数据库后把 `.clangd` 收缩成 `CompilationDatabase: build_vs`，属于工具链改造、有破坏 IDE 的风险，留待独立一轮 |
 | `render_demo.code-workspace` 的 `clangd.path` | `D:/Tools/clang_llvm-22.1.3/bin/clangd.exe` | 同上，本机路径；换机器必须改，但改成什么值取决于用户的安装位置，无法在仓库里给出通用答案 |
-| `cmake/cpack-configs/nsis.cmake` | `CPACK_NSIS_MUI_ICON` 指向 `${CMAKE_SOURCE_DIR}/docs/images/kompute.ico`，`docs/` 不存在；整个 cpack 目录还带 Kompute 的文案与 URL | 该链**从未接线**：主 `CMakeLists.txt` 没有 `include(set_package_info.cmake)`，`file(GLOB ...)` 只在被 include 后才生效。死文件不影响任何构建；删除或重写取决于是否要做安装包，属于产品决策 |
+| `cmake/cpack-configs/nsis.cmake` | `CPACK_NSIS_MUI_ICON` 指向 `${CMAKE_SOURCE_DIR}/docs/images/kompute.ico`，`docs/` 不存在；整个 cpack 目录还带 Kompute 的文案与 URL | 该链**从未接线**：主 `CMakeLists.txt` 没有 `include(set_package_info.cmake)`，`file(GLOB ...)` 只在被 include 后才生效。**已在 32.9 连同 `set_package_info.cmake` 一并删除**（同类零引用的 `code_coverage.cmake` / `deprecation_warnings.cmake` / `komputeConfig.cmake.in` 一起清理）；将来要做安装包时从 git 历史取回即可 |
 | `assets/models/backpack/backpack.mtl` | `map_Bump normal.png` / `map_Ks specular.jpg` 曾指向未入库的文件（`e10a05e` 起只有 `diffuse.jpg`） | **已在 32.7 补齐**：两张图按上游原样入库，`.mtl` 的 4 条贴图引用现在 0 断链；`model_loading --loader assimp` 的 `image(s)` 计数从 1 变 3 即为证据 |
 
 **另有一处"陈旧产物"**：`build_vs/examples/*/Debug/*.exe`（25 个，`2026-11-26` 构建）内部仍是 `data/models/...` 字符串，而源码是 `11-28` 的。`build_vs/` 被 `.gitignore` 排除、不入库，但直接运行这些 Debug 版会去找已不存在的 `data/`。Release 侧已全量重建、确认干净；Debug 侧要么重建要么视为废弃——**构建目录不是真理源，只有 `Release` 的验证结论算数**。本轮的选择是**视为废弃**：14.6 的「配置 / 产物」两行已从 `Debug` 改为 `Release` 口径（13 个 Release 产物实测均为 `11-28` 构建），Debug 批只在 14.6 的注里留一句"不再作为复现依据"。
@@ -4661,3 +4660,51 @@ grep -rn "data/\(models\|textures\|fonts\|levels\|heightmaps\)" --exclude-dir={b
 | `--input` 往返 | 用上一步留下的 `input_raw12_128x96.raw` 回灌：`0 / 6144 words differ`、误差 `1.192e-07`，与合成模式逐项相同 |
 
 **为什么默认不用 `dump/`**：`dump/` 是第 13 章调试存盘的地盘，语义是"这次要留着看图"；raw2rgb 的三个文件是**可丢弃的中间产物**（确定性重算即可），落在系统临时目录更贴合语义，也让两类输出各有明确归属。需要留档时 `--out dump/raw2rgb` 一句话切过去。
+
+### 32.9 资源与产物清理（死资源 / 陈旧产物 / Kompute 遗留）
+
+32.7 之后 `assets/` 已经是唯一资源根，但"有目录树、有清单"不等于"每个文件都有人用"。这轮做的是**引用性审计**而不是看目录：对 63 个资源逐个查两件事——代码里有没有字面量加载它（`examples/` / `src/` / `extensions/` / `tools/` / `cmake/`），资源内部有没有被 `.mtl` / `.dae` / `.gltf` 引用。真正的死资源只有 2 个：
+
+| 文件 | 体积 | 判定依据 |
+| --- | --- | --- |
+| `assets/models/torusknot.gltf` | 93 KB | 全仓代码 0 引用；15.6 的差异表写明 texturecubemap 只用 sphere + teapot（不放 venus 1.4 MB），torusknot 早在迁移时就被裁掉，文件却一直留着 |
+| `assets/models/deferred_floor.gltf` | 2.9 KB | 全仓代码 0 引用；deferred 迁移后改用 armor（15843 → 57651 顶点），这块 4 KB 的占位地板从那时起就是死的 |
+
+**审计时踩到的两个假阳性**（说明为什么不能只数"文件名出现次数"）：
+
+- `assets/models/vampire/textures/*.png`（4 张，10.8 MB）在代码里 0 命中，但 `.dae` 内部以 `init_from>textures/...` 引用它们 → **保留**。
+- `assets/models/backpack/{diffuse.jpg,normal.png,specular.jpg}` 同样只由 `.mtl` 的 `map_*` 引用 → **保留**。
+
+结论：只有把 `.mtl` / `.dae` / `.gltf` 的内部引用一起解析，才能区分"死资源"和"被别人加载的资源"；只看代码字面量会把 10.8 MB 的活资源误判成垃圾。
+
+**同时清掉的 Kompute 遗留**（`cmake/` 下 7 个从未参与构建的文件）：
+
+| 文件 | 为什么是死的 |
+| --- | --- |
+| `cmake/set_package_info.cmake` + `cpack-configs/{archive,deb,nsis}.cmake` | 主 `CMakeLists.txt` 从未 `include`，而 `file(GLOB cpack-configs/*.cmake)` 只在该文件被 include 后才生效；`nsis.cmake` 还指向不存在的 `docs/images/kompute.ico` |
+| `cmake/code_coverage.cmake` / `deprecation_warnings.cmake` / `komputeConfig.cmake.in` | 全仓 0 引用。对照组：`bin2h.cmake` 由 `bin_file_to_header.cmake` 引用、`vulkan_shader_compiler.cmake` 由顶层 `include`，这两个保留 |
+
+删完 `cmake/` 只剩 4 个真正参与构建的模块：`vulkan_shader_compiler` / `bin_file_to_header` / `bin2h` / `check_vulkan_version`。将来要做安装包，从 git 历史取回即可。
+
+**磁盘产物**（都不入库，但占地方、而且会误导人）：
+
+| 项 | 体积 | 处理 |
+| --- | --- | --- |
+| `build_vs/examples/*/Debug/`（25 个目标） | **1.3 GB** | 删除。`11-26` 的产物、内部仍指向 `data/`，14.6 与 32.6 已判为废弃；Release 侧才是当前验证依据 |
+| `dump/0000_model.ppm` | 2.7 MB | 删除（19.5 / 32.7 的 A/B 抓帧残留，重跑即得） |
+| `external/stb_image.h.bak` | 255 KB | 删除（`.gitignore` 明示允许的本地备份；正本 `external/stb_image.h` 仍在） |
+| 空目录 `dist/` | 0 | 删除（未在任何文档登记）。`doc/` 保留——第 2 章登记为"设计讨论存档" |
+
+**验证**：
+
+- 删除后 `cmake -S . -B build_vs` 重配置 0 error、`--target simplest` 构建通过 → `cmake/` 的删除没有断任何 include 链
+- 全仓 grep `torusknot` / `deferred_floor` 只剩 DESIGN 里的历史叙述（15.6 的参考侧清单、32.2 的映射表备注），代码 0 命中
+- 版本库 1221 → 1212 文件、115.2 → 115.1 MB；`assets/` 65 → 63 文件、105.0 → 104.9 MB；`build_vs/` 3.2 GB → 1.9 GB
+- `git status` 干净（`build_vs/`、`dump/` 本就在忽略列表内，删它们不影响版本库）
+
+**刻意没清的**：
+
+- backpack 32 MB、`dancing_vampire.dae` 30.5 MB、KTX 21 MB：都有引用，且遵循"原样入库、MD5 可核对"（15.3 / 32.7）
+- 169 个入库 `shader/*.hpp`：它们是**构建输入**而不是产物，删了就会退化成"干净 clone 必须先装 `glslangValidator`"（7 章）
+- 跨示例重复的 shader 源码与生成头（bloom ↔ physically_based_bloom、occlusion_query ↔ pipeline_statistics、raytracing_* 系列、deferred ↔ gbuffer 的 `mrt_*`）：示例刻意自包含，抽公共 shader 属于重构，不是清理
+- `assets/textures/breakout/awesomeface.png` 与 `assets/textures/awesomeface.png` 同 MD5（44 KB）：breakout 用前者、simplest / offscreen / multi-lighting 用后者，合并要改 `assetPath`，为 44 KB 动引用不划算——记录为已知重复
