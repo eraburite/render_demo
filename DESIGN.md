@@ -1899,13 +1899,13 @@ Model m = loadModel(PROJECT_ROOT_PATH "/assets/models/deer.gltf"); // 扩展名�
 
 | 项 | 结果 |
 | --- | --- |
-| 配置 | Visual Studio 18 2026 / x64，`cmake --build build_vs --config Debug` |
+| 配置 | Visual Studio 18 2026 / x64，`cmake --build build_vs --config Release` |
 | 编译 | **0 error / 0 warning**（`myEngine` + `example_common` + 13 个目标） |
-| 产物 | `build_vs/examples/<name>/Debug/<name>.exe` × 13 |
+| 产物 | `build_vs/examples/<name>/Release/<name>.exe` × 13 |
 | 运行期校验 | 13 个示例全部 **VUID 计数 = 0**：simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb / geometryshader / tessellation / deferred / terraintessellation / gltfloading / gltfscenerendering / multithreading |
 | 数据通路 | deferred `armor: expanded to 57651 vertices`；geometryshader `loaded 7958 vertices from suzanne.gltf`；tessellation `2440 vertices / 10764 indices (3588 patches)`；terraintessellation `1024 quad patches, 4096 control points`；gltfloading `2440 source vertices, 10764 indices -> 10764 draw vertices, 5 nodes, 4 mesh instances`；gltfscenerendering 7 节点树 / `4 mesh nodes -> 4 instances in one draw`；multithreading `8 worker threads, 1000 objects, 125 matrix slots per thread` + `788/1000 objects survived frustum culling`；raw2rgb `demosaic: max |gpu-cpu| = 5.96e-08` |
 
-> 上表是**迁移当时**的记录：`build_vs/examples/*/Debug/*.exe` 是 `2026-11-26` 的产物（25 个），内部的资源路径仍是 `data/models/...`，而 `data/` 在 32 章的合并后已不存在——照着复现会看到满屏 `not found`。复现请以 `Release` 全量重建后的结论为准（见 32.6 末段）；`build_vs/` 不入库，删掉重配即可。
+> 迁移当时这批验证跑的是 `Debug`，下表已按**当前可复现**的口径改为 `Release`：`build_vs/examples/*/Debug/*.exe` 是 `11-26` 的产物（25 个），内部仍指向已合并掉的 `data/`，属过期产物，不再作为复现依据；13 个 `Release` 产物均为 `11-28` 构建。`build_vs/` 不入库，删掉重配即可，`Release` 全量重建的结论见 32.4。
 
 冒烟验证的两个注意点（供复现）：
 
@@ -4580,7 +4580,7 @@ swapchain img : UNDEFINED → TRANSFER_DST → (copy) → PRESENT_SRC
 | `cmake/cpack-configs/nsis.cmake` | `CPACK_NSIS_MUI_ICON` 指向 `${CMAKE_SOURCE_DIR}/docs/images/kompute.ico`，`docs/` 不存在；整个 cpack 目录还带 Kompute 的文案与 URL | 该链**从未接线**：主 `CMakeLists.txt` 没有 `include(set_package_info.cmake)`，`file(GLOB ...)` 只在被 include 后才生效。死文件不影响任何构建；删除或重写取决于是否要做安装包，属于产品决策 |
 | `assets/models/backpack/backpack.mtl` | `map_Bump normal.png` / `map_Ks specular.jpg` 曾指向未入库的文件（`e10a05e` 起只有 `diffuse.jpg`） | **已在 32.7 补齐**：两张图按上游原样入库，`.mtl` 的 4 条贴图引用现在 0 断链；`model_loading --loader assimp` 的 `image(s)` 计数从 1 变 3 即为证据 |
 
-**另有一处"陈旧产物"**：`build_vs/examples/*/Debug/*.exe`（25 个，`2026-11-26` 构建）内部仍是 `data/models/...` 字符串，而源码是 `11-28` 的。`build_vs/` 被 `.gitignore` 排除、不入库，但直接运行这些 Debug 版会去找已不存在的 `data/`。Release 侧已全量重建、确认干净；Debug 侧要么重建要么视为废弃——**构建目录不是真理源，只有 `Release` 的验证结论算数**。
+**另有一处"陈旧产物"**：`build_vs/examples/*/Debug/*.exe`（25 个，`2026-11-26` 构建）内部仍是 `data/models/...` 字符串，而源码是 `11-28` 的。`build_vs/` 被 `.gitignore` 排除、不入库，但直接运行这些 Debug 版会去找已不存在的 `data/`。Release 侧已全量重建、确认干净；Debug 侧要么重建要么视为废弃——**构建目录不是真理源，只有 `Release` 的验证结论算数**。本轮的选择是**视为废弃**：14.6 的「配置 / 产物」两行已从 `Debug` 改为 `Release` 口径（13 个 Release 产物实测均为 `11-28` 构建），Debug 批只在 14.6 的注里留一句"不再作为复现依据"。
 
 **扫描脚本的可复用结论**：这三条正则足以覆盖本仓库的路径风险，比"看一眼目录"可靠得多——
 
