@@ -1045,7 +1045,7 @@ cmake --build build -j
 ./build/examples/terraintessellation/terraintessellation --wireframe
 ./build/examples/gltfloading/gltfloading              # --model <path> 换模型
 ./build/examples/gltfscenerendering/gltfscenerendering
-./build/examples/multithreading/multithreading        # --threads N
+./build/examples/multithreading/multithreading        # 线程数取 hardware_concurrency()（钳在 2..8），无命令行开关
 
 # 纹理家族（见 15）：KTX 资源在 assets/textures/，采样器与视图类型由 TextureImageSpec 决定
 ./build/examples/texture/texture                      # 512² × 10 mip，+/- 调 LOD 偏差
@@ -1219,7 +1219,7 @@ python tools/gltf2obj.py assets/models/deer.gltf /tmp/deer.obj             # 用
                                                         # 65 项纯 CPU 检查（解析 / 嗅探 / 流水线 / 插件）
 ./build/examples/model_formats/model_formats --format pmd --verify --stats --dump
                                                         # VBO/IBO 逐字节回读 + 渲染出图
-./build/examples/model_formats/model_formats --format x --model my.x --stats
+./build/examples/model_formats/model_formats --format x --model assets/models/formats/sample.x --stats
 ./build/examples/model_formats/model_formats --format vmd --stats
                                                         # 动画格式只出 AnimationClip，不渲染
 
@@ -1847,7 +1847,7 @@ Model m = loadModel(PROJECT_ROOT_PATH "/assets/models/deer.gltf"); // 扩展名�
 
 ### 14.3 资源策略
 
-大资源不入库：参考的 Sponza（268 MB + KTX）与 FlightHelmet（53 MB + 外置 PNG）被**轻量内嵌模型替代**——`data/models/` 只放数据内嵌在 `.gltf` 里的 suzanne（376 KB）、deer（1.4 MB）、sphere（140 KB）、armor（1.2 MB）与 deferred_floor（4 KB）。因此：
+大资源不入库：参考的 Sponza（268 MB + KTX）与 FlightHelmet（53 MB + 外置 PNG）被**轻量内嵌模型替代**——`assets/models/` 只放数据内嵌在 `.gltf` 里的 suzanne（376 KB）、deer（1.4 MB）、sphere（140 KB）、armor（1.2 MB）与 deferred_floor（4 KB）。因此：
 
 - 加载器不需要 KTX 解码器；纹理数组（`VK_IMAGE_VIEW_TYPE_2D_ARRAY`）未实现也不构成阻塞。
 - KTX 依赖的 terraintessellation 改用**程序化高度场**（CPU 生成 sin/cos 叠加地形），既保留"高度驱动动态细分"的技术核心，又让工程自包含、可离线构建与冒烟测试。
@@ -1887,7 +1887,7 @@ Model m = loadModel(PROJECT_ROOT_PATH "/assets/models/deer.gltf"); // 扩展名�
 | UI | ImGui overlay（滑块/下拉框/复选框） | 命令行参数 + 键盘快捷键 | 框架未集成 ImGui；调试交互用最小的按键状态机 |
 | glTF 材质 | 完整 PBR + 法线贴图 + alphaMask 特化 | 简化的法线/顶点色光照 | 无纹理数组与 bindless；聚焦于渲染技术（细分/几何/MRT/场景图）本身 |
 | 视锥剔除 | `vks::Frustum` 逐物体 | 简化的 clip-space 判定或按组剔除 | 避免引入独立 frustum 模块 |
-| 命令行 | `VulkanExampleBase` 统一解析 | 各示例自行解析 `--model` / `--wireframe` / `--threads` 等 | 框架没有全局 CLI 层 |
+| 命令行 | `VulkanExampleBase` 统一解析 | 各示例自行解析 `--model` / `--wireframe` / `--toggle-node` 等（`multithreading` 的线程数取 `hardware_concurrency()`，不开放 CLI） | 框架没有全局 CLI 层 |
 
 **线程安全约定**：`VkCommandPool` 不是线程安全的，`SecondaryRecorder` 为每个线程建独立 pool；`DescriptorBindingState` 也不能跨命令缓冲共享，每个 secondary 持有自己的一份。帧同步仍由 `LoopSequence` 的 fence/semaphore 负责，工作线程只录制、不提交。
 
@@ -1904,6 +1904,8 @@ Model m = loadModel(PROJECT_ROOT_PATH "/assets/models/deer.gltf"); // 扩展名�
 | 产物 | `build_vs/examples/<name>/Debug/<name>.exe` × 13 |
 | 运行期校验 | 13 个示例全部 **VUID 计数 = 0**：simplest / multi-lighting / offscreen / gbuffer / particle / raw2rgb / geometryshader / tessellation / deferred / terraintessellation / gltfloading / gltfscenerendering / multithreading |
 | 数据通路 | deferred `armor: expanded to 57651 vertices`；geometryshader `loaded 7958 vertices from suzanne.gltf`；tessellation `2440 vertices / 10764 indices (3588 patches)`；terraintessellation `1024 quad patches, 4096 control points`；gltfloading `2440 source vertices, 10764 indices -> 10764 draw vertices, 5 nodes, 4 mesh instances`；gltfscenerendering 7 节点树 / `4 mesh nodes -> 4 instances in one draw`；multithreading `8 worker threads, 1000 objects, 125 matrix slots per thread` + `788/1000 objects survived frustum culling`；raw2rgb `demosaic: max |gpu-cpu| = 5.96e-08` |
+
+> 上表是**迁移当时**的记录：`build_vs/examples/*/Debug/*.exe` 是 `2026-11-26` 的产物（25 个），内部的资源路径仍是 `data/models/...`，而 `data/` 在 32 章的合并后已不存在——照着复现会看到满屏 `not found`。复现请以 `Release` 全量重建后的结论为准（见 32.6 末段）；`build_vs/` 不入库，删掉重配即可。
 
 冒烟验证的两个注意点（供复现）：
 
@@ -4588,6 +4590,22 @@ grep -rn "data/\(models\|textures\|fonts\|levels\|heightmaps\)" --exclude-dir={b
 # 2) 字面量可达性：抽 assets/... 逐条 stat（Python 脚本，见本轮会话）
 # 3) 构建链可达性：抽 vulkan_compile_shader 的 INFILE/OUTFILE 逐条 stat
 ```
+
+### 32.6.1 命令级复核（第三轮：命令本身能不能跑）
+
+前两轮审的都是"路径字符串对不对"，没审"整条命令能不能执行"——参数名写错、占位符没换，路径再对也没用。这一轮把 DESIGN 里全部 `./build/examples/<name>/<name> ...` 形式的命令抽出来（**135 条，涉及 41 个示例**），逐条核对三件事：exe 名与 `examples/` 下的目录名一致、每个 `--flag` 在实际解析它的代码里有字符串匹配（不只看示例目录，`--view` / `--capture` 这类通用开关注册在 `extensions/debug/ImageDump.cpp`）、参数里的 `assets/` 路径在磁盘上 `stat` 得到。结果：
+
+| 检查项 | 结论 |
+| --- | --- |
+| exe 名 ↔ 目录名 | **0 不符**（48 个示例目录，文档引用到的 41 个全部对得上；`multi-lighting` 这类带连字符的目录名也一致） |
+| 源码里不存在的 flag | **1 类 2 处：`--threads`**。`multithreading` 的 `test()` 就是 `(void)argc; (void)argv;`，线程数固定取 `hardware_concurrency()` 钳在 2..8——文档凭空多了一个开关，照着敲会被静默忽略。7 章命令块与 14.5 差异表各一处，已改 |
+| 没换掉的占位符 | **1 处**：29 章 `--format x --model my.x`，`my.x` 根本不存在；改为入库的 `assets/models/formats/sample.x`，实测 `vertices=8 indices=36 triangles=12`、`rc=0` |
+| `assets/` 路径不存在 | **0**（含 `tools/gltf2obj.py`、`assets/images/input_raw12_64x64.raw` 这条需先跑一次合成模式的例外，见 32.6） |
+| 历史章节里的旧位置注释 | **1 处**：14.3 "`data/models/` 只放…"，改为 `assets/models/`（它是"资源在哪"类注释，属于 32.5 说明的例外） |
+| cmake / git / grep 自己的开关 | 不在核对范围（`--build` / `--config` / `--parallel` / `--cached` / `--follow` / `--exclude-dir`），人工确认无误 |
+
+顺带纠正一处**记录错误**：`e4ff991` 的提交说明把上一轮那批修复统称为"第 14 章的命令行"，实际**绝大多数不在 14 章**——7 章命令块 9 处（4 条 `--model` / `tools/gltf2obj.py` / 2 条 `# 默认 <资源>` 注释 / KTX 位置注释 / `--probe`）、**14 章仅 2 处**（14.2 的 `loadModel(PROJECT_ROOT_PATH …)` 片段、14.6 表中 `--model <path>` 的默认值）、15.2 的 `loadKtx(…)` 片段 1 处、19 章 2 处（资源行与 A/B 对照命令）。所以"第 14 章那 13 处"这个说法本身是那次提交说明的笔误；14 章真正需要改的可执行内容，本轮就上面两条 + 14.3 的位置注释，已全部处理完。改动以 `git show e4ff991 -- DESIGN.md` 为准。
+
 ### 32.7 补齐 backpack 的 normal / specular 贴图
 
 32.6 的扫描留下 2 条断链：`assets/models/backpack/backpack.mtl` 引用 `map_Bump normal.png` 与 `map_Ks specular.jpg`，而这两个文件自 `e10a05e` 迁移起就没入库。它们是同一份上游资源的成员，不是路径写错，所以修法是**补文件**而不是改引用。
